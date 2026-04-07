@@ -50,6 +50,21 @@ export {
 export { getTrendingTokens, getTokenPairs, searchTokens } from './services/dexscreener.service.js';
 export type { TrendingToken, DexPair } from './services/dexscreener.service.js';
 
+// Wallet Intelligence
+export {
+  startWalletIntelligence, stopWalletIntelligence,
+  getTrackedWallets, getWalletCount, getRecentWalletBuys,
+  getWalletIntelStats, recordWalletBuy,
+} from './services/wallet-intelligence.service.js';
+export type { TrackedWallet, WalletBuyEvent } from './services/wallet-intelligence.service.js';
+
+// KOL Intelligence
+export {
+  startKolIntelligence, stopKolIntelligence,
+  getKolSignals, getKolStats, setTokenMentionCallback,
+} from './services/kol-intelligence.service.js';
+export type { KolSignal } from './services/kol-intelligence.service.js';
+
 // Re-export lib utilities
 export { calculateCompositeScore } from './lib/score-calculator.js';
 export type { ScoreParams } from './lib/score-calculator.js';

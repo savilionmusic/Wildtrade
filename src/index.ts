@@ -14,6 +14,13 @@ import {
   stopSmartMoneyMonitor,
   startScanner,
   stopScanner,
+  startWalletIntelligence,
+  stopWalletIntelligence,
+  startKolIntelligence,
+  stopKolIntelligence,
+  setTokenMentionCallback,
+  getWalletIntelStats,
+  getKolStats,
 } from '@wildtrade/plugin-alpha-scout';
 
 const requiredEnvVars = [
@@ -152,6 +159,46 @@ async function main(): Promise<void> {
   });
   console.log('[boot] Token scanner active — watching for new launches and trending tokens.');
 
+  // Phase 6b: Wallet Intelligence (leaderboard + top trader discovery)
+  console.log('[boot] Starting wallet intelligence...');
+  startWalletIntelligence((msg) => {
+    console.log(`[wallet-intel] ${msg}`);
+    if (msg.includes('Discovered') || msg.includes('new wallets')) {
+      addProactiveAlert('wallet_intel', msg);
+      sendToParent({ type: 'proactive-alert', alertType: 'wallet_intel', message: msg });
+    }
+  });
+  console.log('[boot] Wallet intelligence active — tracking smart money leaderboard.');
+
+  // Phase 6c: KOL Intelligence (DexScreener social + CTOs + ads)
+  console.log('[boot] Starting KOL intelligence...');
+  startKolIntelligence((msg) => {
+    console.log(`[kol-intel] ${msg}`);
+    if (msg.includes('Found') || msg.includes('takeover')) {
+      addProactiveAlert('kol_intel', msg);
+      sendToParent({ type: 'proactive-alert', alertType: 'kol_intel', message: msg });
+    }
+  });
+
+  // Wire KOL signals into the scanner queue
+  setTokenMentionCallback((signal) => {
+    console.log(`[kol-intel] Token mention: ${signal.tokenMint.slice(0, 8)} from ${signal.source} (${signal.confidence})`);
+    addProactiveAlert('kol_signal', `${signal.source}: ${signal.context}`);
+    sendToParent({ type: 'proactive-alert', alertType: 'kol_signal', message: `${signal.source}: ${signal.context}` });
+  });
+  console.log('[boot] KOL intelligence active — monitoring social signals, CTOs, and ads.');
+
+  // Phase 6d: Periodic status report
+  setInterval(() => {
+    const walletStats = getWalletIntelStats();
+    const kolStats = getKolStats();
+    console.log(
+      `[status] Wallets tracked: ${walletStats.tracked} | ` +
+      `Recent buys: ${walletStats.recentBuys} | ` +
+      `KOL signals: ${kolStats.totalSignals} (${kolStats.recentSignals} recent)`,
+    );
+  }, 120_000); // every 2 min
+
   // Phase 7: IPC Chat Handler (Electron ↔ ElizaOS)
   // When running as a child process of Electron, listen for chat messages
   if (process.send) {
@@ -194,6 +241,8 @@ async function main(): Promise<void> {
     console.log('\n[shutdown] Graceful shutdown initiated...');
     clearInterval(heartbeatInterval);
     stopScanner();
+    stopWalletIntelligence();
+    stopKolIntelligence();
     stopSmartMoneyMonitor();
 
     broadcast('agent:status', 'finder', { agent: 'finder', status: 'offline' });

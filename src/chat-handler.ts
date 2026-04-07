@@ -22,7 +22,7 @@ import type {
   State,
   UUID,
 } from '@elizaos/core';
-import { getScannerStats } from '@wildtrade/plugin-alpha-scout';
+import { getScannerStats, getWalletIntelStats, getKolStats } from '@wildtrade/plugin-alpha-scout';
 
 // Stable room ID for the user↔Scout chat
 const CHAT_ROOM_ID = stringToUuid('wildtrade-user-chat-room');
@@ -92,6 +92,8 @@ export async function handleChatMessage(
 
   // 3. Inject additional trading context into state
   const scannerStats = getScannerStats();
+  const walletStats = getWalletIntelStats();
+  const kolStats = getKolStats();
   const alertsText = recentAlerts
     .slice(-10)
     .map(a => {
@@ -106,10 +108,14 @@ export async function handleChatMessage(
   const tradingContext = [
     `\n=== Trading Status ===`,
     `Mode: ${paperMode ? 'PAPER TRADING (simulated)' : 'LIVE TRADING'}`,
-    `Budget: ${budget} SOL`,
+    `Budget: ${budget} SOL | Goal: 10 SOL`,
     `Scanner: ${scannerStats.running ? 'ACTIVE' : 'stopped'} | Processed: ${scannerStats.processed} tokens | Signals: ${scannerStats.signals} | Forwarded to Trader: ${scannerStats.forwarded}`,
     `Queue: ${scannerStats.queueSize} tokens waiting`,
-    alertsText ? `\n=== Recent Activity ===\n${alertsText}` : '(no recent activity)',
+    `\n=== Intelligence Systems ===`,
+    `Smart Money: Tracking ${walletStats.tracked} wallets | ${walletStats.recentBuys} recent buys`,
+    walletStats.topWallets.length > 0 ? `Top wallets: ${walletStats.topWallets.map(w => `${w.alias}(BES:${w.bes})`).join(', ')}` : '',
+    `KOL Intel: ${kolStats.running ? 'ACTIVE' : 'stopped'} | ${kolStats.totalSignals} total signals | ${kolStats.recentSignals} in last 5min`,
+    alertsText ? `\n=== Recent Activity (IMPORTANT — reference this!) ===\n${alertsText}` : '(no recent activity — scanning is active, waiting for signals)',
   ].join('\n');
 
   // Append trading context to providers

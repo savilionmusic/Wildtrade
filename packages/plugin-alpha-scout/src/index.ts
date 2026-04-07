@@ -65,6 +65,11 @@ export {
 } from './services/kol-intelligence.service.js';
 export type { KolSignal } from './services/kol-intelligence.service.js';
 
+// Telegram Notifications
+export {
+  configureTelegram, sendTelegramAlert, isTelegramEnabled,
+} from './services/telegram.service.js';
+
 // Re-export lib utilities
 export { calculateCompositeScore } from './lib/score-calculator.js';
 export type { ScoreParams } from './lib/score-calculator.js';

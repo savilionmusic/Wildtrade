@@ -31,6 +31,11 @@
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
         Chat
       </button>
+      <button class="nav-btn" data-tab="alerts">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+        Alerts
+        <span id="alert-badge" class="alert-badge hidden">0</span>
+      </button>
       <button class="nav-btn" data-tab="settings">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
         Settings
@@ -140,6 +145,30 @@
       </div>
     </section>
 
+    <!-- Alerts Tab -->
+    <section id="tab-alerts" class="tab">
+      <div class="tab-header">
+        <h1>Live Alerts</h1>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-outline" onclick="app.toggleAlertPause()"><span id="alert-pause-text">Pause</span></button>
+          <button class="btn btn-outline" onclick="app.clearAlerts()">Clear</button>
+        </div>
+      </div>
+
+      <div class="alert-filters">
+        <button class="alert-filter active" data-filter="all">All</button>
+        <button class="alert-filter" data-filter="smart_money">Smart Money</button>
+        <button class="alert-filter" data-filter="scanner">Scanner</button>
+        <button class="alert-filter" data-filter="kol">KOL / Social</button>
+        <button class="alert-filter" data-filter="trade">Trades</button>
+        <button class="alert-filter" data-filter="safety">Safety</button>
+      </div>
+
+      <div id="alerts-container" class="alerts-container">
+        <div class="alert-empty">No alerts yet. Start the bot to begin scanning.</div>
+      </div>
+    </section>
+
     <!-- Settings Tab -->
     <section id="tab-settings" class="tab">
       <div class="tab-header">
@@ -238,6 +267,18 @@
           <label>Twitter Bearer Token <input type="password" id="cfg-TWITTER_BEARER_TOKEN" placeholder="Bearer token for X API" autocomplete="off"></label>
           <label>KOL User IDs (comma-separated) <input type="text" id="cfg-TWITTER_KOL_USER_IDS" placeholder="12345678,87654321"></label>
           <label>Smart Money Wallets (comma-separated) <input type="text" id="cfg-SMART_MONEY_WALLETS" placeholder="wallet1pubkey,wallet2pubkey"></label>
+        </fieldset>
+
+        <fieldset class="settings-group">
+          <legend>Telegram Notifications</legend>
+          <label>Telegram Bot Token
+            <input type="password" id="cfg-TELEGRAM_BOT_TOKEN" placeholder="123456:ABC-DEF1234..." autocomplete="off">
+            <span class="field-hint">Create a bot via @BotFather on Telegram</span>
+          </label>
+          <label>Telegram Chat ID
+            <input type="text" id="cfg-TELEGRAM_CHAT_ID" placeholder="Your chat ID (message @userinfobot)">
+            <span class="field-hint">Message @userinfobot on Telegram to get your ID</span>
+          </label>
         </fieldset>
 
       </div>

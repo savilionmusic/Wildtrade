@@ -6,6 +6,7 @@ const CONFIG_FIELDS = [
   'MAX_POSITION_SIZE_SOL', 'TOTAL_BUDGET_SOL', 'MIN_SCORE_THRESHOLD',
   'JUPITER_SLIPPAGE_BPS', 'RUGCHECK_MIN_SCORE',
   'TWITTER_BEARER_TOKEN', 'TWITTER_KOL_USER_IDS', 'SMART_MONEY_WALLETS',
+  'TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID',
 ];
 
 const TOGGLE_FIELDS = ['PAPER_TRADING', 'AUTONOMOUS_MODE'];
@@ -13,6 +14,10 @@ const TOGGLE_FIELDS = ['PAPER_TRADING', 'AUTONOMOUS_MODE'];
 // ── State ──
 let botRunning = false;
 let logs = [];
+let alerts = [];
+let alertsPaused = false;
+let alertFilter = 'all';
+let unseenAlerts = 0;
 
 // ── Tab navigation ──
 document.querySelectorAll('.nav-btn').forEach(btn => {
@@ -105,6 +110,19 @@ const app = {
       <div class="chat-avatar">W</div>
       <div class="chat-bubble">Chat cleared. How can I help you?</div>
     </div>`;
+  },
+
+  // ── Alerts ──
+  clearAlerts() {
+    alerts = [];
+    unseenAlerts = 0;
+    updateAlertBadge();
+    renderAlerts();
+  },
+
+  toggleAlertPause() {
+    alertsPaused = !alertsPaused;
+    document.getElementById('alert-pause-text').textContent = alertsPaused ? 'Resume' : 'Pause';
   }
 };
 
@@ -152,6 +170,128 @@ function formatMarkdown(text) {
     .replace(/\n\d+\. /g, (m) => '\n' + m.trim() + ' ')
     .replace(/\n/g, '<br>');
 }
+
+// ── Alert filter handlers ──
+document.querySelectorAll('.alert-filter').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.alert-filter').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    alertFilter = btn.dataset.filter;
+    renderAlerts();
+  });
+});
+
+// ── Alert system ──
+const ALERT_ICONS = {
+  smart_money: '\u{1F9E0}', scanner: '\u{1F50D}', kol: '\u{1F4E2}',
+  trade: '\u{1F4B0}', safety: '\u{26A0}', system: '\u{2699}',
+};
+
+const ALERT_CATEGORIES = {
+  smart_money_alert: 'smart_money', smart_money_cluster: 'smart_money', smart_money_update: 'smart_money',
+  wallet_intel: 'smart_money',
+  signal_forwarded: 'scanner', token_scanned: 'scanner', new_token_detected: 'scanner',
+  dexscreener_update: 'scanner', scanner: 'scanner',
+  kol_intel: 'kol', kol_signal: 'kol',
+  dca_entry: 'trade', exit: 'trade', position_opened: 'trade', position_closed: 'trade',
+  safety_alert: 'safety', rugcheck_passed: 'safety',
+  agent_action: 'system', alert: 'system',
+};
+
+function addAlert(type, message) {
+  if (alertsPaused) return;
+
+  const category = ALERT_CATEGORIES[type] || 'system';
+  const alert = { type, category, message, timestamp: Date.now() };
+  alerts.unshift(alert); // newest first
+  if (alerts.length > 500) alerts.pop();
+
+  // Update badge if not on alerts tab
+  const alertsTab = document.getElementById('tab-alerts');
+  if (!alertsTab.classList.contains('active')) {
+    unseenAlerts++;
+    updateAlertBadge();
+  }
+
+  // Add to DOM if filter matches
+  if (alertFilter === 'all' || alertFilter === category) {
+    prependAlertItem(alert);
+  }
+}
+
+function updateAlertBadge() {
+  const badge = document.getElementById('alert-badge');
+  if (unseenAlerts > 0) {
+    badge.textContent = unseenAlerts > 99 ? '99+' : unseenAlerts;
+    badge.classList.remove('hidden');
+  } else {
+    badge.classList.add('hidden');
+  }
+}
+
+function prependAlertItem(alert) {
+  const container = document.getElementById('alerts-container');
+  const empty = container.querySelector('.alert-empty');
+  if (empty) empty.remove();
+
+  const div = document.createElement('div');
+  div.className = 'alert-item';
+  div.dataset.category = alert.category;
+
+  const icon = ALERT_ICONS[alert.category] || '\u{1F514}';
+  const time = new Date(alert.timestamp).toLocaleTimeString();
+  const typeLabel = alert.type.replace(/_/g, ' ').toUpperCase();
+
+  div.innerHTML = `
+    <div class="alert-icon ${alert.category}">${icon}</div>
+    <div class="alert-body">
+      <div class="alert-type ${alert.category}">${typeLabel}</div>
+      <div class="alert-text">${escapeHtml(alert.message)}</div>
+    </div>
+    <div class="alert-time">${time}</div>
+  `;
+  container.prepend(div);
+
+  // Keep max 200 DOM elements
+  while (container.children.length > 200) container.lastChild.remove();
+}
+
+function renderAlerts() {
+  const container = document.getElementById('alerts-container');
+  container.innerHTML = '';
+
+  const filtered = alertFilter === 'all' ? alerts : alerts.filter(a => a.category === alertFilter);
+
+  if (filtered.length === 0) {
+    container.innerHTML = '<div class="alert-empty">No alerts in this category.</div>';
+    return;
+  }
+
+  for (const alert of filtered.slice(0, 200)) {
+    const div = document.createElement('div');
+    div.className = 'alert-item';
+
+    const icon = ALERT_ICONS[alert.category] || '\u{1F514}';
+    const time = new Date(alert.timestamp).toLocaleTimeString();
+    const typeLabel = alert.type.replace(/_/g, ' ').toUpperCase();
+
+    div.innerHTML = `
+      <div class="alert-icon ${alert.category}">${icon}</div>
+      <div class="alert-body">
+        <div class="alert-type ${alert.category}">${typeLabel}</div>
+        <div class="alert-text">${escapeHtml(alert.message)}</div>
+      </div>
+      <div class="alert-time">${time}</div>
+    `;
+    container.appendChild(div);
+  }
+}
+
+// Clear unseen count when alerts tab is opened
+document.querySelector('[data-tab="alerts"]').addEventListener('click', () => {
+  unseenAlerts = 0;
+  updateAlertBadge();
+});
 
 
 // ── Load settings into form ──
@@ -238,55 +378,40 @@ function setBotStatus(status) {
   btn.className = botRunning ? 'btn btn-start running' : 'btn btn-start';
 }
 
-// ── Event listeners (matching preload.cjs API) ──
-window.wildtrade.onBotLog(entry => addLogEntry(entry));
+// ── Event listeners ──
 window.wildtrade.onBotStatus(status => setBotStatus(status));
 window.wildtrade.onBotError(msg => addLogEntry({ time: Date.now(), level: 'error', message: msg }));
 
-// ── Proactive trade notifications in chat ──
+// ── Proactive trade notifications → alerts + chat ──
 window.wildtrade.onTradeUpdate(update => {
-  const typeLabels = {
-    smart_money_alert: 'Smart Money Alert',
-    smart_money_update: 'Smart Money',
-    signal_forwarded: 'Signal Sent to Trader',
-    dca_entry: 'DCA Entry Executed',
-    exit: 'Exit Triggered',
-    position_opened: 'New Position',
-    position_closed: 'Position Closed',
-    safety_alert: 'Safety Warning',
-    rugcheck_passed: 'RugCheck Passed',
-    new_token_detected: 'New Token',
-    token_scanned: 'Token Scanned',
-    dexscreener_update: 'DexScreener',
-    agent_action: 'Agent Action',
-    alert: 'Alert',
-  };
-
-  const typeColors = {
-    smart_money_alert: '#3b82f6',
-    smart_money_update: '#3b82f6',
-    signal_forwarded: '#10b981',
-    dca_entry: '#10b981',
-    exit: '#f59e0b',
-    position_opened: '#10b981',
-    position_closed: '#8b5cf6',
-    safety_alert: '#ef4444',
-    rugcheck_passed: '#10b981',
-    new_token_detected: '#6366f1',
-    token_scanned: '#8b949e',
-    dexscreener_update: '#6366f1',
-    agent_action: '#f59e0b',
-    alert: '#6366f1',
-  };
-
-  // Only show high-value notifications in chat (not every token scan)
-  const chatWorthy = ['smart_money_alert', 'signal_forwarded', 'dca_entry', 'exit',
-    'position_opened', 'position_closed', 'safety_alert', 'agent_action', 'alert'];
-  if (!chatWorthy.includes(update.type)) return;
-
-  const label = typeLabels[update.type] || 'Update';
-  const color = typeColors[update.type] || '#8b949e';
+  const type = update.type || 'alert';
   const msg = update.message || JSON.stringify(update);
+
+  // ALWAYS add to alerts panel
+  addAlert(type, msg);
+
+  // Also add high-value alerts to chat
+  const chatWorthy = ['smart_money_alert', 'smart_money_cluster', 'signal_forwarded', 'dca_entry', 'exit',
+    'position_opened', 'position_closed', 'safety_alert', 'agent_action'];
+  if (!chatWorthy.includes(type)) return;
+
+  const typeLabels = {
+    smart_money_alert: 'Smart Money Alert', smart_money_cluster: 'Smart Money Cluster',
+    signal_forwarded: 'Signal Sent to Trader', dca_entry: 'DCA Entry',
+    exit: 'Exit Triggered', position_opened: 'New Position',
+    position_closed: 'Position Closed', safety_alert: 'Safety Warning',
+    agent_action: 'Agent Action',
+  };
+  const typeColors = {
+    smart_money_alert: '#3b82f6', smart_money_cluster: '#3b82f6',
+    signal_forwarded: '#10b981', dca_entry: '#10b981',
+    exit: '#f59e0b', position_opened: '#10b981',
+    position_closed: '#8b5cf6', safety_alert: '#ef4444',
+    agent_action: '#f59e0b',
+  };
+
+  const label = typeLabels[type] || 'Update';
+  const color = typeColors[type] || '#8b949e';
 
   const container = document.getElementById('chat-messages');
   const div = document.createElement('div');
@@ -300,6 +425,40 @@ window.wildtrade.onTradeUpdate(update => {
   `;
   container.appendChild(div);
   container.scrollTop = container.scrollHeight;
+});
+
+// ── Also feed bot logs into alerts for key events ──
+window.wildtrade.onBotLog(entry => {
+  addLogEntry(entry);
+
+  // Parse important log lines into alerts
+  const msg = typeof entry === 'string' ? entry : (entry.message || '');
+  const lower = msg.toLowerCase();
+
+  if (lower.includes('[scanner]') && lower.includes('scanned:')) {
+    addAlert('token_scanned', msg.replace(/.*\[scanner\]\s*/i, ''));
+  }
+  if (lower.includes('[scanner]') && lower.includes('signal forwarded')) {
+    addAlert('signal_forwarded', msg.replace(/.*\[scanner\]\s*/i, ''));
+  }
+  if (lower.includes('[smart-money]') && lower.includes('cluster')) {
+    addAlert('smart_money_cluster', msg.replace(/.*\[smart-money\]\s*/i, ''));
+  }
+  if (lower.includes('[wallet-intel]') && lower.includes('discovered')) {
+    addAlert('wallet_intel', msg.replace(/.*\[wallet-intel\]\s*/i, ''));
+  }
+  if (lower.includes('[kol-intel]') && lower.includes('found')) {
+    addAlert('kol_intel', msg.replace(/.*\[kol-intel\]\s*/i, ''));
+  }
+  if (lower.includes('rugcheck') && lower.includes('failed')) {
+    addAlert('safety_alert', msg);
+  }
+  if (lower.includes('[alpha-scout]') && lower.includes('new token from pumpportal')) {
+    addAlert('new_token_detected', msg.replace(/.*\[alpha-scout\]\s*/i, ''));
+  }
+  if (lower.includes('dexscreener') && (lower.includes('profiles:') || lower.includes('boosts:'))) {
+    addAlert('dexscreener_update', msg.replace(/.*\[scanner\]\s*/i, ''));
+  }
 });
 
 // ── Init ──

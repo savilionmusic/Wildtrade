@@ -181,6 +181,8 @@ function buildBotEnv(config) {
     TWITTER_BEARER_TOKEN: parsed.TWITTER_BEARER_TOKEN || '',
     TWITTER_KOL_USER_IDS: parsed.TWITTER_KOL_USER_IDS || '',
     SMART_MONEY_WALLETS: parsed.SMART_MONEY_WALLETS || '',
+    TELEGRAM_BOT_TOKEN: parsed.TELEGRAM_BOT_TOKEN || '',
+    TELEGRAM_CHAT_ID: parsed.TELEGRAM_CHAT_ID || '',
     FINDER_MODEL: parsed.FINDER_MODEL || 'anthropic/claude-sonnet-4-5',
     TRADER_MODEL: parsed.TRADER_MODEL || 'openai/gpt-4o-mini',
     AUDITOR_MODEL: parsed.AUDITOR_MODEL || 'openai/gpt-4o-mini',

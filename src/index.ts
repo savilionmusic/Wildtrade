@@ -21,6 +21,8 @@ import {
   setTokenMentionCallback,
   getWalletIntelStats,
   getKolStats,
+  configureTelegram,
+  sendTelegramAlert,
 } from '@wildtrade/plugin-alpha-scout';
 
 const requiredEnvVars = [
@@ -90,6 +92,14 @@ async function main(): Promise<void> {
 
   console.log('[boot] All agents initialized.');
 
+  // Phase 4b: Telegram Notifications
+  if (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID) {
+    configureTelegram(process.env.TELEGRAM_BOT_TOKEN, process.env.TELEGRAM_CHAT_ID);
+    console.log('[boot] Telegram notifications configured.');
+  } else {
+    console.log('[boot] Telegram not configured — set bot token + chat ID in Settings for push alerts.');
+  }
+
   // Phase 5: Smart Money Monitor
   console.log('[boot] Starting smart money monitor...');
   const userWallets = (process.env.SMART_MONEY_WALLETS ?? '')
@@ -104,6 +114,7 @@ async function main(): Promise<void> {
       console.log(`[smart-money] ${clusterMsg}`);
       addProactiveAlert('smart_money_cluster', clusterMsg);
       sendToParent({ type: 'proactive-alert', alertType: 'smart_money_cluster', message: clusterMsg });
+      sendTelegramAlert('smart_money_cluster', clusterMsg);
 
       broadcast('smart-money:cluster', 'finder', {
         tokenAddress: signal.tokenAddress,
@@ -155,6 +166,9 @@ async function main(): Promise<void> {
     if (msg.includes('SIGNAL FORWARDED') || msg.includes('Scanned:')) {
       addProactiveAlert('scanner', msg);
       sendToParent({ type: 'proactive-alert', alertType: 'scanner', message: msg });
+    }
+    if (msg.includes('SIGNAL FORWARDED')) {
+      sendTelegramAlert('signal_forwarded', msg);
     }
   });
   console.log('[boot] Token scanner active — watching for new launches and trending tokens.');

@@ -3,38 +3,80 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
+  "main": "electron/main.js",
   "workspaces": ["packages/*"],
   "scripts": {
     "dev": "bun run src/index.ts",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint packages/*/src src --ext .ts"
+    "lint": "eslint packages/*/src src --ext .ts",
+    "build:bot": "node scripts/build-bot.js",
+    "electron:dev": "npm run build:bot && electron .",
+    "build:mac": "npm run build:bot && electron-builder --mac",
+    "build:win": "npm run build:bot && electron-builder --win",
+    "build:linux": "npm run build:bot && electron-builder --linux",
+    "postinstall": "electron-builder install-app-deps"
+  },
+  "build": {
+    "appId": "com.wildtrade.app",
+    "productName": "Wildtrade",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "electron/**/*",
+      "ui/**/*",
+      "dist/**/*",
+      "node_modules/**/*",
+      "packages/*/dist/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "dist/",
+        "to": "bot/dist/"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.finance",
+      "icon": "build/icon.png",
+      "target": ["dmg", "zip"]
+    },
+    "win": {
+      "icon": "build/icon.png",
+      "target": ["nsis"]
+    },
+    "linux": {
+      "icon": "build/icon.png",
+      "target": ["AppImage"]
+    },
+    "dmg": {
+      "title": "Wildtrade",
+      "backgroundColor": "#0d1117"
+    }
   },
   "dependencies": {
-    "@anush008/tokenizers-linux-x64-gnu": "^0.6.0",
     "@electric-sql/pglite": "^0.2.17",
-    "@elizaos/adapter-sqlite": "^0.25.6-alpha.1",
     "@elizaos/adapter-sqljs": "^0.25.6-alpha.1",
     "@elizaos/core": "0.25.9",
-    "@img/sharp-linux-x64": "^0.34.5",
     "@solana/web3.js": "^1.98.0",
-    "@types/better-sqlite3": "^7.6.13",
-    "better-sqlite3": "^12.8.0",
     "bs58": "^6.0.0",
     "cross-fetch": "^4.1.0",
     "dotenv": "^16.4.7",
+    "onnxruntime-node": "1.15.1",
     "pino": "^9.6.0",
-    "sharp": "^0.34.5",
     "socket.io": "^4.8.1",
     "sql.js": "^1.14.1",
-    "sqlite-vec-linux-x64": "0.1.6",
     "twitter-api-v2": "^1.18.2",
     "uuid": "^11.1.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {
+    "@esbuild/linux-x64": "^0.28.0",
     "@types/node": "^22.13.0",
     "@types/uuid": "^10.0.0",
     "@types/ws": "^8.5.14",
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0",
+    "esbuild": "^0.28.0",
     "typescript": "^5.7.3"
   }
 }

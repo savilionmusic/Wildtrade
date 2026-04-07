@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Wildtrade</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- Titlebar drag region (macOS) -->
+  <div id="titlebar">
+    <span class="titlebar-text">Wildtrade</span>
+  </div>
+
+  <!-- Sidebar -->
+  <nav id="sidebar">
+    <div class="logo">
+      <svg width="32" height="32" viewBox="0 0 64 64" fill="none">
+        <rect width="64" height="64" rx="14" fill="#10b981"/>
+        <path d="M18 44 L28 24 L36 36 L46 18" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <circle cx="46" cy="18" r="4" fill="#fff"/>
+      </svg>
+      <span>Wildtrade</span>
+    </div>
+    <div class="nav-items">
+      <button class="nav-btn active" data-tab="dashboard">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+        Dashboard
+      </button>
+      <button class="nav-btn" data-tab="settings">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        Settings
+      </button>
+      <button class="nav-btn" data-tab="logs">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+        Logs
+      </button>
+    </div>
+    <div class="sidebar-bottom">
+      <div id="bot-indicator" class="indicator stopped">
+        <span class="dot"></span>
+        <span class="label">Stopped</span>
+      </div>
+    </div>
+  </nav>
+
+  <!-- Main content -->
+  <main id="content">
+
+    <!-- Dashboard Tab -->
+    <section id="tab-dashboard" class="tab active">
+      <div class="tab-header">
+        <h1>Dashboard</h1>
+        <div class="bot-controls">
+          <button id="btn-start" class="btn btn-start" onclick="app.toggleBot()">Start Bot</button>
+        </div>
+      </div>
+
+      <div class="cards">
+        <div class="card">
+          <div class="card-label">Mode</div>
+          <div class="card-value" id="val-mode">Paper Trading</div>
+        </div>
+        <div class="card">
+          <div class="card-label">Budget</div>
+          <div class="card-value" id="val-budget">1.0 SOL</div>
+        </div>
+        <div class="card">
+          <div class="card-label">Open Positions</div>
+          <div class="card-value" id="val-positions">0</div>
+        </div>
+        <div class="card">
+          <div class="card-label">Realized PnL</div>
+          <div class="card-value" id="val-pnl">0.0000 SOL</div>
+        </div>
+      </div>
+
+      <div class="agents-grid">
+        <div class="agent-card">
+          <div class="agent-header">
+            <span class="agent-dot finder"></span>
+            <span class="agent-name">Scout (Finder)</span>
+          </div>
+          <div class="agent-desc">Scans Pump.fun, whale wallets, and social signals for alpha opportunities.</div>
+          <div class="agent-model" id="agent-finder-model">Claude Sonnet</div>
+        </div>
+        <div class="agent-card">
+          <div class="agent-header">
+            <span class="agent-dot trader"></span>
+            <span class="agent-name">Executioner (Trader)</span>
+          </div>
+          <div class="agent-desc">Manages DCA entries, exit tiers, and portfolio scaling via Jupiter V6.</div>
+          <div class="agent-model" id="agent-trader-model">GPT-4o-mini</div>
+        </div>
+        <div class="agent-card">
+          <div class="agent-header">
+            <span class="agent-dot auditor"></span>
+            <span class="agent-name">Fixer (Auditor)</span>
+          </div>
+          <div class="agent-desc">Self-healing loop: RPC rotation, error recovery, honeypot detection.</div>
+          <div class="agent-model" id="agent-auditor-model">GPT-4o-mini</div>
+        </div>
+      </div>
+
+      <div class="section-title">Recent Logs</div>
+      <div id="dashboard-logs" class="log-preview"></div>
+    </section>
+
+    <!-- Settings Tab -->
+    <section id="tab-settings" class="tab">
+      <div class="tab-header">
+        <h1>Settings</h1>
+        <button id="btn-save" class="btn btn-save" onclick="app.saveSettings()">Save Settings</button>
+      </div>
+      <div id="save-toast" class="toast hidden">Settings saved</div>
+
+      <div class="settings-grid">
+
+        <fieldset class="settings-group">
+          <legend>LLM / OpenRouter</legend>
+          <label>OpenRouter API Key <input type="password" id="cfg-OPENROUTER_API_KEY" placeholder="sk-or-v1-..." autocomplete="off"></label>
+          <label>Finder Model <input type="text" id="cfg-FINDER_MODEL" placeholder="anthropic/claude-sonnet-4-5"></label>
+          <label>Trader Model <input type="text" id="cfg-TRADER_MODEL" placeholder="openai/gpt-4o-mini"></label>
+          <label>Auditor Model <input type="text" id="cfg-AUDITOR_MODEL" placeholder="openai/gpt-4o-mini"></label>
+        </fieldset>
+
+        <fieldset class="settings-group">
+          <legend>Solana Wallet</legend>
+          <label>Wallet Public Key <input type="text" id="cfg-WALLET_PUBLIC_KEY" placeholder="Your Solana public key" autocomplete="off"></label>
+          <label>Wallet Private Key <input type="password" id="cfg-WALLET_PRIVATE_KEY" placeholder="Base58 private key (for live trading only)" autocomplete="off"></label>
+        </fieldset>
+
+        <fieldset class="settings-group">
+          <legend>RPC Endpoints</legend>
+          <label>Helius RPC URL <input type="text" id="cfg-SOLANA_RPC_HELIUS" placeholder="https://mainnet.helius-rpc.com/?api-key=..."></label>
+          <label>Helius API Key <input type="password" id="cfg-HELIUS_API_KEY" placeholder="Your Helius API key" autocomplete="off"></label>
+          <label>QuickNode RPC URL <input type="text" id="cfg-SOLANA_RPC_QUICKNODE" placeholder="https://your-endpoint.quiknode.pro/..."></label>
+        </fieldset>
+
+        <fieldset class="settings-group">
+          <legend>Trading Controls</legend>
+          <label class="toggle-label">
+            Paper Trading
+            <input type="checkbox" id="cfg-PAPER_TRADING" checked>
+            <span class="toggle"></span>
+          </label>
+          <label class="toggle-label">
+            Autonomous Mode
+            <input type="checkbox" id="cfg-AUTONOMOUS_MODE">
+            <span class="toggle"></span>
+          </label>
+          <label>Max Position Size (SOL) <input type="number" id="cfg-MAX_POSITION_SIZE_SOL" value="1.0" step="0.1" min="0.01"></label>
+          <label>Total Budget (SOL) <input type="number" id="cfg-TOTAL_BUDGET_SOL" value="1.0" step="0.1" min="0.01"></label>
+          <label>Min Score Threshold <input type="number" id="cfg-MIN_SCORE_THRESHOLD" value="65" min="0" max="100"></label>
+          <label>Jupiter Slippage (BPS) <input type="number" id="cfg-JUPITER_SLIPPAGE_BPS" value="300" min="1" max="5000"></label>
+          <label>RugCheck Min Score <input type="number" id="cfg-RUGCHECK_MIN_SCORE" value="70" min="0" max="100"></label>
+        </fieldset>
+
+        <fieldset class="settings-group">
+          <legend>Twitter / Social</legend>
+          <label>Twitter Bearer Token <input type="password" id="cfg-TWITTER_BEARER_TOKEN" placeholder="Bearer token for X API" autocomplete="off"></label>
+          <label>KOL User IDs (comma-separated) <input type="text" id="cfg-TWITTER_KOL_USER_IDS" placeholder="12345678,87654321"></label>
+          <label>Smart Money Wallets (comma-separated) <input type="text" id="cfg-SMART_MONEY_WALLETS" placeholder="wallet1pubkey,wallet2pubkey"></label>
+        </fieldset>
+
+      </div>
+    </section>
+
+    <!-- Logs Tab -->
+    <section id="tab-logs" class="tab">
+      <div class="tab-header">
+        <h1>Bot Logs</h1>
+        <button class="btn btn-outline" onclick="app.clearLogs()">Clear</button>
+      </div>
+      <div id="log-container" class="log-container"></div>
+    </section>
+
+  </main>
+
+  <script src="renderer.js"></script>
+</body>
+</html>

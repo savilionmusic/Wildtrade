@@ -626,8 +626,6 @@ a.token-link::before { content: '🔗 '; font-size: 10px; }
 }
 
 /* ── Portfolio Tab ── */
-#tab-portfolio { display: none; }
-#tab-portfolio.active { display: block; }
 
 .portfolio-stats {
   display: grid;

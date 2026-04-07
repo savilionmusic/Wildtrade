@@ -470,3 +470,14 @@ body {
 
 .chat-input:focus { border-color: var(--green); }
 .chat-send { padding: 10px 24px; }
+
+/* Typing indicator animation */
+.chat-bubble.typing { display: flex; gap: 4px; align-items: center; min-width: 50px; }
+.chat-bubble.typing span { font-size: 24px; line-height: 1; animation: typingBounce 1.4s infinite ease-in-out; }
+.chat-bubble.typing .dot-1 { animation-delay: 0s; }
+.chat-bubble.typing .dot-2 { animation-delay: 0.2s; }
+.chat-bubble.typing .dot-3 { animation-delay: 0.4s; }
+@keyframes typingBounce {
+  0%, 60%, 100% { opacity: 0.3; transform: translateY(0); }
+  30% { opacity: 1; transform: translateY(-4px); }
+}

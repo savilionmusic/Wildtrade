@@ -251,6 +251,110 @@ ipcMain.handle('bot:status', () => {
 
 ipcMain.handle('bot:logs', () => botLogs);
 
+// ── AI Chat via OpenRouter ──
+let chatHistory = [];
+
+ipcMain.handle('chat:send', async (_, message) => {
+  const config = loadConfig();
+  const apiKey = config.OPENROUTER_API_KEY;
+  if (!apiKey) {
+    return { error: 'No OpenRouter API key set. Go to Settings and add one.' };
+  }
+
+  // Build system context with current bot state
+  const botStatus = botProcess ? 'running' : 'stopped';
+  const recentLogs = botLogs.slice(-15).map(l => l.message).join('\n');
+
+  const systemPrompt = `You are the Wildtrade assistant, built into a Solana trading bot desktop app. You help users set up, troubleshoot, and understand their trading bot.
+
+Current bot state:
+- Status: ${botStatus}
+- Mode: ${config.PAPER_TRADING !== false ? 'Paper Trading (simulated)' : 'LIVE TRADING (real funds)'}
+- Budget: ${config.TOTAL_BUDGET_SOL || '1.0'} SOL
+- Autonomous: ${config.AUTONOMOUS_MODE === true ? 'Yes' : 'No (approval required)'}
+- Finder model: ${config.FINDER_MODEL || 'anthropic/claude-sonnet-4-5'}
+- Trader model: ${config.TRADER_MODEL || 'openai/gpt-4o-mini'}
+- Auditor model: ${config.AUDITOR_MODEL || 'openai/gpt-4o-mini'}
+
+Configured keys:
+- OpenRouter: ${apiKey ? 'Yes' : 'Missing'}
+- Helius: ${config.HELIUS_API_KEY ? 'Yes' : 'Not set'}
+- Twitter: ${config.TWITTER_BEARER_TOKEN ? 'Yes' : 'Not set'}
+- Wallet: ${config.WALLET_PUBLIC_KEY && config.WALLET_PUBLIC_KEY !== '11111111111111111111111111111111' ? 'Configured' : 'Using default (paper only)'}
+- Smart Money Wallets: ${config.SMART_MONEY_WALLETS ? 'Configured' : 'Not set'}
+
+Recent logs:
+${recentLogs || '(no recent logs)'}
+
+Architecture: 3 agents (Scout/Finder scans Pump.fun + whale wallets, Executioner/Trader handles DCA entries and exits via Jupiter V6, Fixer/Auditor does self-healing/RPC rotation/honeypot detection). Built on ElizaOS v0.25.9.
+
+Be concise, helpful, and direct. If the user asks about setup, guide them to the Settings tab. If they report errors, analyze the recent logs above. You can suggest actions like "start the bot", "check settings", etc.`;
+
+  chatHistory.push({ role: 'user', content: message });
+
+  // Keep history manageable
+  if (chatHistory.length > 20) {
+    chatHistory = chatHistory.slice(-16);
+  }
+
+  try {
+    const https = require('https');
+    const response = await new Promise((resolve, reject) => {
+      const body = JSON.stringify({
+        model: config.AUDITOR_MODEL || 'openai/gpt-4o-mini',
+        messages: [
+          { role: 'system', content: systemPrompt },
+          ...chatHistory,
+        ],
+        max_tokens: 500,
+        temperature: 0.7,
+      });
+
+      const req = https.request({
+        hostname: 'openrouter.ai',
+        path: '/api/v1/chat/completions',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`,
+          'HTTP-Referer': 'https://github.com/savilionmusic/Wildtrade',
+          'X-Title': 'Wildtrade Desktop',
+        },
+      }, (res) => {
+        let data = '';
+        res.on('data', chunk => data += chunk);
+        res.on('end', () => {
+          try {
+            resolve(JSON.parse(data));
+          } catch (e) {
+            reject(new Error('Invalid response from OpenRouter'));
+          }
+        });
+      });
+
+      req.on('error', reject);
+      req.write(body);
+      req.end();
+    });
+
+    if (response.error) {
+      return { error: response.error.message || 'OpenRouter API error' };
+    }
+
+    const reply = response.choices?.[0]?.message?.content || 'No response from model.';
+    chatHistory.push({ role: 'assistant', content: reply });
+    return { reply };
+
+  } catch (err) {
+    return { error: `Chat failed: ${err.message}` };
+  }
+});
+
+ipcMain.handle('chat:clear', () => {
+  chatHistory = [];
+  return { ok: true };
+});
+
 // ── App lifecycle ──
 app.whenReady().then(createWindow);
 

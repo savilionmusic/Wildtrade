@@ -32,4 +32,8 @@ contextBridge.exposeInMainWorld('wildtrade', {
     ipcRenderer.on('bot:message', handler);
     return () => ipcRenderer.removeListener('bot:message', handler);
   },
+
+  // AI Chat
+  chatSend: (message) => ipcRenderer.invoke('chat:send', message),
+  chatClear: () => ipcRenderer.invoke('chat:clear'),
 });

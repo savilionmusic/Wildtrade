@@ -40,4 +40,5 @@ export {
   startAutonomousTrader, stopAutonomousTrader,
   getTraderStats, getOpenPositions, getTradeHistory,
   manualBuy, manualSell, setMaxPositions, resetPaperPortfolio,
+  getLessons,
 } from './services/autonomous-trader.service.js';

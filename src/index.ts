@@ -38,6 +38,7 @@ import {
   getTradeHistory,
   setMaxPositions,
   resetPaperPortfolio,
+  getLessons,
 } from '@wildtrade/plugin-smart-trader';
 
 const requiredEnvVars = [
@@ -367,6 +368,7 @@ async function main(): Promise<void> {
             maxPositions: tStats.maxPositions,
             positions: openPos,
             history,
+            lessons: getLessons(),
           },
         });
       }

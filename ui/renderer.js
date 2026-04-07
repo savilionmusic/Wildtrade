@@ -690,6 +690,35 @@ function refreshPortfolio() {
         histContainer.appendChild(div);
       }
     }
+
+    // ── Lessons (Brain) ──
+    const lessonsContainer = document.getElementById('lessons-container');
+    const lessonsList = data.lessons || [];
+    if (lessonsContainer) {
+      if (lessonsList.length === 0) {
+        lessonsContainer.innerHTML = '<div class="positions-empty">No lessons yet. I\'ll learn from every trade.</div>';
+      } else {
+        lessonsContainer.innerHTML = '';
+        for (const l of lessonsList) {
+          const conf = Math.round((l.confidence || 0) * 100);
+          const icon = l.dimension === 'mcap' ? '\uD83C\uDFAF'
+            : l.dimension === 'score' ? '\uD83D\uDCCA'
+            : l.dimension === 'hold_time' ? '\u23F1\uFE0F'
+            : l.dimension === 'dca' ? '\uD83D\uDCC8'
+            : l.dimension === 'size' ? '\uD83D\uDCB0'
+            : l.dimension === 'exits' ? '\uD83D\uDEA8'
+            : '\uD83E\uDDE0';
+          const div = document.createElement('div');
+          div.className = 'lesson-row';
+          div.innerHTML = `
+            <span class="lesson-icon">${icon}</span>
+            <span class="lesson-text">${escapeHtml(l.insight)}</span>
+            <span class="lesson-conf">${conf}%</span>
+          `;
+          lessonsContainer.appendChild(div);
+        }
+      }
+    }
   }).catch(() => {});
 }
 

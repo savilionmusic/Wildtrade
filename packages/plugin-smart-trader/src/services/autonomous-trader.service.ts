@@ -126,7 +126,46 @@ interface TradeMemoryEntry {
   exitReason: string;
   timestamp: number;
   phase: string;
+  // New learning fields
+  hour: number;          // Hour of day (0-23) when trade was opened
+  dcaLegs: number;       // How many DCA legs were executed
+  positionSizeSol: number; // How much SOL was deployed
 }
+
+// ── Adaptive Learning Engine ──
+interface Lesson {
+  dimension: string;      // What was analyzed (mcap, score, hold_time, hour, dca, etc)
+  insight: string;        // Human-readable lesson
+  action: string;         // What parameter to adjust
+  value: number;          // The adjustment value
+  confidence: number;     // 0-1 based on sample size
+  updatedAt: number;
+}
+
+interface DimensionStats {
+  wins: number;
+  losses: number;
+  avgPnl: number;
+  totalTrades: number;
+  bestPnl: number;
+  worstPnl: number;
+}
+
+// Learning state
+const lessons: Lesson[] = [];
+const scorePerformance = new Map<string, DimensionStats>();    // score ranges: "50-60", "60-70", etc
+const holdTimePerformance = new Map<string, DimensionStats>(); // "<15m", "15-30m", "30-60m", "1-2h", ">2h"
+const hourPerformance = new Map<string, DimensionStats>();     // "0"-"23"
+const dcaPerformance = new Map<string, DimensionStats>();      // "1leg", "2legs", "3legs"
+const exitReasonStats = new Map<string, DimensionStats>();     // stop_loss, take-profit, time_exit, etc
+
+// Dynamic strategy adjustments (learned overrides)
+let learnedMinScore = 0;          // Additive adjustment to min score
+let learnedPositionSizeMult = 1;  // Multiplier on position size (0.5-1.5)
+let learnedMaxHoldMs = 0;         // 0 = use defaults, otherwise learned optimal
+let preferredMCapBuckets: string[] = [];  // Buckets to prefer
+let avoidMCapBuckets: string[] = [];      // Buckets to avoid
+let learnedDcaAggression = 1;     // Multiplier on DCA amount (0.5-2.0)
 
 // ── State ──
 let running = false;
@@ -193,21 +232,300 @@ function getAdaptiveMinScore(): number {
   const phase = getCurrentPhase();
   let minScore = phase.minScore;
 
+  // Apply learned adjustment
+  minScore += learnedMinScore;
+
   // Adapt based on win rate after 3+ trades
   if (tradeCount >= 3) {
     const wr = winCount / tradeCount;
     if (wr < 0.25) {
-      minScore = Math.min(80, minScore + 15);
-      log(`Learning: win rate ${(wr * 100).toFixed(0)}% — raising threshold to ${minScore}`);
+      minScore += 15;
     } else if (wr < 0.4) {
-      minScore = Math.min(75, minScore + 8);
+      minScore += 8;
     } else if (wr > 0.6) {
-      minScore = Math.max(50, minScore - 5);
+      minScore -= 5;
     }
   }
 
-  // Adapt based on MCap bucket memory — boost if a bucket is performing well
-  return minScore;
+  // Adapt based on recent performance (last 10 trades) — more reactive
+  const recent = tradeHistory.slice(-10);
+  if (recent.length >= 5) {
+    const recentWR = recent.filter(t => t.pnlPct > 0).length / recent.length;
+    if (recentWR < 0.2) {
+      minScore += 10; // Recent cold streak — be pickier
+    } else if (recentWR > 0.7) {
+      minScore -= 3;  // Recent hot streak — slightly more aggressive
+    }
+  }
+
+  return Math.max(45, Math.min(85, minScore));
+}
+
+// ── Learning Analysis Helpers ──
+
+function getScoreBucket(score: number): string {
+  if (score < 55) return '<55';
+  if (score < 65) return '55-65';
+  if (score < 75) return '65-75';
+  return '75+';
+}
+
+function getHoldTimeBucket(ms: number): string {
+  const mins = ms / 60_000;
+  if (mins < 15) return '<15m';
+  if (mins < 30) return '15-30m';
+  if (mins < 60) return '30-60m';
+  if (mins < 120) return '1-2h';
+  return '>2h';
+}
+
+function updateDimensionStats(
+  map: Map<string, DimensionStats>,
+  bucket: string,
+  pnlPct: number,
+): void {
+  const existing = map.get(bucket) || { wins: 0, losses: 0, avgPnl: 0, totalTrades: 0, bestPnl: -Infinity, worstPnl: Infinity };
+  if (pnlPct > 0) existing.wins++;
+  else existing.losses++;
+  existing.totalTrades++;
+  existing.avgPnl = ((existing.avgPnl * (existing.totalTrades - 1)) + pnlPct) / existing.totalTrades;
+  existing.bestPnl = Math.max(existing.bestPnl, pnlPct);
+  existing.worstPnl = Math.min(existing.worstPnl, pnlPct);
+  map.set(bucket, existing);
+}
+
+/**
+ * Analyze a closed trade across every dimension and generate lessons.
+ * Called after every trade close — the core of the learning engine.
+ */
+function analyzeTradeAndLearn(entry: TradeMemoryEntry): void {
+  // Update all dimension trackers
+  const mcapBucket = getMCapBucket(entry.entryMCap);
+  const scoreBucket = getScoreBucket(entry.entryScore);
+  const holdBucket = getHoldTimeBucket(entry.holdTimeMs);
+  const hourBucket = String(entry.hour);
+  const dcaBucket = `${entry.dcaLegs}legs`;
+
+  updateDimensionStats(mcapPerformance, mcapBucket, entry.pnlPct);
+  updateDimensionStats(scorePerformance, scoreBucket, entry.pnlPct);
+  updateDimensionStats(holdTimePerformance, holdBucket, entry.pnlPct);
+  updateDimensionStats(hourPerformance, hourBucket, entry.pnlPct);
+  updateDimensionStats(dcaPerformance, dcaBucket, entry.pnlPct);
+
+  // Extract exit category
+  const exitCat = entry.exitReason.includes('stop_loss') ? 'stop_loss'
+    : entry.exitReason.includes('take-profit') ? 'take_profit'
+    : entry.exitReason.includes('trailing') ? 'trailing_stop'
+    : entry.exitReason.includes('time_exit') ? 'time_exit'
+    : entry.exitReason.includes('momentum') ? 'momentum_exit'
+    : 'other';
+  updateDimensionStats(exitReasonStats, exitCat, entry.pnlPct);
+
+  // Generate lessons (only after enough data)
+  if (tradeHistory.length >= 5) {
+    generateLessons();
+  }
+
+  // Log the learning event
+  const pSign = entry.pnlPct >= 0 ? '+' : '';
+  log(`LEARNING: ${entry.symbol} ${pSign}${entry.pnlPct.toFixed(1)}% | MCap:${mcapBucket} Score:${scoreBucket} Hold:${holdBucket} Hour:${hourBucket} DCA:${dcaBucket} Exit:${exitCat}`);
+}
+
+/**
+ * Analyze all tracked dimensions and produce actionable lessons.
+ * Adjusts live trading parameters based on patterns.
+ */
+function generateLessons(): void {
+  lessons.length = 0;
+  const now = Date.now();
+
+  // ── 1. MCap Bucket Analysis ──
+  const bestMCapBucket = findBestBucket(mcapPerformance);
+  const worstMCapBucket = findWorstBucket(mcapPerformance);
+
+  preferredMCapBuckets = [];
+  avoidMCapBuckets = [];
+
+  if (bestMCapBucket) {
+    const stats = mcapPerformance.get(bestMCapBucket)!;
+    if (stats.totalTrades >= 3 && stats.avgPnl > 5) {
+      preferredMCapBuckets.push(bestMCapBucket);
+      lessons.push({
+        dimension: 'mcap', insight: `${bestMCapBucket} MCap is our sweet spot (${stats.avgPnl.toFixed(1)}% avg, ${wr(stats)} WR)`,
+        action: 'prefer_mcap', value: 0, confidence: Math.min(1, stats.totalTrades / 10), updatedAt: now,
+      });
+    }
+  }
+  if (worstMCapBucket) {
+    const stats = mcapPerformance.get(worstMCapBucket)!;
+    if (stats.totalTrades >= 3 && stats.avgPnl < -10) {
+      avoidMCapBuckets.push(worstMCapBucket);
+      lessons.push({
+        dimension: 'mcap', insight: `Avoid ${worstMCapBucket} MCap (${stats.avgPnl.toFixed(1)}% avg, ${wr(stats)} WR) — bleeding money`,
+        action: 'avoid_mcap', value: 0, confidence: Math.min(1, stats.totalTrades / 10), updatedAt: now,
+      });
+    }
+  }
+
+  // ── 2. Score Analysis ──
+  const bestScoreBucket = findBestBucket(scorePerformance);
+  const worstScoreBucket = findWorstBucket(scorePerformance);
+
+  if (bestScoreBucket && worstScoreBucket && bestScoreBucket !== worstScoreBucket) {
+    const bestStats = scorePerformance.get(bestScoreBucket)!;
+    const worstStats = scorePerformance.get(worstScoreBucket)!;
+
+    if (bestStats.totalTrades >= 3 && worstStats.totalTrades >= 3) {
+      // If low-score tokens are losing money, raise the bar
+      if (worstScoreBucket === '<55' || worstScoreBucket === '55-65') {
+        if (worstStats.avgPnl < -5) {
+          learnedMinScore = Math.min(15, Math.max(learnedMinScore, Math.abs(worstStats.avgPnl) * 0.5));
+          lessons.push({
+            dimension: 'score', insight: `Low-score tokens (${worstScoreBucket}) lose ${Math.abs(worstStats.avgPnl).toFixed(1)}% avg — raising bar by ${learnedMinScore.toFixed(0)} pts`,
+            action: 'raise_min_score', value: learnedMinScore, confidence: Math.min(1, worstStats.totalTrades / 8), updatedAt: now,
+          });
+        }
+      }
+      // If high-score tokens are crushing it, note that
+      if (bestStats.avgPnl > 10) {
+        lessons.push({
+          dimension: 'score', insight: `High-score tokens (${bestScoreBucket}) avg +${bestStats.avgPnl.toFixed(1)}% — these are our bread & butter`,
+          action: 'note', value: 0, confidence: Math.min(1, bestStats.totalTrades / 8), updatedAt: now,
+        });
+      }
+    }
+  }
+
+  // ── 3. Hold Time Analysis ──
+  const bestHold = findBestBucket(holdTimePerformance);
+  const worstHold = findWorstBucket(holdTimePerformance);
+
+  if (bestHold) {
+    const stats = holdTimePerformance.get(bestHold)!;
+    if (stats.totalTrades >= 3) {
+      // Convert bucket name to max hold time
+      const holdMs = bestHold === '<15m' ? 15 * 60_000 : bestHold === '15-30m' ? 30 * 60_000
+        : bestHold === '30-60m' ? 60 * 60_000 : bestHold === '1-2h' ? 120 * 60_000 : 0;
+      if (holdMs > 0) learnedMaxHoldMs = holdMs;
+      lessons.push({
+        dimension: 'hold_time', insight: `Best hold time: ${bestHold} (${stats.avgPnl.toFixed(1)}% avg) — quick flips ${bestHold.includes('m') ? 'work best' : 'vs longer holds'}`,
+        action: 'optimal_hold', value: holdMs, confidence: Math.min(1, stats.totalTrades / 8), updatedAt: now,
+      });
+    }
+  }
+  if (worstHold) {
+    const stats = holdTimePerformance.get(worstHold)!;
+    if (stats.totalTrades >= 3 && stats.avgPnl < -5) {
+      lessons.push({
+        dimension: 'hold_time', insight: `Holding ${worstHold} loses ${Math.abs(stats.avgPnl).toFixed(1)}% avg — exit faster`,
+        action: 'avoid_hold', value: 0, confidence: Math.min(1, stats.totalTrades / 8), updatedAt: now,
+      });
+    }
+  }
+
+  // ── 4. DCA Analysis ──
+  const bestDca = findBestBucket(dcaPerformance);
+  if (bestDca) {
+    const stats = dcaPerformance.get(bestDca)!;
+    const worstDca = findWorstBucket(dcaPerformance);
+    const worstStats = worstDca ? dcaPerformance.get(worstDca) : null;
+
+    if (stats.totalTrades >= 3) {
+      const legs = parseInt(bestDca);
+      if (legs <= 1 && stats.avgPnl > (worstStats?.avgPnl ?? 0) + 5) {
+        learnedDcaAggression = Math.max(0.5, learnedDcaAggression - 0.1);
+        lessons.push({
+          dimension: 'dca', insight: `Single-leg entries outperform DCA (${stats.avgPnl.toFixed(1)}% vs ${worstStats?.avgPnl.toFixed(1)}%) — reducing DCA aggression`,
+          action: 'reduce_dca', value: learnedDcaAggression, confidence: Math.min(1, stats.totalTrades / 8), updatedAt: now,
+        });
+      } else if (legs >= 3) {
+        learnedDcaAggression = Math.min(2.0, learnedDcaAggression + 0.1);
+        lessons.push({
+          dimension: 'dca', insight: `Full DCA (3 legs) has +${stats.avgPnl.toFixed(1)}% avg — DCA is working, staying aggressive`,
+          action: 'increase_dca', value: learnedDcaAggression, confidence: Math.min(1, stats.totalTrades / 8), updatedAt: now,
+        });
+      }
+    }
+  }
+
+  // ── 5. Position Size Analysis ──
+  if (tradeHistory.length >= 8) {
+    const sorted = [...tradeHistory].sort((a, b) => a.positionSizeSol - b.positionSizeSol);
+    const smallHalf = sorted.slice(0, Math.floor(sorted.length / 2));
+    const bigHalf = sorted.slice(Math.floor(sorted.length / 2));
+
+    const smallAvgPnl = smallHalf.reduce((s, t) => s + t.pnlPct, 0) / smallHalf.length;
+    const bigAvgPnl = bigHalf.reduce((s, t) => s + t.pnlPct, 0) / bigHalf.length;
+
+    if (smallAvgPnl > bigAvgPnl + 5) {
+      learnedPositionSizeMult = Math.max(0.5, learnedPositionSizeMult - 0.05);
+      lessons.push({
+        dimension: 'size', insight: `Smaller positions avg +${smallAvgPnl.toFixed(1)}% vs +${bigAvgPnl.toFixed(1)}% for larger — scaling down`,
+        action: 'reduce_size', value: learnedPositionSizeMult, confidence: 0.5, updatedAt: now,
+      });
+    } else if (bigAvgPnl > smallAvgPnl + 10) {
+      learnedPositionSizeMult = Math.min(1.5, learnedPositionSizeMult + 0.05);
+      lessons.push({
+        dimension: 'size', insight: `Larger positions avg +${bigAvgPnl.toFixed(1)}% vs +${smallAvgPnl.toFixed(1)}% for smaller — scaling up`,
+        action: 'increase_size', value: learnedPositionSizeMult, confidence: 0.5, updatedAt: now,
+      });
+    }
+  }
+
+  // ── 6. Exit Reason Analysis ──
+  const stopLossStats = exitReasonStats.get('stop_loss');
+  if (stopLossStats && stopLossStats.totalTrades >= 3) {
+    const stopLossRate = stopLossStats.totalTrades / tradeCount;
+    if (stopLossRate > 0.4) {
+      lessons.push({
+        dimension: 'exits', insight: `${(stopLossRate * 100).toFixed(0)}% of trades hit stop loss — entries are too aggressive or stop too tight`,
+        action: 'widen_stop_or_raise_score', value: stopLossRate, confidence: 0.7, updatedAt: now,
+      });
+      learnedMinScore = Math.min(20, learnedMinScore + 3);
+    }
+  }
+
+  // Log lessons
+  if (lessons.length > 0) {
+    log(`=== LEARNING ENGINE: ${lessons.length} lessons generated ===`);
+    for (const l of lessons) {
+      log(`  [${l.dimension}] ${l.insight} (confidence: ${(l.confidence * 100).toFixed(0)}%)`);
+    }
+    log(`  Adjustments: minScore${learnedMinScore >= 0 ? '+' : ''}${learnedMinScore.toFixed(0)} | sizeMult:${learnedPositionSizeMult.toFixed(2)} | dcaAggression:${learnedDcaAggression.toFixed(2)}`);
+    log(`  Prefer: [${preferredMCapBuckets.join(',')}] | Avoid: [${avoidMCapBuckets.join(',')}]`);
+  }
+}
+
+function findBestBucket(map: Map<string, DimensionStats>): string | null {
+  let best: string | null = null;
+  let bestPnl = -Infinity;
+  for (const [k, v] of map.entries()) {
+    if (v.totalTrades >= 2 && v.avgPnl > bestPnl) {
+      bestPnl = v.avgPnl;
+      best = k;
+    }
+  }
+  return best;
+}
+
+function findWorstBucket(map: Map<string, DimensionStats>): string | null {
+  let worst: string | null = null;
+  let worstPnl = Infinity;
+  for (const [k, v] of map.entries()) {
+    if (v.totalTrades >= 2 && v.avgPnl < worstPnl) {
+      worstPnl = v.avgPnl;
+      worst = k;
+    }
+  }
+  return worst;
+}
+
+function wr(stats: DimensionStats): string {
+  return `${((stats.wins / Math.max(1, stats.totalTrades)) * 100).toFixed(0)}%`;
+}
+
+export function getLessons(): Lesson[] {
+  return lessons;
 }
 
 function getTradesToday(): number {
@@ -453,7 +771,8 @@ async function pollForSignals(): Promise<void> {
       }
 
       const available = totalBudgetSol - deployedSol + realizedPnlSol;
-      const positionSize = Math.min(phase.positionSizeMax, Math.max(phase.positionSizeMin, available * 0.25));
+      const baseSize = Math.min(phase.positionSizeMax, Math.max(phase.positionSizeMin, available * 0.25));
+      const positionSize = Math.max(phase.positionSizeMin, baseSize * learnedPositionSizeMult); // Apply learned size adjustment
 
       if (positionSize < phase.positionSizeMin || available < phase.positionSizeMin) {
         log(`Budget tight — available: ${available.toFixed(4)} SOL, need ${phase.positionSizeMin} SOL`);
@@ -464,7 +783,14 @@ async function pollForSignals(): Promise<void> {
       const symbol = String(row.symbol ?? mintAddress.slice(0, 8));
       const mcap = Number(row.market_cap_usd ?? 0);
 
-      log(`ENTERING POSITION: ${symbol} | Score: ${score.total} | MCap: $${mcap.toLocaleString()} | Budget: ${positionSize.toFixed(4)} SOL | ${phase.name}`);
+      // Learning: skip MCap buckets we've learned to avoid
+      const mcapBucket = getMCapBucket(mcap);
+      if (avoidMCapBuckets.includes(mcapBucket)) {
+        log(`LEARNING SKIP: ${symbol} in avoided MCap bucket ${mcapBucket}`);
+        continue;
+      }
+
+      log(`ENTERING POSITION: ${symbol} | Score: ${score.total} | MCap: $${mcap.toLocaleString()} | Size: ${positionSize.toFixed(4)} SOL (x${learnedPositionSizeMult.toFixed(2)}) | ${phase.name}`);
       alert('dca_entry', `Entering ${symbol} — Score: ${score.total}/100, MCap: $${mcap.toLocaleString()}, DCA ${positionSize.toFixed(4)} SOL [${phase.name}]`);
 
       recordTrade();
@@ -689,7 +1015,7 @@ async function executeSell(position: Position, sellPct: number, reason: string):
     if (pnlSol > 0) winCount++;
 
     // Record in trade history for learning
-    tradeHistory.push({
+    const entry: TradeMemoryEntry = {
       mint: position.mintAddress,
       symbol: position.symbol,
       entryScore: position.entryScore,
@@ -699,19 +1025,17 @@ async function executeSell(position: Position, sellPct: number, reason: string):
       exitReason: reason,
       timestamp: Date.now(),
       phase: getCurrentPhase().name,
-    });
+      hour: new Date(position.openedAt).getHours(),
+      dcaLegs: position.dcaLegsExecuted,
+      positionSizeSol: position.solDeployed,
+    };
+    tradeHistory.push(entry);
     if (tradeHistory.length > 500) tradeHistory.shift();
 
-    // Update MCap bucket performance for learning
-    const bucket = getMCapBucket(position.marketCap);
-    const existing = mcapPerformance.get(bucket) || { wins: 0, losses: 0, avgPnl: 0 };
-    if (pnlSol > 0) existing.wins++;
-    else existing.losses++;
-    const totalTrades = existing.wins + existing.losses;
-    existing.avgPnl = ((existing.avgPnl * (totalTrades - 1)) + pnlPct) / totalTrades;
-    mcapPerformance.set(bucket, existing);
+    // Run the learning engine on this trade
+    analyzeTradeAndLearn(entry);
 
-    log(`TRADE MEMORY: ${bucket} MCap bucket now ${existing.wins}W/${existing.losses}L (avg ${existing.avgPnl.toFixed(1)}% PnL)`);
+    log(`TRADE MEMORY: ${getMCapBucket(position.marketCap)} MCap | Score:${getScoreBucket(position.entryScore)} | Hold:${getHoldTimeBucket(entry.holdTimeMs)}`);
   } else {
     position.status = 'partial_exit';
   }
@@ -790,20 +1114,22 @@ async function checkPricesAndExits(): Promise<void> {
         continue;
       }
 
-      // ── Time-based exit: sell if flat (0.8x-1.2x) for 2+ hours ──
-      if (holdMins >= 120 && multiplier >= 0.8 && multiplier <= 1.2) {
-        log(`TIME EXIT: ${position.symbol} flat at ${multiplier.toFixed(2)}x for ${Math.round(holdMins)}m — freeing capital`);
+      // ── Time-based exit: use learned optimal hold time, or default 2h ──
+      const maxHoldMins = learnedMaxHoldMs > 0 ? learnedMaxHoldMs / 60_000 : 120;
+      if (holdMins >= maxHoldMins && multiplier >= 0.8 && multiplier <= 1.2) {
+        log(`TIME EXIT: ${position.symbol} flat at ${multiplier.toFixed(2)}x for ${Math.round(holdMins)}m (learned max: ${Math.round(maxHoldMins)}m) — freeing capital`);
         await executeSell(position, 1.0, `time_exit (flat ${multiplier.toFixed(2)}x, ${Math.round(holdMins)}m)`);
         continue;
       }
 
-      // ── Smart DCA: if dipped 20-40% from entry but within first 30 mins ──
+      // ── Smart DCA: if dipped 20-40% from entry, apply learned DCA aggression ──
       if (multiplier >= 0.6 && multiplier <= 0.8 && holdMins <= 30 && position.dcaLegsExecuted < 3) {
         const phase = getCurrentPhase();
         const available = totalBudgetSol - deployedSol + realizedPnlSol;
-        const dcaAmount = Math.min(phase.positionSizeMin, available * 0.15);
+        const baseDca = Math.min(phase.positionSizeMin, available * 0.15);
+        const dcaAmount = baseDca * learnedDcaAggression; // Apply learned DCA multiplier
         if (dcaAmount >= 0.01) {
-          log(`SMART DCA: ${position.symbol} dipped to ${multiplier.toFixed(2)}x — adding ${dcaAmount.toFixed(4)} SOL`);
+          log(`SMART DCA: ${position.symbol} dipped to ${multiplier.toFixed(2)}x — adding ${dcaAmount.toFixed(4)} SOL (aggression: ${learnedDcaAggression.toFixed(2)}x)`);
           alert('dca_entry', `Smart DCA: ${position.symbol} dipped ${((1 - multiplier) * 100).toFixed(0)}% — adding ${dcaAmount.toFixed(4)} SOL`);
           await executeBuy(position, dcaAmount, position.dcaLegsExecuted + 1);
         }
@@ -918,6 +1244,27 @@ async function saveState(): Promise<void> {
       [JSON.stringify(mcapData)],
     );
 
+    // Save all learning dimension data
+    const learningState = {
+      scorePerformance: Object.fromEntries(scorePerformance.entries()),
+      holdTimePerformance: Object.fromEntries(holdTimePerformance.entries()),
+      hourPerformance: Object.fromEntries(hourPerformance.entries()),
+      dcaPerformance: Object.fromEntries(dcaPerformance.entries()),
+      exitReasonStats: Object.fromEntries(exitReasonStats.entries()),
+      learnedMinScore,
+      learnedPositionSizeMult,
+      learnedMaxHoldMs,
+      learnedDcaAggression,
+      preferredMCapBuckets,
+      avoidMCapBuckets,
+      lessons,
+    };
+    await db.query(
+      `INSERT INTO trader_state (key, value) VALUES ('learning', $1)
+       ON CONFLICT (key) DO UPDATE SET value = $1`,
+      [JSON.stringify(learningState)],
+    );
+
     // Save open positions to DB
     for (const p of positions.values()) {
       await db.query(
@@ -980,6 +1327,37 @@ async function restoreState(): Promise<void> {
       for (const [k, v] of Object.entries(saved)) {
         mcapPerformance.set(k, v as { wins: number; losses: number; avgPnl: number });
       }
+    }
+
+    // Restore learning state
+    const learnResult = await db.query(`SELECT value FROM trader_state WHERE key = 'learning'`);
+    const learnRows = learnResult?.rows ?? [];
+    if (learnRows.length > 0) {
+      const saved = JSON.parse(String((learnRows[0] as { value: string }).value));
+      // Restore dimension maps
+      const restoreMap = (map: Map<string, DimensionStats>, data: Record<string, DimensionStats>) => {
+        map.clear();
+        for (const [k, v] of Object.entries(data || {})) map.set(k, v);
+      };
+      restoreMap(scorePerformance, saved.scorePerformance);
+      restoreMap(holdTimePerformance, saved.holdTimePerformance);
+      restoreMap(hourPerformance, saved.hourPerformance);
+      restoreMap(dcaPerformance, saved.dcaPerformance);
+      restoreMap(exitReasonStats, saved.exitReasonStats);
+
+      // Restore learned parameters
+      learnedMinScore = saved.learnedMinScore ?? 0;
+      learnedPositionSizeMult = saved.learnedPositionSizeMult ?? 1;
+      learnedMaxHoldMs = saved.learnedMaxHoldMs ?? 0;
+      learnedDcaAggression = saved.learnedDcaAggression ?? 1;
+      preferredMCapBuckets = saved.preferredMCapBuckets ?? [];
+      avoidMCapBuckets = saved.avoidMCapBuckets ?? [];
+
+      // Restore lessons
+      lessons.length = 0;
+      for (const l of (saved.lessons ?? [])) lessons.push(l);
+
+      log(`Learning restored: ${lessons.length} lessons, minScore adj: ${learnedMinScore >= 0 ? '+' : ''}${learnedMinScore}, sizeMult: ${learnedPositionSizeMult.toFixed(2)}, avoid: [${avoidMCapBuckets.join(',')}]`);
     }
 
     // Restore open positions
@@ -1046,12 +1424,24 @@ export async function resetPaperPortfolio(): Promise<string> {
     positions.clear();
     tradeHistory.length = 0;
     mcapPerformance.clear();
+    scorePerformance.clear();
+    holdTimePerformance.clear();
+    hourPerformance.clear();
+    dcaPerformance.clear();
+    exitReasonStats.clear();
+    lessons.length = 0;
     pendingDcaLegs = [];
     tradeTimes.length = 0;
     deployedSol = 0;
     realizedPnlSol = 0;
     tradeCount = 0;
     winCount = 0;
+    learnedMinScore = 0;
+    learnedPositionSizeMult = 1;
+    learnedMaxHoldMs = 0;
+    learnedDcaAggression = 1;
+    preferredMCapBuckets = [];
+    avoidMCapBuckets = [];
     totalBudgetSol = parseFloat(process.env.TOTAL_BUDGET_SOL || '1.0');
 
     // Clear DB

@@ -8,6 +8,10 @@ import { createAuditorRuntime } from './agents/auditor.js';
 import { createSocketServer, broadcast } from './server.js';
 import { initApprovalGate } from './approval-gate.js';
 import { startCLI } from './cli.js';
+import {
+  startSmartMoneyMonitor,
+  stopSmartMoneyMonitor,
+} from '@wildtrade/plugin-alpha-scout';
 
 const requiredEnvVars = [
   'OPENROUTER_API_KEY',
@@ -71,20 +75,75 @@ async function main(): Promise<void> {
 
   console.log('[boot] All agents initialized.');
 
-  // Phase 5: Health Heartbeat
+  // Phase 5: Smart Money Monitor
+  console.log('[boot] Starting smart money monitor...');
+  const userWallets = (process.env.SMART_MONEY_WALLETS ?? '')
+    .split(',')
+    .map(w => w.trim())
+    .filter(Boolean);
+
+  await startSmartMoneyMonitor(
+    (signal) => {
+      // When a cluster is detected, log it and broadcast to UI
+      console.log(`[smart-money] CLUSTER: ${signal.tokenSymbol || signal.tokenAddress.slice(0, 8)} — ${signal.smartWalletCount} wallets, ${signal.totalSolInvested.toFixed(2)} SOL, ${signal.confidence} confidence`);
+
+      broadcast('smart-money:cluster', 'finder', {
+        tokenAddress: signal.tokenAddress,
+        tokenSymbol: signal.tokenSymbol,
+        tokenName: signal.tokenName,
+        smartWalletCount: signal.smartWalletCount,
+        totalSolInvested: signal.totalSolInvested,
+        confidence: signal.confidence,
+        detectedAt: signal.detectedAt,
+      });
+
+      // Feed the cluster signal into the Finder agent as a message
+      // so it can run through SMART_MONEY_SCAN action
+      const clusterPayload = JSON.stringify({
+        tokenAddress: signal.tokenAddress,
+        tokenSymbol: signal.tokenSymbol,
+        tokenName: signal.tokenName,
+        smartWalletCount: signal.smartWalletCount,
+        totalSolInvested: signal.totalSolInvested,
+        avgMarketCap: signal.avgMarketCap,
+        confidence: signal.confidence,
+        tokenInfo: signal.tokenInfo,
+      });
+
+      console.log(`[smart-money] Feeding cluster to Finder agent for scoring...`);
+      // Create a memory in the finder's runtime that triggers SMART_MONEY_SCAN
+      finder.messageManager.createMemory({
+        id: crypto.randomUUID() as any,
+        userId: '00000000-0000-0000-0000-000000000001' as any,
+        agentId: finder.agentId,
+        roomId: '00000000-0000-0000-0000-000000000099' as any,
+        content: {
+          text: `SMART_MONEY_CLUSTER ${clusterPayload}`,
+        },
+        createdAt: Date.now(),
+      }).catch(err => {
+        console.log(`[smart-money] Error feeding to Finder: ${String(err)}`);
+      });
+    },
+    userWallets.length > 0 ? userWallets : undefined,
+  );
+  console.log('[boot] Smart money monitor started.');
+
+  // Phase 6: Health Heartbeat
   const heartbeatInterval = setInterval(() => {
     broadcast('agent:status', 'finder', { agent: 'finder', status: 'online' });
     broadcast('agent:status', 'trader', { agent: 'trader', status: 'online' });
     broadcast('agent:status', 'auditor', { agent: 'auditor', status: 'online' });
   }, 30_000);
 
-  // Phase 6: CLI
+  // Phase 7: CLI
   startCLI({ finder, trader, auditor, io });
 
-  // Phase 7: Graceful Shutdown
+  // Phase 8: Graceful Shutdown
   const shutdown = async () => {
     console.log('\n[shutdown] Graceful shutdown initiated...');
     clearInterval(heartbeatInterval);
+    stopSmartMoneyMonitor();
 
     broadcast('agent:status', 'finder', { agent: 'finder', status: 'offline' });
     broadcast('agent:status', 'trader', { agent: 'trader', status: 'offline' });

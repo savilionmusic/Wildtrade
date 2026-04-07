@@ -195,6 +195,9 @@ function addLog(level, message) {
   botLogs.push(entry);
   if (botLogs.length > MAX_LOGS) botLogs.shift();
   sendToRenderer('bot:log', entry);
+
+  // Parse for trade activity to feed into chat context
+  parseLogForActivity(message);
 }
 
 function sendToRenderer(channel, data) {
@@ -254,6 +257,59 @@ ipcMain.handle('bot:logs', () => botLogs);
 // ── AI Chat via OpenRouter ──
 let chatHistory = [];
 
+// Trade activity log for the chat to reference
+let tradeActivity = [];
+const MAX_TRADE_ACTIVITY = 50;
+
+function addTradeActivity(entry) {
+  tradeActivity.push({ ...entry, timestamp: Date.now() });
+  if (tradeActivity.length > MAX_TRADE_ACTIVITY) tradeActivity.shift();
+  // Also push to renderer as a chat notification
+  sendToRenderer('bot:trade-update', entry);
+}
+
+// Parse bot logs for trade activity and smart money signals
+function parseLogForActivity(message) {
+  const msg = message.toLowerCase();
+
+  if (msg.includes('cluster detected') || msg.includes('smart_money_cluster')) {
+    const match = message.match(/CLUSTER DETECTED:\s*(\S+)\s*\|\s*(\d+)\s*wallets?\s*\|\s*([\d.]+)\s*SOL/i);
+    if (match) {
+      addTradeActivity({
+        type: 'smart_money_alert',
+        symbol: match[1],
+        wallets: parseInt(match[2]),
+        sol: parseFloat(match[3]),
+        message: message,
+      });
+    }
+  }
+
+  if (msg.includes('signal forwarded to trader') || msg.includes('forwarded to trader')) {
+    addTradeActivity({ type: 'signal_forwarded', message });
+  }
+
+  if (msg.includes('dca') && (msg.includes('executed') || msg.includes('entry'))) {
+    addTradeActivity({ type: 'dca_entry', message });
+  }
+
+  if (msg.includes('exit') && (msg.includes('triggered') || msg.includes('sold'))) {
+    addTradeActivity({ type: 'exit', message });
+  }
+
+  if (msg.includes('position') && (msg.includes('opened') || msg.includes('created'))) {
+    addTradeActivity({ type: 'position_opened', message });
+  }
+
+  if (msg.includes('position') && (msg.includes('closed') || msg.includes('cancelled'))) {
+    addTradeActivity({ type: 'position_closed', message });
+  }
+
+  if (msg.includes('honeypot') || msg.includes('rugcheck failed') || msg.includes('denylist')) {
+    addTradeActivity({ type: 'safety_alert', message });
+  }
+}
+
 ipcMain.handle('chat:send', async (_, message) => {
   const config = loadConfig();
   const apiKey = config.OPENROUTER_API_KEY;
@@ -261,40 +317,67 @@ ipcMain.handle('chat:send', async (_, message) => {
     return { error: 'No OpenRouter API key set. Go to Settings and add one.' };
   }
 
-  // Build system context with current bot state
   const botStatus = botProcess ? 'running' : 'stopped';
-  const recentLogs = botLogs.slice(-15).map(l => l.message).join('\n');
+  const recentLogs = botLogs.slice(-20).map(l => `[${l.level}] ${l.message}`).join('\n');
+  const recentTrades = tradeActivity.slice(-10).map(t => {
+    const ago = Math.round((Date.now() - t.timestamp) / 60000);
+    return `[${ago}m ago] ${t.type}: ${t.message}`;
+  }).join('\n');
 
-  const systemPrompt = `You are the Wildtrade assistant, built into a Solana trading bot desktop app. You help users set up, troubleshoot, and understand their trading bot.
+  const systemPrompt = `You are Wildtrade — an elite Solana trading partner and best friend. You're not just a bot, you're the user's personal trading expert who manages their portfolio, finds alpha, and makes smart trades on their behalf.
 
-Current bot state:
-- Status: ${botStatus}
-- Mode: ${config.PAPER_TRADING !== false ? 'Paper Trading (simulated)' : 'LIVE TRADING (real funds)'}
+PERSONALITY:
+- Talk like a sharp, experienced trader friend — confident, direct, a bit casual
+- Use trading slang naturally: "aping in", "bags", "moonshot", "rugged", "based", "degen", "LFG"
+- Be excited about good signals, cautious about risks, honest about losses
+- Give the user real-time play-by-play of what you're doing, like a friend texting from the trading desk
+- Keep responses punchy — 2-4 sentences usually. No essays unless they ask for detail
+- If something goes wrong, own it: "got wrecked on that one" not "an error occurred"
+- Celebrate wins together: "we just 3x'd on that play!"
+- Be proactive with insights: "I'm seeing a lot of smart money flowing into X right now"
+
+YOUR CAPABILITIES (the 10 SOL Challenge):
+- You run 3 AI agents: Scout (finds tokens), Executioner (trades them), Fixer (handles errors)
+- Scout monitors: Pump.fun new launches, GMGN smart money wallets, whale activity, Twitter KOLs
+- Smart money tracking: You fetch top wallets from GMGN, monitor their buys, and detect "cluster signals" when 2+ smart wallets buy the same token
+- Trading: DCA entries (20%/30%/50% legs), tiered exits (2x sell 50%, 5x sell 25%, 10x sell 25%)
+- Safety: RugCheck on every token, honeypot detection, denylist, RPC rotation
+- The goal is to turn ${config.TOTAL_BUDGET_SOL || '1.0'} SOL into 10 SOL using smart trading
+
+CURRENT STATE:
+- Bot: ${botStatus}
+- Mode: ${config.PAPER_TRADING !== false ? 'PAPER TRADING (simulated, no real money)' : 'LIVE TRADING (real funds at risk!)'}
 - Budget: ${config.TOTAL_BUDGET_SOL || '1.0'} SOL
-- Autonomous: ${config.AUTONOMOUS_MODE === true ? 'Yes' : 'No (approval required)'}
-- Finder model: ${config.FINDER_MODEL || 'anthropic/claude-sonnet-4-5'}
-- Trader model: ${config.TRADER_MODEL || 'openai/gpt-4o-mini'}
-- Auditor model: ${config.AUDITOR_MODEL || 'openai/gpt-4o-mini'}
+- Autonomous: ${config.AUTONOMOUS_MODE === true ? 'Yes — full auto trading' : 'No — asks before big trades'}
+- Models: Scout=${config.FINDER_MODEL || 'anthropic/claude-sonnet-4-5'}, Trader=${config.TRADER_MODEL || 'openai/gpt-4o-mini'}, Fixer=${config.AUDITOR_MODEL || 'openai/gpt-4o-mini'}
 
-Configured keys:
-- OpenRouter: ${apiKey ? 'Yes' : 'Missing'}
-- Helius: ${config.HELIUS_API_KEY ? 'Yes' : 'Not set'}
-- Twitter: ${config.TWITTER_BEARER_TOKEN ? 'Yes' : 'Not set'}
-- Wallet: ${config.WALLET_PUBLIC_KEY && config.WALLET_PUBLIC_KEY !== '11111111111111111111111111111111' ? 'Configured' : 'Using default (paper only)'}
-- Smart Money Wallets: ${config.SMART_MONEY_WALLETS ? 'Configured' : 'Not set'}
+CONFIGURED KEYS:
+- OpenRouter: Yes
+- Helius RPC: ${config.HELIUS_API_KEY ? 'Yes — fast whale tracking enabled' : 'No — using public RPC (slower, rate limited)'}
+- Twitter: ${config.TWITTER_BEARER_TOKEN ? 'Yes — KOL monitoring active' : 'Not set — missing KOL alpha'}
+- Wallet: ${config.WALLET_PUBLIC_KEY && config.WALLET_PUBLIC_KEY !== '11111111111111111111111111111111' ? 'Configured for live trading' : 'Default paper wallet'}
+- Smart Money Wallets: ${config.SMART_MONEY_WALLETS ? 'Custom wallets + GMGN auto-discovery' : 'GMGN auto-discovery only'}
 
-Recent logs:
-${recentLogs || '(no recent logs)'}
+RECENT TRADE ACTIVITY:
+${recentTrades || '(no trades yet — bot may need starting)'}
 
-Architecture: 3 agents (Scout/Finder scans Pump.fun + whale wallets, Executioner/Trader handles DCA entries and exits via Jupiter V6, Fixer/Auditor does self-healing/RPC rotation/honeypot detection). Built on ElizaOS v0.25.9.
+RECENT BOT LOGS:
+${recentLogs || '(no logs — bot is stopped)'}
 
-Be concise, helpful, and direct. If the user asks about setup, guide them to the Settings tab. If they report errors, analyze the recent logs above. You can suggest actions like "start the bot", "check settings", etc.`;
+INSTRUCTIONS:
+- When user asks about trades/portfolio, analyze the trade activity and logs above
+- When user asks to start: tell them you're firing up the squad and what to expect
+- When user wants status: give a quick tactical briefing — what's running, what you're watching, any open positions
+- If there are errors in logs: diagnose them and suggest fixes
+- If the bot is stopped and user seems confused: proactively suggest starting it
+- When discussing specific tokens: mention if smart money is buying, what the safety checks say
+- Always be ready to explain your trading decisions in plain language
+- If user asks about the 10 SOL challenge: explain strategy and current progress`;
 
   chatHistory.push({ role: 'user', content: message });
 
-  // Keep history manageable
-  if (chatHistory.length > 20) {
-    chatHistory = chatHistory.slice(-16);
+  if (chatHistory.length > 30) {
+    chatHistory = chatHistory.slice(-24);
   }
 
   try {
@@ -306,8 +389,8 @@ Be concise, helpful, and direct. If the user asks about setup, guide them to the
           { role: 'system', content: systemPrompt },
           ...chatHistory,
         ],
-        max_tokens: 500,
-        temperature: 0.7,
+        max_tokens: 800,
+        temperature: 0.8,
       });
 
       const req = https.request({

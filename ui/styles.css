@@ -481,3 +481,15 @@ body {
   0%, 60%, 100% { opacity: 0.3; transform: translateY(0); }
   30% { opacity: 1; transform: translateY(-4px); }
 }
+
+/* Trade notification bubbles in chat */
+.trade-notification .chat-bubble {
+  background: rgba(16, 185, 129, 0.08);
+  font-size: 12px;
+  padding: 8px 12px;
+}
+.trade-notification .chat-avatar {
+  font-size: 10px;
+  width: 28px;
+  height: 28px;
+}

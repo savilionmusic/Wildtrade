@@ -243,6 +243,46 @@ window.wildtrade.onBotLog(entry => addLogEntry(entry));
 window.wildtrade.onBotStatus(status => setBotStatus(status));
 window.wildtrade.onBotError(msg => addLogEntry({ time: Date.now(), level: 'error', message: msg }));
 
+// ── Proactive trade notifications in chat ──
+window.wildtrade.onTradeUpdate(update => {
+  const typeLabels = {
+    smart_money_alert: 'Smart Money Alert',
+    signal_forwarded: 'Signal Sent to Trader',
+    dca_entry: 'DCA Entry Executed',
+    exit: 'Exit Triggered',
+    position_opened: 'New Position',
+    position_closed: 'Position Closed',
+    safety_alert: 'Safety Warning',
+  };
+
+  const typeColors = {
+    smart_money_alert: '#3b82f6',
+    signal_forwarded: '#10b981',
+    dca_entry: '#10b981',
+    exit: '#f59e0b',
+    position_opened: '#10b981',
+    position_closed: '#8b5cf6',
+    safety_alert: '#ef4444',
+  };
+
+  const label = typeLabels[update.type] || 'Update';
+  const color = typeColors[update.type] || '#8b949e';
+  const msg = update.message || JSON.stringify(update);
+
+  const container = document.getElementById('chat-messages');
+  const div = document.createElement('div');
+  div.className = 'chat-msg bot trade-notification';
+  div.innerHTML = `
+    <div class="chat-avatar" style="background:${color}">W</div>
+    <div class="chat-bubble" style="border-left:3px solid ${color}">
+      <strong style="color:${color}">[${label}]</strong><br>
+      ${escapeHtml(msg)}
+    </div>
+  `;
+  container.appendChild(div);
+  container.scrollTop = container.scrollHeight;
+});
+
 // ── Init ──
 (async () => {
   await loadSettings();

@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "main": "electron/main.js",
+  "main": "electron/main.cjs",
   "workspaces": ["packages/*"],
   "scripts": {
     "dev": "bun run src/index.ts",

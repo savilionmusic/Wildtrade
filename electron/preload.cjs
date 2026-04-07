@@ -47,4 +47,7 @@ contextBridge.exposeInMainWorld('wildtrade', {
 
   // Portfolio
   getPortfolio: () => ipcRenderer.invoke('portfolio:get'),
+
+  // Runtime config
+  setConfig: (key, value) => ipcRenderer.invoke('config:set-runtime', key, value),
 });

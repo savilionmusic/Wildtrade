@@ -36,6 +36,7 @@ import {
   getTraderStats,
   getOpenPositions,
   getTradeHistory,
+  setMaxPositions,
 } from '@wildtrade/plugin-smart-trader';
 
 const requiredEnvVars = [
@@ -362,10 +363,17 @@ async function main(): Promise<void> {
             targetMCap: tStats.targetMCap,
             tradesToday: tStats.tradesToday,
             maxTradesToday: tStats.maxTradesToday,
+            maxPositions: tStats.maxPositions,
             positions: openPos,
             history,
           },
         });
+      }
+      if (msg?.type === 'config:set') {
+        if (msg.key === 'MAX_POSITIONS') {
+          setMaxPositions(Number(msg.value));
+          console.log(`[config] Max positions set to ${msg.value}`);
+        }
       }
     });
   }

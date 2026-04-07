@@ -156,6 +156,15 @@
         <div style="display:flex;gap:12px;align-items:center">
           <span id="portfolio-mode" class="mode-badge paper">PAPER</span>
           <span id="portfolio-phase" class="phase-badge">Phase 1</span>
+          <label class="max-trades-label">Max positions:
+            <select id="max-positions-select" class="max-trades-select" onchange="app.setMaxPositions(this.value)">
+              <option value="1">1</option>
+              <option value="2">2</option>
+              <option value="3" selected>3</option>
+              <option value="4">4</option>
+              <option value="5">5</option>
+            </select>
+          </label>
         </div>
       </div>
 

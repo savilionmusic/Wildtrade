@@ -695,6 +695,23 @@ a.token-link::before { content: '🔗 '; font-size: 10px; }
 .mode-badge.paper { background: rgba(245, 158, 11, 0.15); color: var(--yellow); }
 .mode-badge.live { background: rgba(239, 68, 68, 0.15); color: var(--red); }
 
+.max-trades-label {
+  font-size: 12px;
+  color: var(--text-dim);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.max-trades-select {
+  background: var(--bg-input);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 3px 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
 .pnl-up { color: var(--green) !important; }
 .pnl-down { color: var(--red) !important; }
 

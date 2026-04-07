@@ -43,6 +43,7 @@ const MAX_TRADES_PER_DAY = 20;
 const MAX_TRADES_PER_HOUR = 5;
 const MAX_DAILY_LOSS_PCT = 30;  // Stop trading if down 30% of budget in a day
 const tradeTimes: number[] = [];  // timestamps of recent trades
+let userMaxPositions: number | null = null; // User override from portfolio UI
 
 // ── Progressive Strategy Phases ──
 interface TradingPhase {
@@ -366,6 +367,7 @@ export function getTraderStats(): {
     targetMCap: `$${(phase.targetMCapMin / 1000).toFixed(0)}k-$${(phase.targetMCapMax / 1000).toFixed(0)}k`,
     tradesToday: getTradesToday(),
     maxTradesToday: MAX_TRADES_PER_DAY,
+    maxPositions: userMaxPositions ?? phase.maxPositions,
   };
 }
 
@@ -389,6 +391,11 @@ export function getTradeHistory(): TradeMemoryEntry[] {
   return tradeHistory;
 }
 
+export function setMaxPositions(n: number): void {
+  userMaxPositions = Math.max(1, Math.min(5, n));
+  log(`Max positions set to ${userMaxPositions}`);
+}
+
 // ── Signal Polling ──
 
 async function pollForSignals(): Promise<void> {
@@ -407,7 +414,8 @@ async function pollForSignals(): Promise<void> {
     const minScore = getAdaptiveMinScore();
     const openCount = Array.from(positions.values()).filter(p => p.status === 'open' || p.status === 'partial_exit').length;
 
-    if (openCount >= phase.maxPositions) return; // Max positions for this phase
+    const maxPos = userMaxPositions ?? phase.maxPositions;
+    if (openCount >= maxPos) return; // Max positions limit
 
     // Get qualifying signals — filter by MCap range for current phase
     const result = await db.query(

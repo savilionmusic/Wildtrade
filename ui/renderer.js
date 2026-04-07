@@ -610,6 +610,12 @@ function refreshPortfolio() {
     setElColor('pf-realized', `${realSign}${(data.realized ?? 0).toFixed(4)} SOL`, (data.realized ?? 0) >= 0 ? 'var(--green)' : 'var(--red)');
     setElColor('pf-unrealized', `${unrSign}${(data.unrealized ?? 0).toFixed(4)} SOL`, (data.unrealized ?? 0) >= 0 ? 'var(--green)' : 'var(--red)');
 
+    // Sync max positions dropdown with server value
+    const maxPosSel = document.getElementById('max-positions-select');
+    if (maxPosSel && data.maxPositions != null) {
+      maxPosSel.value = String(data.maxPositions);
+    }
+
     // ── Dashboard cards ──
     document.getElementById('val-positions').textContent = data.positions.length;
     const dashPnl = document.getElementById('val-pnl');
@@ -694,6 +700,14 @@ document.querySelector('[data-tab="portfolio"]')?.addEventListener('click', () =
     portfolioInterval = setInterval(refreshPortfolio, 3000);
   }
 });
+
+// ── Set max positions from portfolio dropdown ──
+app.setMaxPositions = function(val) {
+  const n = parseInt(val, 10);
+  if (n >= 1 && n <= 5 && window.wildtrade.setConfig) {
+    window.wildtrade.setConfig('MAX_POSITIONS', n);
+  }
+};
 
 // ── Sell position from portfolio ──
 app.sellPosition = async function(mint, pct) {

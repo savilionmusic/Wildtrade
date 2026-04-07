@@ -500,6 +500,12 @@ ipcMain.handle('portfolio:get', async () => {
   });
 });
 
+ipcMain.handle('config:set-runtime', (_, key, value) => {
+  if (botProcess) {
+    botProcess.send({ type: 'config:set', key, value });
+  }
+});
+
 // ── App lifecycle ──
 app.whenReady().then(createWindow);
 

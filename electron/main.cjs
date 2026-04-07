@@ -255,8 +255,7 @@ ipcMain.handle('bot:status', () => {
 
 ipcMain.handle('bot:logs', () => botLogs);
 
-// ── AI Chat via OpenRouter ──
-let chatHistory = [];
+// ── AI Chat ──
 
 // Trade activity log for the chat to reference
 let tradeActivity = [];

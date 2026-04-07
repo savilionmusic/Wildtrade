@@ -1,5 +1,7 @@
 import 'dotenv/config';
+import { mkdirSync } from 'fs';
 import { getDb, closeDb } from '@wildtrade/shared';
+import { getElizaAdapter } from './db-adapter.js';
 import { createFinderRuntime } from './agents/finder.js';
 import { createTraderRuntime } from './agents/trader.js';
 import { createAuditorRuntime } from './agents/auditor.js';
@@ -35,29 +37,33 @@ async function main(): Promise<void> {
   console.log(`[boot] Mode: ${paperMode ? 'PAPER TRADING' : '⚠️  LIVE TRADING'}`);
   console.log(`[boot] Autonomous: ${autonomousMode ? 'ON' : 'OFF (approval required for large trades)'}`);
 
-  // Phase 2: Database
-  console.log('[boot] Initializing database...');
-  await getDb();
-  console.log('[boot] Database ready.');
+  // Phase 2: Database (ensure dir exists)
+  const dbDir = process.env.PGLITE_DATA_DIR || './.wildtrade-db';
+  mkdirSync(dbDir, { recursive: true });
+
+  console.log('[boot] Initializing databases...');
+  await getDb();                          // PGLite for trading domain tables
+  const elizaAdapter = await getElizaAdapter(); // SQLite for ElizaOS memory tables
+  console.log('[boot] Databases ready.');
 
   // Phase 3: Socket.IO Server
   console.log('[boot] Starting Socket.IO server...');
   const { io } = createSocketServer();
   initApprovalGate(io);
 
-  // Phase 4: Agent Runtimes
+  // Phase 4: Agent Runtimes (shared SQLite adapter)
   const token = process.env.OPENROUTER_API_KEY!;
 
   console.log('[boot] Creating Auditor agent (Fixer)...');
-  const auditor = createAuditorRuntime(token);
+  const auditor = createAuditorRuntime(token, elizaAdapter);
   await auditor.initialize();
 
   console.log('[boot] Creating Finder agent (Scout)...');
-  const finder = createFinderRuntime(token);
+  const finder = createFinderRuntime(token, elizaAdapter);
   await finder.initialize();
 
   console.log('[boot] Creating Trader agent (Executioner)...');
-  const trader = createTraderRuntime(token);
+  const trader = createTraderRuntime(token, elizaAdapter);
   await trader.initialize();
 
   console.log('[boot] All agents initialized.');

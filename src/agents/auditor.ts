@@ -1,9 +1,9 @@
 import { AgentRuntime } from '@elizaos/core';
-import type { Character } from '@elizaos/core';
+import type { Character, IDatabaseAdapter } from '@elizaos/core';
 import { pluginSelfHealer } from '@wildtrade/plugin-self-healer';
 import auditorCharacter from '../../characters/auditor.character.json';
 
-export function createAuditorRuntime(token: string): AgentRuntime {
+export function createAuditorRuntime(token: string, databaseAdapter: IDatabaseAdapter): AgentRuntime {
   const character = auditorCharacter as unknown as Character;
   character.settings = character.settings || {};
   character.settings.secrets = {
@@ -15,6 +15,7 @@ export function createAuditorRuntime(token: string): AgentRuntime {
     token,
     modelProvider: 'openrouter' as any,
     character,
+    databaseAdapter,
     plugins: [pluginSelfHealer],
     logging: process.env.LOG_LEVEL === 'debug',
   });

@@ -1,10 +1,10 @@
 import { AgentRuntime } from '@elizaos/core';
-import type { Character } from '@elizaos/core';
+import type { Character, IDatabaseAdapter } from '@elizaos/core';
 import { pluginSmartTrader } from '@wildtrade/plugin-smart-trader';
 import { pluginSelfHealer } from '@wildtrade/plugin-self-healer';
 import traderCharacter from '../../characters/trader.character.json';
 
-export function createTraderRuntime(token: string): AgentRuntime {
+export function createTraderRuntime(token: string, databaseAdapter: IDatabaseAdapter): AgentRuntime {
   const character = traderCharacter as unknown as Character;
   character.settings = character.settings || {};
   character.settings.secrets = {
@@ -16,6 +16,7 @@ export function createTraderRuntime(token: string): AgentRuntime {
     token,
     modelProvider: 'openrouter' as any,
     character,
+    databaseAdapter,
     plugins: [pluginSmartTrader, pluginSelfHealer],
     logging: process.env.LOG_LEVEL === 'debug',
   });

@@ -15,7 +15,6 @@ await build({
   sourcemap: true,
   external: [
     'better-sqlite3',
-    'sharp',
     '@img/sharp-*',
     '@anush008/tokenizers',
     '@anush008/tokenizers-*',
@@ -27,6 +26,7 @@ await build({
     'sql.js',
   ],
   alias: {
+    'sharp': path.join(root, 'scripts', 'stub-sharp', 'index.js'),
     '@wildtrade/shared': path.join(root, 'packages', 'shared', 'src', 'index.ts'),
     '@wildtrade/plugin-alpha-scout': path.join(root, 'packages', 'plugin-alpha-scout', 'src', 'index.ts'),
     '@wildtrade/plugin-smart-trader': path.join(root, 'packages', 'plugin-smart-trader', 'src', 'index.ts'),

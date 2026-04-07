@@ -42,6 +42,10 @@ export {
 } from './services/smart-money-monitor.service.js';
 export type { SmartMoneySignal, SmartMoneyCallback, WalletBuy } from './services/smart-money-monitor.service.js';
 
+export {
+  startScanner, stopScanner, getScannerStats,
+} from './services/scanner-engine.service.js';
+
 // Re-export lib utilities
 export { calculateCompositeScore } from './lib/score-calculator.js';
 export type { ScoreParams } from './lib/score-calculator.js';

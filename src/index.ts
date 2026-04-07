@@ -11,6 +11,8 @@ import { startCLI } from './cli.js';
 import {
   startSmartMoneyMonitor,
   stopSmartMoneyMonitor,
+  startScanner,
+  stopScanner,
 } from '@wildtrade/plugin-alpha-scout';
 
 const requiredEnvVars = [
@@ -129,20 +131,28 @@ async function main(): Promise<void> {
   );
   console.log('[boot] Smart money monitor started.');
 
-  // Phase 6: Health Heartbeat
+  // Phase 6: Token Scanner (PumpFun + DexScreener)
+  console.log('[boot] Starting token scanner (PumpPortal + DexScreener)...');
+  startScanner(finder, (level, msg) => {
+    console.log(`[scanner] ${msg}`);
+  });
+  console.log('[boot] Token scanner active — watching for new launches and trending tokens.');
+
+  // Phase 7: Health Heartbeat
   const heartbeatInterval = setInterval(() => {
     broadcast('agent:status', 'finder', { agent: 'finder', status: 'online' });
     broadcast('agent:status', 'trader', { agent: 'trader', status: 'online' });
     broadcast('agent:status', 'auditor', { agent: 'auditor', status: 'online' });
   }, 30_000);
 
-  // Phase 7: CLI
+  // Phase 8: CLI
   startCLI({ finder, trader, auditor, io });
 
-  // Phase 8: Graceful Shutdown
+  // Phase 9: Graceful Shutdown
   const shutdown = async () => {
     console.log('\n[shutdown] Graceful shutdown initiated...');
     clearInterval(heartbeatInterval);
+    stopScanner();
     stopSmartMoneyMonitor();
 
     broadcast('agent:status', 'finder', { agent: 'finder', status: 'offline' });

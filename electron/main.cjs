@@ -101,7 +101,7 @@ function startBot() {
 
   botProcess = fork(botScript, [], {
     cwd: app.isPackaged ? path.join(process.resourcesPath, 'bot') : path.join(__dirname, '..'),
-    env: { ...process.env, ...dotenvParse(config) },
+    env: { ...process.env, ...buildBotEnv(config) },
     stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
   });
 
@@ -154,6 +154,40 @@ function dotenvParse(config) {
     }
   }
   return env;
+}
+
+// Build complete env for the bot process with all defaults
+function buildBotEnv(config) {
+  const parsed = dotenvParse(config);
+  return {
+    OPENROUTER_API_KEY: parsed.OPENROUTER_API_KEY || '',
+    OPENROUTER_BASE_URL: 'https://openrouter.ai/api/v1',
+    WALLET_PUBLIC_KEY: parsed.WALLET_PUBLIC_KEY || '11111111111111111111111111111111',
+    WALLET_PRIVATE_KEY: parsed.WALLET_PRIVATE_KEY || '',
+    SOLANA_RPC_HELIUS: parsed.SOLANA_RPC_HELIUS || 'https://api.mainnet-beta.solana.com',
+    SOLANA_RPC_PUBLIC: 'https://api.mainnet-beta.solana.com',
+    HELIUS_API_KEY: parsed.HELIUS_API_KEY || '',
+    PAPER_TRADING: parsed.PAPER_TRADING === 'false' ? 'false' : 'true',
+    AUTONOMOUS_MODE: parsed.AUTONOMOUS_MODE === 'true' ? 'true' : 'false',
+    MAX_POSITION_SIZE_SOL: parsed.MAX_POSITION_SIZE_SOL || '1.0',
+    TOTAL_BUDGET_SOL: parsed.TOTAL_BUDGET_SOL || '1.0',
+    MIN_SCORE_THRESHOLD: parsed.MIN_SCORE_THRESHOLD || '65',
+    JUPITER_API_BASE: 'https://quote-api.jup.ag/v6',
+    JUPITER_SLIPPAGE_BPS: parsed.JUPITER_SLIPPAGE_BPS || '300',
+    RUGCHECK_API_BASE: 'https://api.rugcheck.xyz/v1',
+    RUGCHECK_MIN_SCORE: parsed.RUGCHECK_MIN_SCORE || '70',
+    PUMPPORTAL_WS_URL: 'wss://pumpportal.fun/api/data',
+    TWITTER_BEARER_TOKEN: parsed.TWITTER_BEARER_TOKEN || '',
+    TWITTER_KOL_USER_IDS: parsed.TWITTER_KOL_USER_IDS || '',
+    SMART_MONEY_WALLETS: parsed.SMART_MONEY_WALLETS || '',
+    FINDER_MODEL: parsed.FINDER_MODEL || 'anthropic/claude-sonnet-4-5',
+    TRADER_MODEL: parsed.TRADER_MODEL || 'openai/gpt-4o-mini',
+    AUDITOR_MODEL: parsed.AUDITOR_MODEL || 'openai/gpt-4o-mini',
+    SOCKET_IO_PORT: '3001',
+    SOCKET_IO_CORS_ORIGIN: 'http://localhost:3000',
+    PGLITE_DATA_DIR: path.join(getConfigDir(), 'db'),
+    LOG_LEVEL: 'info',
+  };
 }
 
 function addLog(level, message) {

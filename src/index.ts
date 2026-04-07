@@ -11,14 +11,17 @@ import { startCLI } from './cli.js';
 
 const requiredEnvVars = [
   'OPENROUTER_API_KEY',
-  'WALLET_PUBLIC_KEY',
 ];
 
 function validateEnv(): void {
+  // Set defaults for paper trading
+  if (!process.env.WALLET_PUBLIC_KEY) {
+    process.env.WALLET_PUBLIC_KEY = '11111111111111111111111111111111';
+  }
   const missing = requiredEnvVars.filter((v) => !process.env[v]);
   if (missing.length > 0) {
     console.error(`[boot] Missing required env vars: ${missing.join(', ')}`);
-    console.error('[boot] Copy .env.example to .env and fill in your values.');
+    console.error('[boot] Go to Settings in the app and add your OpenRouter API key.');
     process.exit(1);
   }
 }

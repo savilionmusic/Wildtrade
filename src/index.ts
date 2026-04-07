@@ -37,6 +37,7 @@ import {
   getOpenPositions,
   getTradeHistory,
   setMaxPositions,
+  setMaxTradesPerDay,
   resetPaperPortfolio,
   getLessons,
 } from '@wildtrade/plugin-smart-trader';
@@ -376,6 +377,10 @@ async function main(): Promise<void> {
         if (msg.key === 'MAX_POSITIONS') {
           setMaxPositions(Number(msg.value));
           console.log(`[config] Max positions set to ${msg.value}`);
+        }
+        if (msg.key === 'MAX_TRADES_PER_DAY') {
+          setMaxTradesPerDay(Number(msg.value));
+          console.log(`[config] Max trades per day set to ${msg.value}`);
         }
       }
 

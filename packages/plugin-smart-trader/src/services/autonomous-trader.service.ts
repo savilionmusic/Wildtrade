@@ -39,10 +39,11 @@ const STOP_LOSS_MULTIPLIER = 0.5;
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
 
 // ── Trade Limits ──
-const MAX_TRADES_PER_DAY = 20;
+let maxTradesPerDay = 20;
 const MAX_TRADES_PER_HOUR = 5;
 const MAX_DAILY_LOSS_PCT = 30;  // Stop trading if down 30% of budget in a day
-const tradeTimes: number[] = [];  // timestamps of recent trades
+// Track unique coins traded (mint + timestamp), not individual DCA legs
+const coinEntries: Array<{ mint: string; timestamp: number }> = [];
 let userMaxPositions: number | null = null; // User override from portfolio UI
 
 // ── Progressive Strategy Phases ──
@@ -530,24 +531,29 @@ export function getLessons(): Lesson[] {
 
 function getTradesToday(): number {
   const dayAgo = Date.now() - 86_400_000;
-  return tradeTimes.filter(t => t > dayAgo).length;
+  // Count unique mints entered today
+  const todayEntries = coinEntries.filter(e => e.timestamp > dayAgo);
+  const uniqueMints = new Set(todayEntries.map(e => e.mint));
+  return uniqueMints.size;
 }
 
 function getTradesThisHour(): number {
   const hourAgo = Date.now() - 3_600_000;
-  return tradeTimes.filter(t => t > hourAgo).length;
+  const hourEntries = coinEntries.filter(e => e.timestamp > hourAgo);
+  const uniqueMints = new Set(hourEntries.map(e => e.mint));
+  return uniqueMints.size;
 }
 
-function recordTrade(): void {
-  tradeTimes.push(Date.now());
+function recordCoinEntry(mint: string): void {
+  coinEntries.push({ mint, timestamp: Date.now() });
   // Clean up old entries
   const weekAgo = Date.now() - 7 * 86_400_000;
-  while (tradeTimes.length > 0 && tradeTimes[0] < weekAgo) tradeTimes.shift();
+  while (coinEntries.length > 0 && coinEntries[0].timestamp < weekAgo) coinEntries.shift();
 }
 
 function canTrade(): { allowed: boolean; reason?: string } {
-  if (getTradesToday() >= MAX_TRADES_PER_DAY) {
-    return { allowed: false, reason: `Daily trade limit reached (${MAX_TRADES_PER_DAY})` };
+  if (getTradesToday() >= maxTradesPerDay) {
+    return { allowed: false, reason: `Daily trade limit reached (${maxTradesPerDay})` };
   }
   if (getTradesThisHour() >= MAX_TRADES_PER_HOUR) {
     return { allowed: false, reason: `Hourly trade limit reached (${MAX_TRADES_PER_HOUR})` };
@@ -620,7 +626,7 @@ export async function manualBuy(mintAddress: string, symbol: string, solAmount: 
   if (existing) return `Already in ${existing.symbol} — ${existing.solDeployed.toFixed(4)} SOL deployed`;
 
   log(`MANUAL BUY: ${symbol || mintAddress.slice(0, 8)} — ${buyAmount.toFixed(4)} SOL (from chat command)`);
-  recordTrade();
+  recordCoinEntry(mintAddress);
   await openPosition(`manual-${Date.now()}`, mintAddress, symbol || mintAddress.slice(0, 8), '', buyAmount, 70, 0);
 
   const pos = Array.from(positions.values()).find(p => p.mintAddress === mintAddress && p.status !== 'closed');
@@ -694,7 +700,7 @@ export function getTraderStats(): {
     phase: phase.name,
     targetMCap: `$${(phase.targetMCapMin / 1000).toFixed(0)}k-$${(phase.targetMCapMax / 1000).toFixed(0)}k`,
     tradesToday: getTradesToday(),
-    maxTradesToday: MAX_TRADES_PER_DAY,
+    maxTradesToday: maxTradesPerDay,
     maxPositions: userMaxPositions ?? phase.maxPositions,
   };
 }
@@ -722,6 +728,11 @@ export function getTradeHistory(): TradeMemoryEntry[] {
 export function setMaxPositions(n: number): void {
   userMaxPositions = Math.max(1, Math.min(5, n));
   log(`Max positions set to ${userMaxPositions}`);
+}
+
+export function setMaxTradesPerDay(n: number): void {
+  maxTradesPerDay = Math.max(1, Math.min(100, n));
+  log(`Max trades per day set to ${maxTradesPerDay}`);
 }
 
 // ── Signal Polling ──
@@ -793,7 +804,7 @@ async function pollForSignals(): Promise<void> {
       log(`ENTERING POSITION: ${symbol} | Score: ${score.total} | MCap: $${mcap.toLocaleString()} | Size: ${positionSize.toFixed(4)} SOL (x${learnedPositionSizeMult.toFixed(2)}) | ${phase.name}`);
       alert('dca_entry', `Entering ${symbol} — Score: ${score.total}/100, MCap: $${mcap.toLocaleString()}, DCA ${positionSize.toFixed(4)} SOL [${phase.name}]`);
 
-      recordTrade();
+      recordCoinEntry(mintAddress);
       await openPosition(
         String(row.id ?? uuidv4()),
         mintAddress, symbol,
@@ -858,7 +869,6 @@ async function openPosition(
   // Execute first DCA leg immediately (20%)
   const leg1Sol = budgetSol * DCA_LEGS[0];
   await executeBuy(position, leg1Sol, 1);
-  recordTrade(); // Count towards daily/hourly limits
 
   // Schedule remaining legs
   pendingDcaLegs.push({
@@ -1431,7 +1441,7 @@ export async function resetPaperPortfolio(): Promise<string> {
     exitReasonStats.clear();
     lessons.length = 0;
     pendingDcaLegs = [];
-    tradeTimes.length = 0;
+    coinEntries.length = 0;
     deployedSol = 0;
     realizedPnlSol = 0;
     tradeCount = 0;

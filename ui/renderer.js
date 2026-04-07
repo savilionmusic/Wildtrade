@@ -616,6 +616,12 @@ function refreshPortfolio() {
       maxPosSel.value = String(data.maxPositions);
     }
 
+    // Sync max trades/day dropdown with server value
+    const maxTradesSel = document.getElementById('max-trades-day-select');
+    if (maxTradesSel && data.maxTradesToday != null) {
+      maxTradesSel.value = String(data.maxTradesToday);
+    }
+
     // ── Dashboard cards ──
     document.getElementById('val-positions').textContent = data.positions.length;
     const dashPnl = document.getElementById('val-pnl');
@@ -735,6 +741,14 @@ app.setMaxPositions = function(val) {
   const n = parseInt(val, 10);
   if (n >= 1 && n <= 5 && window.wildtrade.setConfig) {
     window.wildtrade.setConfig('MAX_POSITIONS', n);
+  }
+};
+
+// ── Set max trades per day from portfolio dropdown ──
+app.setMaxTradesPerDay = function(val) {
+  const n = parseInt(val, 10);
+  if (n >= 1 && n <= 100 && window.wildtrade.setConfig) {
+    window.wildtrade.setConfig('MAX_TRADES_PER_DAY', n);
   }
 };
 

@@ -133,6 +133,7 @@ let running = false;
 let signalPollTimer: ReturnType<typeof setInterval> | null = null;
 let priceCheckTimer: ReturnType<typeof setInterval> | null = null;
 let dcaTimer: ReturnType<typeof setInterval> | null = null;
+let stateTimer: ReturnType<typeof setInterval> | null = null;
 let pendingDcaLegs: Array<{ positionId: string; leg: number; solAmount: number; mint: string; executeAt: number }> = [];
 
 const positions = new Map<string, Position>();
@@ -243,10 +244,10 @@ function canTrade(): { allowed: boolean; reason?: string } {
 
 // ── Public API ──
 
-export function startAutonomousTrader(opts: {
+export async function startAutonomousTrader(opts: {
   onLog?: TradingLogCb;
   onAlert?: (type: string, msg: string) => void;
-}): void {
+}): Promise<void> {
   if (running) return;
   running = true;
   if (opts.onLog) log = opts.onLog;
@@ -254,27 +255,36 @@ export function startAutonomousTrader(opts: {
 
   totalBudgetSol = parseFloat(process.env.TOTAL_BUDGET_SOL || '1.0');
 
+  // Restore saved state from DB
+  await restoreState();
+
   const paperMode = process.env.PAPER_TRADING !== 'false';
   const phase = getCurrentPhase();
+  const openCount = Array.from(positions.values()).filter(p => p.status === 'open' || p.status === 'partial_exit').length;
   log(`Autonomous trader ONLINE | Mode: ${paperMode ? 'PAPER' : 'LIVE'} | Budget: ${totalBudgetSol} SOL | ${phase.name}`);
+  log(`Restored: ${openCount} open positions, ${tradeHistory.length} history, ${realizedPnlSol.toFixed(4)} realized PnL`);
   log(`Target MCap: $${phase.targetMCapMin.toLocaleString()} - $${phase.targetMCapMax.toLocaleString()} | Position size: ${phase.positionSizeMin}-${phase.positionSizeMax} SOL`);
 
   signalPollTimer = setInterval(pollForSignals, POLL_INTERVAL_MS);
   priceCheckTimer = setInterval(checkPricesAndExits, PRICE_CHECK_INTERVAL_MS);
   dcaTimer = setInterval(processPendingDcaLegs, 10_000);
+  stateTimer = setInterval(saveState, 30_000); // Persist state every 30s
 
-  log('Signal polling active (every 15s) | Price monitoring active (every 30s)');
+  log('Signal polling active (every 15s) | Price monitoring active (every 30s) | State save every 30s');
 }
 
-export function stopAutonomousTrader(): void {
+export async function stopAutonomousTrader(): Promise<void> {
   running = false;
+  await saveState(); // Save before stopping
   if (signalPollTimer) clearInterval(signalPollTimer);
   if (priceCheckTimer) clearInterval(priceCheckTimer);
   if (dcaTimer) clearInterval(dcaTimer);
+  if (stateTimer) clearInterval(stateTimer);
   signalPollTimer = null;
   priceCheckTimer = null;
   dcaTimer = null;
-  log('Autonomous trader stopped');
+  stateTimer = null;
+  log('Autonomous trader stopped (state saved)');
 }
 
 export async function manualBuy(mintAddress: string, symbol: string, solAmount: number): Promise<string> {
@@ -763,30 +773,67 @@ async function checkPricesAndExits(): Promise<void> {
 
       position.currentPrice = price;
       const multiplier = price / position.entryPrice;
+      const holdTimeMs = Date.now() - position.openedAt;
+      const holdMins = holdTimeMs / 60_000;
 
-      // Check stop loss
-      if (multiplier <= STOP_LOSS_MULTIPLIER) {
-        log(`STOP LOSS triggered for ${position.symbol} at ${multiplier.toFixed(2)}x`);
-        await executeSell(position, 1.0, `stop_loss (${multiplier.toFixed(2)}x)`);
+      // ── Trailing stop: once we hit 1.5x, move stop to breakeven ──
+      const trailingStop = multiplier > 1.5 ? 1.0 : STOP_LOSS_MULTIPLIER;
+
+      // ── Stop loss (or trailing stop) ──
+      if (multiplier <= trailingStop) {
+        const reason = trailingStop > STOP_LOSS_MULTIPLIER
+          ? `trailing_stop (${multiplier.toFixed(2)}x, breakeven protected)`
+          : `stop_loss (${multiplier.toFixed(2)}x)`;
+        log(`${reason.toUpperCase()} triggered for ${position.symbol}`);
+        await executeSell(position, 1.0, reason);
         position.status = 'stopped_out';
         continue;
       }
 
-      // Check exit tiers
+      // ── Time-based exit: sell if flat (0.8x-1.2x) for 2+ hours ──
+      if (holdMins >= 120 && multiplier >= 0.8 && multiplier <= 1.2) {
+        log(`TIME EXIT: ${position.symbol} flat at ${multiplier.toFixed(2)}x for ${Math.round(holdMins)}m — freeing capital`);
+        await executeSell(position, 1.0, `time_exit (flat ${multiplier.toFixed(2)}x, ${Math.round(holdMins)}m)`);
+        continue;
+      }
+
+      // ── Smart DCA: if dipped 20-40% from entry but within first 30 mins ──
+      if (multiplier >= 0.6 && multiplier <= 0.8 && holdMins <= 30 && position.dcaLegsExecuted < 3) {
+        const phase = getCurrentPhase();
+        const available = totalBudgetSol - deployedSol + realizedPnlSol;
+        const dcaAmount = Math.min(phase.positionSizeMin, available * 0.15);
+        if (dcaAmount >= 0.01) {
+          log(`SMART DCA: ${position.symbol} dipped to ${multiplier.toFixed(2)}x — adding ${dcaAmount.toFixed(4)} SOL`);
+          alert('dca_entry', `Smart DCA: ${position.symbol} dipped ${((1 - multiplier) * 100).toFixed(0)}% — adding ${dcaAmount.toFixed(4)} SOL`);
+          await executeBuy(position, dcaAmount, position.dcaLegsExecuted + 1);
+        }
+      }
+
+      // ── Momentum exit: if lost 30%+ after 1 hour, cut losses early ──
+      if (multiplier <= 0.7 && holdMins >= 60) {
+        log(`MOMENTUM EXIT: ${position.symbol} at ${multiplier.toFixed(2)}x after ${Math.round(holdMins)}m — cutting losses`);
+        await executeSell(position, 1.0, `momentum_exit (${multiplier.toFixed(2)}x, ${Math.round(holdMins)}m)`);
+        continue;
+      }
+
+      // ── Exit tiers (take profit) ──
       for (let i = position.exitTiersHit; i < EXIT_TIERS.length; i++) {
         const tier = EXIT_TIERS[i];
         if (multiplier >= tier.multiplier) {
           log(`EXIT TIER ${i + 1} hit for ${position.symbol}: ${multiplier.toFixed(2)}x (target: ${tier.multiplier}x)`);
           await executeSell(position, tier.sellPct, `${tier.multiplier}x take-profit`);
-          break; // Only one tier per check cycle
+          break;
         }
       }
 
-      await sleep(1500); // Rate limit between price checks
+      await sleep(1500);
     } catch {
       continue;
     }
   }
+
+  // Save state after each price check cycle
+  await saveState();
 }
 
 // ── Price Helpers ──
@@ -841,4 +888,182 @@ function alert(type: string, message: string): void {
 
 function sleep(ms: number): Promise<void> {
   return new Promise(r => setTimeout(r, ms));
+}
+
+// ── State Persistence ──
+
+async function saveState(): Promise<void> {
+  try {
+    const db = await getDb();
+
+    // Save trader-level state
+    const state = {
+      totalBudgetSol,
+      deployedSol,
+      realizedPnlSol,
+      tradeCount,
+      winCount,
+    };
+    await db.query(
+      `INSERT INTO trader_state (key, value) VALUES ('portfolio', $1)
+       ON CONFLICT (key) DO UPDATE SET value = $1`,
+      [JSON.stringify(state)],
+    );
+
+    // Save MCap performance
+    const mcapData = Object.fromEntries(mcapPerformance.entries());
+    await db.query(
+      `INSERT INTO trader_state (key, value) VALUES ('mcap_performance', $1)
+       ON CONFLICT (key) DO UPDATE SET value = $1`,
+      [JSON.stringify(mcapData)],
+    );
+
+    // Save open positions to DB
+    for (const p of positions.values()) {
+      await db.query(
+        `INSERT INTO positions (id, signal_id, mint, symbol, name, status, budget_sol, entry_price_usd,
+          token_balance, sol_deployed, sol_returned, pnl_sol, pnl_pct, dca_legs, exit_tiers, paper, opened_at, closed_at, current_price_usd, entry_mcap)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+         ON CONFLICT (id) DO UPDATE SET
+           status=$6, token_balance=$9, sol_deployed=$10, sol_returned=$11,
+           pnl_sol=$12, pnl_pct=$13, current_price_usd=$19, closed_at=$18`,
+        [
+          p.id, p.signalId || '', p.mintAddress, p.symbol, p.name || '',
+          p.status, p.budgetSol, p.entryPrice,
+          p.tokenBalance, p.solDeployed, p.solReturned, p.pnlSol, p.pnlPct,
+          JSON.stringify(DCA_LEGS), JSON.stringify(EXIT_TIERS),
+          p.paper ? 1 : 0, p.openedAt, p.closedAt, p.currentPrice, p.marketCap,
+        ],
+      );
+    }
+
+    // Save trade history
+    for (const t of tradeHistory) {
+      await db.query(
+        `INSERT INTO trade_history (id, mint, symbol, entry_score, entry_mcap, pnl_pct, hold_time_ms, exit_reason, phase, closed_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+         ON CONFLICT (id) DO NOTHING`,
+        [
+          `${t.mint}-${t.timestamp}`, t.mint, t.symbol, t.entryScore, t.entryMCap,
+          t.pnlPct, t.holdTimeMs, t.exitReason, t.phase, t.timestamp,
+        ],
+      );
+    }
+  } catch (err) {
+    // State save is not fatal
+    log(`State save warning: ${String(err)}`);
+  }
+}
+
+async function restoreState(): Promise<void> {
+  try {
+    const db = await getDb();
+
+    // Restore portfolio state
+    const stateResult = await db.query(`SELECT value FROM trader_state WHERE key = 'portfolio'`);
+    const stateRows = stateResult?.rows ?? [];
+    if (stateRows.length > 0) {
+      const saved = JSON.parse(String((stateRows[0] as { value: string }).value));
+      totalBudgetSol = saved.totalBudgetSol ?? totalBudgetSol;
+      deployedSol = saved.deployedSol ?? 0;
+      realizedPnlSol = saved.realizedPnlSol ?? 0;
+      tradeCount = saved.tradeCount ?? 0;
+      winCount = saved.winCount ?? 0;
+    }
+
+    // Restore MCap performance
+    const mcapResult = await db.query(`SELECT value FROM trader_state WHERE key = 'mcap_performance'`);
+    const mcapRows = mcapResult?.rows ?? [];
+    if (mcapRows.length > 0) {
+      const saved = JSON.parse(String((mcapRows[0] as { value: string }).value));
+      mcapPerformance.clear();
+      for (const [k, v] of Object.entries(saved)) {
+        mcapPerformance.set(k, v as { wins: number; losses: number; avgPnl: number });
+      }
+    }
+
+    // Restore open positions
+    const posResult = await db.query(
+      `SELECT * FROM positions WHERE status IN ('open', 'partial_exit')`,
+    );
+    const posRows = (posResult?.rows ?? []) as Array<Record<string, unknown>>;
+    for (const row of posRows) {
+      const p: Position = {
+        id: String(row.id),
+        signalId: String(row.signal_id ?? ''),
+        mintAddress: String(row.mint),
+        symbol: String(row.symbol ?? ''),
+        name: String(row.name ?? ''),
+        status: String(row.status) as Position['status'],
+        budgetSol: Number(row.budget_sol ?? 0),
+        entryPrice: Number(row.entry_price_usd ?? 0),
+        currentPrice: Number(row.current_price_usd ?? 0),
+        tokenBalance: Number(row.token_balance ?? 0),
+        solDeployed: Number(row.sol_deployed ?? 0),
+        solReturned: Number(row.sol_returned ?? 0),
+        dcaLegsExecuted: 3, // Assume completed on restore
+        exitTiersHit: 0,
+        openedAt: Number(row.opened_at ?? Date.now()),
+        closedAt: row.closed_at ? Number(row.closed_at) : null,
+        pnlSol: Number(row.pnl_sol ?? 0),
+        pnlPct: Number(row.pnl_pct ?? 0),
+        paper: Number(row.paper ?? 1) === 1,
+        marketCap: Number(row.entry_mcap ?? 0),
+        entryScore: 0,
+      };
+      positions.set(p.id, p);
+    }
+
+    // Restore trade history
+    const histResult = await db.query(
+      `SELECT * FROM trade_history ORDER BY closed_at DESC LIMIT 200`,
+    );
+    const histRows = (histResult?.rows ?? []) as Array<Record<string, unknown>>;
+    tradeHistory.length = 0;
+    for (const row of histRows.reverse()) {
+      tradeHistory.push({
+        mint: String(row.mint),
+        symbol: String(row.symbol ?? ''),
+        entryScore: Number(row.entry_score ?? 0),
+        entryMCap: Number(row.entry_mcap ?? 0),
+        pnlPct: Number(row.pnl_pct ?? 0),
+        holdTimeMs: Number(row.hold_time_ms ?? 0),
+        exitReason: String(row.exit_reason ?? ''),
+        phase: String(row.phase ?? ''),
+        timestamp: Number(row.closed_at ?? Date.now()),
+      });
+    }
+  } catch (err) {
+    log(`State restore warning: ${String(err)} — starting fresh`);
+  }
+}
+
+export async function resetPaperPortfolio(): Promise<string> {
+  try {
+    const db = await getDb();
+
+    // Clear all positions and state
+    positions.clear();
+    tradeHistory.length = 0;
+    mcapPerformance.clear();
+    pendingDcaLegs = [];
+    tradeTimes.length = 0;
+    deployedSol = 0;
+    realizedPnlSol = 0;
+    tradeCount = 0;
+    winCount = 0;
+    totalBudgetSol = parseFloat(process.env.TOTAL_BUDGET_SOL || '1.0');
+
+    // Clear DB
+    await db.query(`DELETE FROM positions`);
+    await db.query(`DELETE FROM trade_history`);
+    await db.query(`DELETE FROM trader_state`);
+
+    log(`PORTFOLIO RESET: Back to ${totalBudgetSol} SOL, all trades cleared`);
+    alert('safety', `Portfolio reset to ${totalBudgetSol} SOL — clean slate`);
+
+    return `Portfolio reset to ${totalBudgetSol} SOL. All positions and trade history cleared.`;
+  } catch (err) {
+    return `Reset failed: ${String(err)}`;
+  }
 }

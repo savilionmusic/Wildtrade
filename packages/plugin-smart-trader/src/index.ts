@@ -39,5 +39,5 @@ export { getKeypair, getPublicKey } from './lib/wallet.js';
 export {
   startAutonomousTrader, stopAutonomousTrader,
   getTraderStats, getOpenPositions, getTradeHistory,
-  manualBuy, manualSell, setMaxPositions,
+  manualBuy, manualSell, setMaxPositions, resetPaperPortfolio,
 } from './services/autonomous-trader.service.js';

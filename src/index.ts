@@ -37,6 +37,7 @@ import {
   getOpenPositions,
   getTradeHistory,
   setMaxPositions,
+  resetPaperPortfolio,
 } from '@wildtrade/plugin-smart-trader';
 
 const requiredEnvVars = [
@@ -374,6 +375,11 @@ async function main(): Promise<void> {
           setMaxPositions(Number(msg.value));
           console.log(`[config] Max positions set to ${msg.value}`);
         }
+      }
+
+      if (msg?.type === 'portfolio:reset') {
+        const result = await resetPaperPortfolio();
+        process.send!({ type: 'portfolio:reset-response', id: msg.id, data: result });
       }
     });
   }

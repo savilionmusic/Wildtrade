@@ -709,6 +709,16 @@ app.setMaxPositions = function(val) {
   }
 };
 
+// ── Reset paper portfolio ──
+app.resetPortfolio = async function() {
+  if (!confirm('Reset portfolio back to 1 SOL? All positions and trade history will be cleared.')) return;
+  if (window.wildtrade.resetPortfolio) {
+    const result = await window.wildtrade.resetPortfolio();
+    addChatMessage('bot', typeof result === 'string' ? result : 'Portfolio reset.');
+    refreshPortfolio();
+  }
+};
+
 // ── Sell position from portfolio ──
 app.sellPosition = async function(mint, pct) {
   const result = await window.wildtrade.chatSend(`sell ${mint} ${pct * 100}%`);

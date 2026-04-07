@@ -54,7 +54,8 @@ CREATE TABLE IF NOT EXISTS positions (
   approved_by           TEXT,
   created_at            BIGINT,
   realized_pnl_sol      REAL,
-  last_reconciled_at    BIGINT
+  last_reconciled_at    BIGINT,
+  entry_mcap            REAL
 );
 
 CREATE INDEX IF NOT EXISTS idx_positions_mint ON positions(mint);
@@ -110,4 +111,24 @@ CREATE TABLE IF NOT EXISTS reconcile_log (
 );
 
 CREATE INDEX IF NOT EXISTS idx_reconcile_position ON reconcile_log(position_id);
+
+CREATE TABLE IF NOT EXISTS trader_state (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS trade_history (
+  id          TEXT PRIMARY KEY,
+  mint        TEXT NOT NULL,
+  symbol      TEXT NOT NULL DEFAULT '',
+  entry_score REAL NOT NULL DEFAULT 0,
+  entry_mcap  REAL NOT NULL DEFAULT 0,
+  pnl_pct     REAL NOT NULL DEFAULT 0,
+  hold_time_ms BIGINT NOT NULL DEFAULT 0,
+  exit_reason TEXT NOT NULL DEFAULT '',
+  phase       TEXT NOT NULL DEFAULT '',
+  closed_at   BIGINT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_trade_history_closed ON trade_history(closed_at DESC);
 `;

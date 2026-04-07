@@ -711,6 +711,12 @@ a.token-link::before { content: '🔗 '; font-size: 10px; }
   font-size: 12px;
   cursor: pointer;
 }
+.btn-reset {
+  font-size: 11px;
+  padding: 4px 10px;
+  color: var(--red);
+  border-color: var(--red);
+}
 
 .pnl-up { color: var(--green) !important; }
 .pnl-down { color: var(--red) !important; }

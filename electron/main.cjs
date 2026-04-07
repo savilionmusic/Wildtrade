@@ -373,12 +373,14 @@ function chatViaBotIPC(message) {
 function handleBotMessage(msg) {
   if (!msg || typeof msg !== 'object') return;
 
-  if (msg.type === 'chat:response' || msg.type === 'portfolio:response') {
+  if (msg.type === 'chat:response' || msg.type === 'portfolio:response' || msg.type === 'portfolio:reset-response') {
     const pending = pendingChatResponses.get(msg.id);
     if (pending) {
       clearTimeout(pending.timeout);
       pendingChatResponses.delete(msg.id);
       if (msg.type === 'portfolio:response') {
+        pending.resolve(msg.data);
+      } else if (msg.type === 'portfolio:reset-response') {
         pending.resolve(msg.data);
       } else if (msg.error) {
         pending.resolve({ error: msg.text });
@@ -504,6 +506,19 @@ ipcMain.handle('config:set-runtime', (_, key, value) => {
   if (botProcess) {
     botProcess.send({ type: 'config:set', key, value });
   }
+});
+
+ipcMain.handle('portfolio:reset', async () => {
+  if (!botProcess) return 'Bot not running';
+  return new Promise((resolve) => {
+    const id = ++chatIPCCounter;
+    const timeout = setTimeout(() => {
+      pendingChatResponses.delete(id);
+      resolve('Reset timed out');
+    }, 5000);
+    pendingChatResponses.set(id, { resolve, timeout });
+    botProcess.send({ type: 'portfolio:reset', id });
+  });
 });
 
 // ── App lifecycle ──

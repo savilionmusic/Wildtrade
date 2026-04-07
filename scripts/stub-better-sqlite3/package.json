@@ -1,0 +1,6 @@
+{
+  "name": "better-sqlite3",
+  "version": "11.8.1",
+  "description": "Stub: we use sql.js instead",
+  "main": "index.js"
+}

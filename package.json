@@ -61,7 +61,6 @@
     "bs58": "^6.0.0",
     "cross-fetch": "^4.1.0",
     "dotenv": "^16.4.7",
-    "onnxruntime-node": "1.15.1",
     "pino": "^9.6.0",
     "socket.io": "^4.8.1",
     "sql.js": "^1.14.1",
@@ -77,5 +76,8 @@
     "electron-builder": "^25.0.0",
     "esbuild": "^0.28.0",
     "typescript": "^5.7.3"
+  },
+  "overrides": {
+    "better-sqlite3": "./scripts/stub-better-sqlite3"
   }
 }

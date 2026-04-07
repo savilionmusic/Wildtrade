@@ -568,67 +568,118 @@ function refreshPortfolio() {
   window.wildtrade.getPortfolio().then(data => {
     if (!data) return;
 
-    // Stats cards
+    // Mode badge
     const mode = data.paper ? 'PAPER' : 'LIVE';
     document.getElementById('portfolio-mode').textContent = mode;
     document.getElementById('portfolio-mode').className = `mode-badge ${data.paper ? 'paper' : 'live'}`;
-    document.getElementById('pf-budget').textContent = `${data.budget} SOL`;
-    document.getElementById('pf-deployed').textContent = `${data.deployed} SOL`;
-    document.getElementById('pf-available').textContent = `${data.available} SOL`;
-    document.getElementById('pf-winrate').textContent = `${data.winRate}% (${data.trades})`;
 
-    const pnlBadge = document.getElementById('portfolio-pnl');
-    const pnlSign = data.realized >= 0 ? '+' : '';
-    pnlBadge.textContent = `PnL: ${pnlSign}${data.realized} SOL`;
-    pnlBadge.style.color = data.realized >= 0 ? 'var(--green)' : 'var(--red)';
+    // Phase badge
+    const phaseEl = document.getElementById('portfolio-phase');
+    if (phaseEl) phaseEl.textContent = data.phase || 'Phase 1';
 
-    // Dashboard cards
+    // ── Big PnL Hero ──
+    const totalPnl = data.totalPnl ?? data.realized ?? 0;
+    const totalPnlPct = data.totalPnlPct ?? 0;
+    const isUp = totalPnl >= 0;
+    const arrow = isUp ? '\u25B2' : '\u25BC';
+    const sign = isUp ? '+' : '';
+    const heroClass = totalPnl === 0 ? 'neutral' : (isUp ? 'up' : 'down');
+
+    const heroEl = document.getElementById('pnl-hero');
+    if (heroEl) heroEl.className = `pnl-hero ${heroClass}`;
+
+    const heroVal = document.getElementById('pnl-hero-value');
+    if (heroVal) heroVal.textContent = `${arrow} ${sign}${totalPnl.toFixed(4)} SOL`;
+
+    const heroPct = document.getElementById('pnl-hero-pct');
+    if (heroPct) heroPct.textContent = `${sign}${totalPnlPct.toFixed(2)}%`;
+
+    // ── Stat cards ──
+    const setEl = (id, txt) => { const e = document.getElementById(id); if (e) e.textContent = txt; };
+    const setElColor = (id, txt, color) => { const e = document.getElementById(id); if (e) { e.textContent = txt; e.style.color = color; } };
+
+    setEl('pf-value', `${(data.portfolioValue ?? data.budget).toFixed(4)} SOL`);
+    setEl('pf-deployed', `${data.deployed} SOL`);
+    setEl('pf-available', `${data.available} SOL`);
+    setEl('pf-winrate', `${data.winRate}% (${data.trades} trades)`);
+    setEl('pf-trades-today', `${data.tradesToday ?? 0} / ${data.maxTradesToday ?? 20}`);
+    setEl('pf-target-mcap', data.targetMCap || '-');
+
+    const realSign = (data.realized ?? 0) >= 0 ? '+' : '';
+    const unrSign = (data.unrealized ?? 0) >= 0 ? '+' : '';
+    setElColor('pf-realized', `${realSign}${(data.realized ?? 0).toFixed(4)} SOL`, (data.realized ?? 0) >= 0 ? 'var(--green)' : 'var(--red)');
+    setElColor('pf-unrealized', `${unrSign}${(data.unrealized ?? 0).toFixed(4)} SOL`, (data.unrealized ?? 0) >= 0 ? 'var(--green)' : 'var(--red)');
+
+    // ── Dashboard cards ──
     document.getElementById('val-positions').textContent = data.positions.length;
-    document.getElementById('val-pnl').textContent = `${pnlSign}${data.realized} SOL`;
-    document.getElementById('val-pnl').style.color = data.realized >= 0 ? 'var(--green)' : 'var(--red)';
+    const dashPnl = document.getElementById('val-pnl');
+    dashPnl.textContent = `${arrow} ${sign}${totalPnl.toFixed(4)} SOL`;
+    dashPnl.style.color = isUp ? 'var(--green)' : 'var(--red)';
 
-    // Open positions
+    const valBudget = document.getElementById('val-budget');
+    if (valBudget && data.portfolioValue != null) {
+      valBudget.textContent = `${data.portfolioValue.toFixed(4)} SOL`;
+    }
+
+    // ── Open positions with live PnL ──
     const posContainer = document.getElementById('positions-container');
     if (data.positions.length === 0) {
-      posContainer.innerHTML = '<div class="positions-empty">No open positions. The bot will enter trades when it finds qualifying signals.</div>';
+      posContainer.innerHTML = '<div class="positions-empty">No open positions. Bot scanning for qualifying signals...</div>';
     } else {
       posContainer.innerHTML = '';
       for (const p of data.positions) {
         const mult = p.currentPrice > 0 && p.entryPrice > 0 ? (p.currentPrice / p.entryPrice).toFixed(2) : '?';
-        const multClass = parseFloat(mult) >= 1 ? 'up' : 'down';
-        const pnlSign = p.pnlPct >= 0 ? '+' : '';
+        const pnlPct = p.pnlPct ?? 0;
+        const pnlSol = p.pnlSol ?? 0;
+        const posUp = pnlPct >= 0;
+        const posArrow = posUp ? '\u25B2' : '\u25BC';
+        const posColor = posUp ? 'var(--green)' : 'var(--red)';
+        const posSign = posUp ? '+' : '';
         const div = document.createElement('div');
         div.className = 'position-row';
         div.innerHTML = `
-          <span class="position-symbol"><a href="https://dexscreener.com/solana/${p.mintAddress}" target="_blank" class="token-link">${escapeHtml(p.symbol)}</a></span>
-          <span class="position-mult ${multClass}">${mult}x</span>
-          <span class="position-detail">${p.solDeployed.toFixed(4)} SOL | ${pnlSign}${p.pnlPct.toFixed(1)}% | DCA ${p.dcaLegsExecuted}/3</span>
+          <div class="position-left">
+            <span class="position-symbol"><a href="https://dexscreener.com/solana/${p.mintAddress}" target="_blank" class="token-link">${escapeHtml(p.symbol)}</a></span>
+            <span class="position-size">${p.solDeployed.toFixed(4)} SOL | DCA ${p.dcaLegsExecuted}/3</span>
+          </div>
+          <div class="position-center">
+            <span class="position-mult" style="color:${posColor}">${mult}x</span>
+          </div>
+          <div class="position-pnl" style="color:${posColor}">
+            <span class="pnl-arrow">${posArrow}</span>
+            <span class="pnl-pct">${posSign}${pnlPct.toFixed(1)}%</span>
+            <span class="pnl-sol">${posSign}${pnlSol.toFixed(4)} SOL</span>
+          </div>
           <div class="position-actions">
-            <button class="btn-sell-half" data-mint="${p.mintAddress}" onclick="app.sellPosition('${p.mintAddress}', 0.5)">Sell 50%</button>
-            <button class="btn-sell-all" data-mint="${p.mintAddress}" onclick="app.sellPosition('${p.mintAddress}', 1.0)">Sell All</button>
+            <button class="btn-sell-half" onclick="app.sellPosition('${p.mintAddress}', 0.5)">Sell 50%</button>
+            <button class="btn-sell-all" onclick="app.sellPosition('${p.mintAddress}', 1.0)">Sell All</button>
           </div>
         `;
         posContainer.appendChild(div);
       }
     }
 
-    // Trade history
+    // ── Trade history ──
     const histContainer = document.getElementById('history-container');
     if (data.history.length === 0) {
       histContainer.innerHTML = '<div class="positions-empty">No trade history yet.</div>';
     } else {
       histContainer.innerHTML = '';
       for (const t of data.history.slice(-20).reverse()) {
-        const sign = t.pnlPct >= 0 ? '+' : '';
-        const winClass = t.pnlPct >= 0 ? 'win' : 'loss';
-        const mins = Math.round(t.holdTimeMs / 60000);
+        const pnlPct = t.pnlPct ?? 0;
+        const isWin = pnlPct >= 0;
+        const hArrow = isWin ? '\u25B2' : '\u25BC';
+        const hSign = isWin ? '+' : '';
+        const winClass = isWin ? 'win' : 'loss';
+        const mins = Math.round((t.holdTimeMs || 0) / 60000);
         const div = document.createElement('div');
         div.className = 'history-row';
         div.innerHTML = `
-          <span style="min-width:70px;font-weight:600">${escapeHtml(t.symbol)}</span>
-          <span class="history-pnl ${winClass}">${sign}${t.pnlPct.toFixed(1)}%</span>
-          <span style="color:var(--text-dim)">${mins}m held</span>
-          <span style="color:var(--text-dim)">${escapeHtml(t.exitReason)}</span>
+          <span class="history-symbol">${escapeHtml(t.symbol)}</span>
+          <span class="history-pnl ${winClass}">${hArrow} ${hSign}${pnlPct.toFixed(1)}%</span>
+          <span class="history-meta">${mins}m held</span>
+          <span class="history-meta">${escapeHtml(t.exitReason || '')}</span>
+          <span class="history-meta">${escapeHtml(t.phase || '')}</span>
         `;
         histContainer.appendChild(div);
       }
@@ -636,11 +687,11 @@ function refreshPortfolio() {
   }).catch(() => {});
 }
 
-// Start portfolio refresh when on portfolio tab
+// Start portfolio refresh when on portfolio tab — refresh every 3s
 document.querySelector('[data-tab="portfolio"]')?.addEventListener('click', () => {
   refreshPortfolio();
   if (!portfolioInterval) {
-    portfolioInterval = setInterval(refreshPortfolio, 5000);
+    portfolioInterval = setInterval(refreshPortfolio, 3000);
   }
 });
 

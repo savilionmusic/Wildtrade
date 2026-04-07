@@ -153,16 +153,23 @@
     <section id="tab-portfolio" class="tab">
       <div class="tab-header">
         <h1>Portfolio</h1>
-        <div style="display:flex;gap:8px;align-items:center">
+        <div style="display:flex;gap:12px;align-items:center">
           <span id="portfolio-mode" class="mode-badge paper">PAPER</span>
-          <span id="portfolio-pnl" class="pnl-badge">PnL: 0.0000 SOL</span>
+          <span id="portfolio-phase" class="phase-badge">Phase 1</span>
         </div>
+      </div>
+
+      <!-- Big PnL hero -->
+      <div id="pnl-hero" class="pnl-hero neutral">
+        <div class="pnl-hero-label">Total PnL</div>
+        <div class="pnl-hero-value" id="pnl-hero-value">0.0000 SOL</div>
+        <div class="pnl-hero-pct" id="pnl-hero-pct">0.00%</div>
       </div>
 
       <div class="portfolio-stats">
         <div class="card">
-          <div class="card-label">Budget</div>
-          <div class="card-value" id="pf-budget">1.0 SOL</div>
+          <div class="card-label">Portfolio Value</div>
+          <div class="card-value" id="pf-value">1.0 SOL</div>
         </div>
         <div class="card">
           <div class="card-label">Deployed</div>
@@ -176,11 +183,27 @@
           <div class="card-label">Win Rate</div>
           <div class="card-value" id="pf-winrate">0%</div>
         </div>
+        <div class="card">
+          <div class="card-label">Realized</div>
+          <div class="card-value" id="pf-realized">0 SOL</div>
+        </div>
+        <div class="card">
+          <div class="card-label">Unrealized</div>
+          <div class="card-value" id="pf-unrealized">0 SOL</div>
+        </div>
+        <div class="card">
+          <div class="card-label">Trades Today</div>
+          <div class="card-value" id="pf-trades-today">0 / 20</div>
+        </div>
+        <div class="card">
+          <div class="card-label">Target MCap</div>
+          <div class="card-value" id="pf-target-mcap">-</div>
+        </div>
       </div>
 
       <div class="section-title">Open Positions</div>
       <div id="positions-container" class="positions-container">
-        <div class="positions-empty">No open positions. The bot will enter trades when it finds qualifying signals.</div>
+        <div class="positions-empty">No open positions. Bot scanning for qualifying signals...</div>
       </div>
 
       <div class="section-title" style="margin-top:20px">Trade History</div>

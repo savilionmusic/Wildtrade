@@ -18,6 +18,9 @@
 import { getDb } from '@wildtrade/shared';
 import type { AlphaSignal, InterAgentMessage } from '@wildtrade/shared';
 import { v4 as uuidv4 } from 'uuid';
+import { executeFullSwap } from './jupiter.service.js';
+import { Keypair } from '@solana/web3.js';
+import bs58 from 'bs58';
 
 // ── Config ──
 const POLL_INTERVAL_MS = 15_000;
@@ -34,6 +37,12 @@ const EXIT_TIERS = [
 
 const STOP_LOSS_MULTIPLIER = 0.5;
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
+
+// ── Trade Limits ──
+const MAX_TRADES_PER_DAY = 20;
+const MAX_TRADES_PER_HOUR = 5;
+const MAX_DAILY_LOSS_PCT = 30;  // Stop trading if down 30% of budget in a day
+const tradeTimes: number[] = [];  // timestamps of recent trades
 
 // ── Progressive Strategy Phases ──
 interface TradingPhase {
@@ -141,6 +150,24 @@ type TradingLogCb = (msg: string) => void;
 let log: TradingLogCb = (msg) => console.log(`[trader] ${msg}`);
 let alertCb: ((type: string, msg: string) => void) | null = null;
 
+// ── Wallet Keypair (for live trading) ──
+let walletKeypair: Keypair | null = null;
+
+function getWalletKeypair(): Keypair | null {
+  if (walletKeypair) return walletKeypair;
+  const privKey = process.env.WALLET_PRIVATE_KEY;
+  if (!privKey) return null;
+  try {
+    const decoded = bs58.decode(privKey);
+    walletKeypair = Keypair.fromSecretKey(decoded);
+    log(`Wallet loaded: ${walletKeypair.publicKey.toBase58().slice(0, 8)}...`);
+    return walletKeypair;
+  } catch (err) {
+    log(`Failed to load wallet keypair: ${String(err)}`);
+    return null;
+  }
+}
+
 // ── Portfolio Helpers ──
 
 function getPortfolioValue(): number {
@@ -179,6 +206,38 @@ function getAdaptiveMinScore(): number {
 
   // Adapt based on MCap bucket memory — boost if a bucket is performing well
   return minScore;
+}
+
+function getTradesToday(): number {
+  const dayAgo = Date.now() - 86_400_000;
+  return tradeTimes.filter(t => t > dayAgo).length;
+}
+
+function getTradesThisHour(): number {
+  const hourAgo = Date.now() - 3_600_000;
+  return tradeTimes.filter(t => t > hourAgo).length;
+}
+
+function recordTrade(): void {
+  tradeTimes.push(Date.now());
+  // Clean up old entries
+  const weekAgo = Date.now() - 7 * 86_400_000;
+  while (tradeTimes.length > 0 && tradeTimes[0] < weekAgo) tradeTimes.shift();
+}
+
+function canTrade(): { allowed: boolean; reason?: string } {
+  if (getTradesToday() >= MAX_TRADES_PER_DAY) {
+    return { allowed: false, reason: `Daily trade limit reached (${MAX_TRADES_PER_DAY})` };
+  }
+  if (getTradesThisHour() >= MAX_TRADES_PER_HOUR) {
+    return { allowed: false, reason: `Hourly trade limit reached (${MAX_TRADES_PER_HOUR})` };
+  }
+  // Check daily loss limit
+  const dailyLossLimit = totalBudgetSol * (MAX_DAILY_LOSS_PCT / 100);
+  if (realizedPnlSol < -dailyLossLimit) {
+    return { allowed: false, reason: `Daily loss limit hit (${MAX_DAILY_LOSS_PCT}% = ${dailyLossLimit.toFixed(4)} SOL)` };
+  }
+  return { allowed: true };
 }
 
 // ── Public API ──
@@ -232,6 +291,7 @@ export async function manualBuy(mintAddress: string, symbol: string, solAmount: 
   if (existing) return `Already in ${existing.symbol} — ${existing.solDeployed.toFixed(4)} SOL deployed`;
 
   log(`MANUAL BUY: ${symbol || mintAddress.slice(0, 8)} — ${buyAmount.toFixed(4)} SOL (from chat command)`);
+  recordTrade();
   await openPosition(`manual-${Date.now()}`, mintAddress, symbol || mintAddress.slice(0, 8), '', buyAmount, 70, 0);
 
   const pos = Array.from(positions.values()).find(p => p.mintAddress === mintAddress && p.status !== 'closed');
@@ -259,30 +319,70 @@ export function getTraderStats(): {
   positions: number;
   deployed: number;
   realized: number;
+  unrealized: number;
+  totalPnl: number;
+  totalPnlPct: number;
+  portfolioValue: number;
   budget: number;
   available: number;
   winRate: number;
   trades: number;
   phase: string;
   targetMCap: string;
+  tradesToday: number;
+  maxTradesToday: number;
 } {
   const phase = getCurrentPhase();
+
+  // Compute live unrealized PnL across all open positions
+  let unrealizedPnlSol = 0;
+  for (const p of positions.values()) {
+    if (p.status === 'open' || p.status === 'partial_exit') {
+      if (p.currentPrice > 0 && p.entryPrice > 0 && p.solDeployed > 0) {
+        const currentValue = p.tokenBalance * p.currentPrice / (cachedSolPrice || 150);
+        unrealizedPnlSol += currentValue - p.solDeployed + p.solReturned;
+      }
+    }
+  }
+
+  const totalPnl = realizedPnlSol + unrealizedPnlSol;
+  const portfolioValue = totalBudgetSol + totalPnl;
+  const totalPnlPct = totalBudgetSol > 0 ? (totalPnl / totalBudgetSol) * 100 : 0;
+
   return {
     running,
     positions: positions.size,
     deployed: Math.round(deployedSol * 10000) / 10000,
     realized: Math.round(realizedPnlSol * 10000) / 10000,
+    unrealized: Math.round(unrealizedPnlSol * 10000) / 10000,
+    totalPnl: Math.round(totalPnl * 10000) / 10000,
+    totalPnlPct: Math.round(totalPnlPct * 100) / 100,
+    portfolioValue: Math.round(portfolioValue * 10000) / 10000,
     budget: totalBudgetSol,
     available: Math.round((totalBudgetSol - deployedSol + realizedPnlSol) * 10000) / 10000,
     winRate: tradeCount > 0 ? Math.round((winCount / tradeCount) * 100) : 0,
     trades: tradeCount,
     phase: phase.name,
     targetMCap: `$${(phase.targetMCapMin / 1000).toFixed(0)}k-$${(phase.targetMCapMax / 1000).toFixed(0)}k`,
+    tradesToday: getTradesToday(),
+    maxTradesToday: MAX_TRADES_PER_DAY,
   };
 }
 
 export function getOpenPositions(): Position[] {
-  return Array.from(positions.values()).filter(p => p.status === 'open' || p.status === 'partial_exit');
+  // Return positions with live-computed PnL
+  const open = Array.from(positions.values()).filter(p => p.status === 'open' || p.status === 'partial_exit');
+  const solPrice = cachedSolPrice || 150;
+
+  for (const p of open) {
+    if (p.currentPrice > 0 && p.entryPrice > 0 && p.solDeployed > 0) {
+      const currentValueSol = p.tokenBalance * p.currentPrice / solPrice;
+      p.pnlSol = currentValueSol - p.solDeployed + p.solReturned;
+      p.pnlPct = ((currentValueSol + p.solReturned) / p.solDeployed - 1) * 100;
+    }
+  }
+
+  return open;
 }
 
 export function getTradeHistory(): TradeMemoryEntry[] {
@@ -293,6 +393,13 @@ export function getTradeHistory(): TradeMemoryEntry[] {
 
 async function pollForSignals(): Promise<void> {
   if (!running) return;
+
+  // Check trade limits before looking for signals
+  const limitCheck = canTrade();
+  if (!limitCheck.allowed) {
+    log(`Trade limit: ${limitCheck.reason}`);
+    return;
+  }
 
   try {
     const db = await getDb();
@@ -342,6 +449,7 @@ async function pollForSignals(): Promise<void> {
       log(`ENTERING POSITION: ${symbol} | Score: ${score.total} | MCap: $${mcap.toLocaleString()} | Budget: ${positionSize.toFixed(4)} SOL | ${phase.name}`);
       alert('dca_entry', `Entering ${symbol} — Score: ${score.total}/100, MCap: $${mcap.toLocaleString()}, DCA ${positionSize.toFixed(4)} SOL [${phase.name}]`);
 
+      recordTrade();
       await openPosition(
         String(row.id ?? uuidv4()),
         mintAddress, symbol,
@@ -406,6 +514,7 @@ async function openPosition(
   // Execute first DCA leg immediately (20%)
   const leg1Sol = budgetSol * DCA_LEGS[0];
   await executeBuy(position, leg1Sol, 1);
+  recordTrade(); // Count towards daily/hourly limits
 
   // Schedule remaining legs
   pendingDcaLegs.push({
@@ -463,15 +572,42 @@ async function executeBuy(position: Position, solAmount: number, legNum: number)
     alert('dca_entry', `Leg ${legNum} filled: ${position.symbol} — ${solAmount.toFixed(4)} SOL at $${price.toFixed(8)}`);
   } else {
     // Live trade: use Jupiter
-    log(`LIVE DCA LEG ${legNum}: ${position.symbol} — would execute Jupiter swap for ${solAmount} SOL`);
-    // TODO: Implement actual Jupiter signing when wallet is configured
-    // For now, treat as paper
-    const solInUsd = solAmount * (await getSolPrice());
-    const tokensReceived = solInUsd / price;
-    position.tokenBalance += tokensReceived;
-    position.solDeployed += solAmount;
-    position.dcaLegsExecuted = legNum;
-    deployedSol += solAmount;
+    const kp = getWalletKeypair();
+    if (!kp) {
+      log(`LIVE DCA LEG ${legNum}: No wallet keypair — falling back to paper`);
+      const solInUsd = solAmount * (await getSolPrice());
+      const tokensReceived = solInUsd / price;
+      position.tokenBalance += tokensReceived;
+      position.solDeployed += solAmount;
+      position.dcaLegsExecuted = legNum;
+      position.entryPrice = (position.entryPrice * (legNum - 1) + price) / legNum;
+      deployedSol += solAmount;
+      return;
+    }
+
+    try {
+      const lamports = Math.floor(solAmount * 1_000_000_000).toString();
+      log(`LIVE DCA LEG ${legNum}: ${position.symbol} — swapping ${solAmount} SOL via Jupiter`);
+      const result = await executeFullSwap(SOL_MINT, position.mintAddress, lamports, kp);
+
+      if (result.confirmed) {
+        const tokensReceived = Number(result.outputAmount) / 1_000_000; // assume 6 decimals
+        position.tokenBalance += tokensReceived;
+        position.solDeployed += solAmount;
+        position.dcaLegsExecuted = legNum;
+        position.entryPrice = (position.entryPrice * (legNum - 1) + price) / legNum;
+        deployedSol += solAmount;
+
+        log(`LIVE BUY CONFIRMED: ${position.symbol} | tx: ${result.signature.slice(0, 16)}... | ${tokensReceived.toFixed(2)} tokens`);
+        alert('dca_entry', `LIVE Leg ${legNum}: ${position.symbol} — ${solAmount.toFixed(4)} SOL | tx: ${result.signature.slice(0, 16)}...`);
+      } else {
+        log(`LIVE BUY FAILED: ${position.symbol} — tx not confirmed`);
+        alert('safety', `Buy failed for ${position.symbol} — tx not confirmed`);
+      }
+    } catch (err) {
+      log(`LIVE BUY ERROR: ${position.symbol} — ${String(err)}`);
+      alert('safety', `Buy error for ${position.symbol}: ${String(err)}`);
+    }
   }
 }
 
@@ -480,9 +616,41 @@ async function executeSell(position: Position, sellPct: number, reason: string):
   if (!price || price <= 0) return;
 
   const tokensToSell = position.tokenBalance * sellPct;
-  const solInUsd = tokensToSell * price;
-  const solPrice = await getSolPrice();
-  const solReceived = solPrice > 0 ? solInUsd / solPrice : 0;
+  let solReceived: number;
+
+  if (!position.paper) {
+    // Live trade: sell via Jupiter
+    const kp = getWalletKeypair();
+    if (kp) {
+      try {
+        // Token amount in smallest unit (assume 6 decimals for most SPL tokens)
+        const tokenLamports = Math.floor(tokensToSell * 1_000_000).toString();
+        log(`LIVE SELL: ${position.symbol} — selling ${(sellPct * 100).toFixed(0)}% (${tokensToSell.toFixed(2)} tokens) via Jupiter`);
+        const result = await executeFullSwap(position.mintAddress, SOL_MINT, tokenLamports, kp);
+
+        if (result.confirmed) {
+          solReceived = Number(result.outputAmount) / 1_000_000_000; // lamports to SOL
+          log(`LIVE SELL CONFIRMED: ${position.symbol} | tx: ${result.signature.slice(0, 16)}... | ${solReceived.toFixed(4)} SOL`);
+        } else {
+          log(`LIVE SELL FAILED: ${position.symbol} — tx not confirmed, recording paper value`);
+          const solPrice = await getSolPrice();
+          solReceived = solPrice > 0 ? (tokensToSell * price) / solPrice : 0;
+        }
+      } catch (err) {
+        log(`LIVE SELL ERROR: ${position.symbol} — ${String(err)}, recording paper value`);
+        const solPrice = await getSolPrice();
+        solReceived = solPrice > 0 ? (tokensToSell * price) / solPrice : 0;
+      }
+    } else {
+      // No keypair — fallback to paper calc
+      const solPrice = await getSolPrice();
+      solReceived = solPrice > 0 ? (tokensToSell * price) / solPrice : 0;
+    }
+  } else {
+    // Paper trade
+    const solPrice = await getSolPrice();
+    solReceived = solPrice > 0 ? (tokensToSell * price) / solPrice : 0;
+  }
 
   position.tokenBalance -= tokensToSell;
   position.solReturned += solReceived;

@@ -118,6 +118,9 @@ const HEADERS = {
   'Origin': 'https://gmgn.ai',
 };
 
+// Track whether we've already warned about GMGN being blocked
+let gmgn403Warned = false;
+
 async function gmgnFetch<T>(path: string): Promise<T | null> {
   await waitForRateLimit();
 
@@ -133,9 +136,17 @@ async function gmgnFetch<T>(path: string): Promise<T | null> {
     clearTimeout(timeout);
 
     if (!res.ok) {
-      console.log(`[gmgn] API error ${res.status} for ${path}`);
+      if (res.status === 403 && !gmgn403Warned) {
+        console.log(`[gmgn] API blocked by Cloudflare (403) — using curated wallets instead. This is normal.`);
+        gmgn403Warned = true;
+      } else if (res.status !== 403) {
+        console.log(`[gmgn] API error ${res.status} for ${path}`);
+      }
       return null;
     }
+
+    // Reset warning flag if we get a successful response
+    gmgn403Warned = false;
 
     const json = await res.json() as Record<string, unknown>;
 
@@ -149,9 +160,9 @@ async function gmgnFetch<T>(path: string): Promise<T | null> {
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     if (message.includes('abort')) {
-      console.log(`[gmgn] Request timeout for ${path}`);
+      // Timeout — don't spam
     } else {
-      console.log(`[gmgn] Fetch error for ${path}: ${message}`);
+      console.log(`[gmgn] Fetch error: ${message}`);
     }
     return null;
   }

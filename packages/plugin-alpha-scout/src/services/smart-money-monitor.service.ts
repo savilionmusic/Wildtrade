@@ -256,8 +256,7 @@ async function refreshWalletList(): Promise<void> {
 
 async function pollActivityCycle(): Promise<void> {
   if (trackedWallets.length === 0) {
-    console.log('[smart-money] No wallets to poll');
-    return;
+    return; // Silent — no point logging "no wallets" every 3 min
   }
 
   // Clean up old buys outside the cluster window
@@ -275,7 +274,10 @@ async function pollActivityCycle(): Promise<void> {
   const sorted = [...trackedWallets].sort((a, b) => a.lastChecked - b.lastChecked);
   const batch = sorted.slice(0, CONFIG.WALLETS_PER_CYCLE);
 
-  console.log(`[smart-money] Polling ${batch.length} wallets (cycle ${walletPollIndex})...`);
+  // Only log every 5th cycle to avoid spam
+  if (walletPollIndex % 5 === 0) {
+    console.log(`[smart-money] Polling ${batch.length} wallets (cycle ${walletPollIndex}, ${recentBuys.length} recent buys tracked)...`);
+  }
   walletPollIndex++;
 
   // Poll each wallet sequentially to stay rate-limit friendly
@@ -310,7 +312,8 @@ async function pollActivityCycle(): Promise<void> {
         }
       }
     } catch (err) {
-      console.log(`[smart-money] Error polling ${wallet.address.slice(0, 8)}...: ${String(err)}`);
+      // Don't log every individual wallet failure — too spammy
+      wallet.lastChecked = Date.now();
     }
 
     // Small delay between wallets

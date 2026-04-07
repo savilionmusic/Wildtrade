@@ -46,6 +46,10 @@ export {
   startScanner, stopScanner, getScannerStats,
 } from './services/scanner-engine.service.js';
 
+// DexScreener
+export { getTrendingTokens, getTokenPairs, searchTokens } from './services/dexscreener.service.js';
+export type { TrendingToken, DexPair } from './services/dexscreener.service.js';
+
 // Re-export lib utilities
 export { calculateCompositeScore } from './lib/score-calculator.js';
 export type { ScoreParams } from './lib/score-calculator.js';

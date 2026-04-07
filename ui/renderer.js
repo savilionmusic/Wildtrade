@@ -247,23 +247,38 @@ window.wildtrade.onBotError(msg => addLogEntry({ time: Date.now(), level: 'error
 window.wildtrade.onTradeUpdate(update => {
   const typeLabels = {
     smart_money_alert: 'Smart Money Alert',
+    smart_money_update: 'Smart Money',
     signal_forwarded: 'Signal Sent to Trader',
     dca_entry: 'DCA Entry Executed',
     exit: 'Exit Triggered',
     position_opened: 'New Position',
     position_closed: 'Position Closed',
     safety_alert: 'Safety Warning',
+    rugcheck_passed: 'RugCheck Passed',
+    new_token_detected: 'New Token',
+    token_scanned: 'Token Scanned',
+    dexscreener_update: 'DexScreener',
   };
 
   const typeColors = {
     smart_money_alert: '#3b82f6',
+    smart_money_update: '#3b82f6',
     signal_forwarded: '#10b981',
     dca_entry: '#10b981',
     exit: '#f59e0b',
     position_opened: '#10b981',
     position_closed: '#8b5cf6',
     safety_alert: '#ef4444',
+    rugcheck_passed: '#10b981',
+    new_token_detected: '#6366f1',
+    token_scanned: '#8b949e',
+    dexscreener_update: '#6366f1',
   };
+
+  // Only show high-value notifications in chat (not every token scan)
+  const chatWorthy = ['smart_money_alert', 'signal_forwarded', 'dca_entry', 'exit',
+    'position_opened', 'position_closed', 'safety_alert'];
+  if (!chatWorthy.includes(update.type)) return;
 
   const label = typeLabels[update.type] || 'Update';
   const color = typeColors[update.type] || '#8b949e';

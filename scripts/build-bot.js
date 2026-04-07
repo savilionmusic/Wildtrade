@@ -16,8 +16,9 @@ await build({
   external: [
     'better-sqlite3',
     'sharp',
-    '@img/sharp-linux-x64',
-    '@anush008/tokenizers-linux-x64-gnu',
+    '@img/sharp-*',
+    '@anush008/tokenizers',
+    '@anush008/tokenizers-*',
     'cpu-features',
     'ssh2',
     'onnxruntime-node',

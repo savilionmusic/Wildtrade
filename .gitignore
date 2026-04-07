@@ -1,0 +1,6 @@
+node_modules/
+dist/
+.wildtrade-db/
+.env
+*.log
+.DS_Store

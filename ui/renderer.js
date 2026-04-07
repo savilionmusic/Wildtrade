@@ -18,6 +18,7 @@ let alerts = [];
 let alertsPaused = false;
 let alertFilter = 'all';
 let unseenAlerts = 0;
+let portfolioInterval = null;
 
 // ── Tab navigation ──
 document.querySelectorAll('.nav-btn').forEach(btn => {
@@ -159,9 +160,9 @@ function removeTypingIndicator() {
   if (el) el.remove();
 }
 
-// Simple markdown-ish formatting for AI responses
+// Simple markdown-ish formatting for AI responses — also linkifies token addresses
 function formatMarkdown(text) {
-  return text
+  let html = text
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
     .replace(/\*(.+?)\*/g, '<em>$1</em>')
@@ -169,6 +170,21 @@ function formatMarkdown(text) {
     .replace(/\n- /g, '\n• ')
     .replace(/\n\d+\. /g, (m) => '\n' + m.trim() + ' ')
     .replace(/\n/g, '<br>');
+
+  // Linkify Solana addresses (32-44 base58 chars) → DexScreener
+  html = html.replace(/\b([1-9A-HJ-NP-Za-km-z]{32,44})\b/g, (match) => {
+    // Only link if it looks like a real token mint (not a UUID or short word)
+    if (match.length >= 32 && /^[1-9A-HJ-NP-Za-km-z]+$/.test(match)) {
+      const short = match.slice(0, 6) + '...' + match.slice(-4);
+      return `<a href="https://dexscreener.com/solana/${match}" target="_blank" class="token-link" title="${match}">${short}</a>`;
+    }
+    return match;
+  });
+
+  // Linkify explicit URLs
+  html = html.replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" class="ext-link">$1</a>');
+
+  return html;
 }
 
 // ── Alert filter handlers ──
@@ -242,11 +258,14 @@ function prependAlertItem(alert) {
   const time = new Date(alert.timestamp).toLocaleTimeString();
   const typeLabel = alert.type.replace(/_/g, ' ').toUpperCase();
 
+  // Linkify Solana addresses in alert text
+  const alertText = linkifyAlertText(alert.message);
+
   div.innerHTML = `
     <div class="alert-icon ${alert.category}">${icon}</div>
     <div class="alert-body">
       <div class="alert-type ${alert.category}">${typeLabel}</div>
-      <div class="alert-text">${escapeHtml(alert.message)}</div>
+      <div class="alert-text">${alertText}</div>
     </div>
     <div class="alert-time">${time}</div>
   `;
@@ -275,11 +294,28 @@ function renderAlerts() {
     const time = new Date(alert.timestamp).toLocaleTimeString();
     const typeLabel = alert.type.replace(/_/g, ' ').toUpperCase();
 
+    // Linkify Solana addresses + URLs
+    const linkified = linkifyAlertText(alert.message);
+
+    // Extract mint address for Buy button if this is a signal
+    const mintMatch = alert.message.match(/([1-9A-HJ-NP-Za-km-z]{32,44})/);
+    const mint = mintMatch ? mintMatch[1] : null;
+    const symbolMatch = alert.message.match(/^(?:SIGNAL FORWARDED|ENTERING|CONVERGENCE):\s*(\S+)/i);
+    const symbol = symbolMatch ? symbolMatch[1] : '';
+    const showBuyBtn = mint && (alert.type === 'signal_forwarded' || alert.type === 'smart_money_cluster');
+    const mintShort = mint ? mint.slice(0,8) : '';
+
     div.innerHTML = `
       <div class="alert-icon ${alert.category}">${icon}</div>
       <div class="alert-body">
         <div class="alert-type ${alert.category}">${typeLabel}</div>
-        <div class="alert-text">${escapeHtml(alert.message)}</div>
+        <div class="alert-text">${linkified}</div>
+        ${showBuyBtn ? `
+        <div class="alert-actions">
+          <input type="number" id="sol-input-${mintShort}" class="alert-sol-input" value="0.1" step="0.05" min="0.01" max="5" title="SOL amount">
+          <button class="alert-btn-buy" onclick="app.buyFromAlert('${mint}','${escapeHtml(symbol)}')">Buy</button>
+          <button class="alert-btn-pass" onclick="this.closest('.alert-item').style.opacity='0.4'">Pass</button>
+        </div>` : ''}
       </div>
       <div class="alert-time">${time}</div>
     `;
@@ -361,6 +397,22 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
+// Linkify Solana addresses → DexScreener links, and URLs → clickable
+function linkifyAlertText(text) {
+  let html = escapeHtml(text);
+  // Linkify full URLs first
+  html = html.replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" class="ext-link">$1</a>');
+  // Linkify Solana addresses (32-44 base58 chars) that aren't already inside links
+  html = html.replace(/(?<!href="[^"]*)\b([1-9A-HJ-NP-Za-km-z]{32,44})\b(?![^<]*<\/a>)/g, (match) => {
+    if (match.length >= 32) {
+      const short = match.slice(0, 6) + '...' + match.slice(-4);
+      return `<a href="https://dexscreener.com/solana/${match}" target="_blank" class="token-link" title="${match}">${short}</a>`;
+    }
+    return match;
+  });
+  return html;
+}
+
 // ── Bot status indicator ──
 function setBotStatus(status) {
   const indicator = document.getElementById('bot-indicator');
@@ -383,85 +435,259 @@ window.wildtrade.onBotStatus(status => setBotStatus(status));
 window.wildtrade.onBotError(msg => addLogEntry({ time: Date.now(), level: 'error', message: msg }));
 
 // ── Proactive trade notifications → alerts + chat ──
+// Only show: potential buys (signals), actual trades, and safety warnings
+const ACTIONABLE_TYPES = new Set([
+  'signal_forwarded',
+  'dca_entry', 'exit', 'position_opened', 'position_closed',
+  'safety_alert', 'smart_money_cluster',
+]);
+
+// Deduplicate alerts — same message within 10s = skip
+const recentAlertHashes = new Map(); // hash → timestamp
+
+function isDuplicateAlert(msg) {
+  const hash = msg.slice(0, 80);
+  const now = Date.now();
+  if (recentAlertHashes.has(hash) && now - recentAlertHashes.get(hash) < 10000) return true;
+  recentAlertHashes.set(hash, now);
+  // Cleanup old entries
+  if (recentAlertHashes.size > 200) {
+    for (const [k, v] of recentAlertHashes) {
+      if (now - v > 30000) recentAlertHashes.delete(k);
+    }
+  }
+  return false;
+}
+
 window.wildtrade.onTradeUpdate(update => {
   const type = update.type || 'alert';
   const msg = update.message || JSON.stringify(update);
 
-  // ALWAYS add to alerts panel
+  // Skip non-actionable spam (token scans, dex polls, wallet discovery)
+  if (!ACTIONABLE_TYPES.has(type)) return;
+
+  // Skip duplicates
+  if (isDuplicateAlert(msg)) return;
+
+  // Add to alerts panel
   addAlert(type, msg);
 
-  // Also add high-value alerts to chat
-  const chatWorthy = ['smart_money_alert', 'smart_money_cluster', 'signal_forwarded', 'dca_entry', 'exit',
-    'position_opened', 'position_closed', 'safety_alert', 'agent_action'];
-  if (!chatWorthy.includes(type)) return;
-
+  // Push to chat
   const typeLabels = {
     smart_money_alert: 'Smart Money Alert', smart_money_cluster: 'Smart Money Cluster',
-    signal_forwarded: 'Signal Sent to Trader', dca_entry: 'DCA Entry',
+    signal_forwarded: 'Signal → Trader', dca_entry: 'DCA Entry',
     exit: 'Exit Triggered', position_opened: 'New Position',
     position_closed: 'Position Closed', safety_alert: 'Safety Warning',
-    agent_action: 'Agent Action',
+    agent_action: 'Agent Action', kol_signal: 'KOL Signal',
   };
   const typeColors = {
     smart_money_alert: '#3b82f6', smart_money_cluster: '#3b82f6',
     signal_forwarded: '#10b981', dca_entry: '#10b981',
     exit: '#f59e0b', position_opened: '#10b981',
     position_closed: '#8b5cf6', safety_alert: '#ef4444',
-    agent_action: '#f59e0b',
+    agent_action: '#f59e0b', kol_signal: '#a855f7',
   };
 
   const label = typeLabels[type] || 'Update';
   const color = typeColors[type] || '#8b949e';
 
+  // Format message with DexScreener links for token addresses
+  const formattedMsg = msg.replace(/\b([1-9A-HJ-NP-Za-km-z]{32,44})\b/g, (match) => {
+    if (match.length >= 32) {
+      const short = match.slice(0, 6) + '...' + match.slice(-4);
+      return `<a href="https://dexscreener.com/solana/${match}" target="_blank" class="token-link" title="${match}">${short}</a>`;
+    }
+    return match;
+  });
+
   const container = document.getElementById('chat-messages');
   const div = document.createElement('div');
   div.className = 'chat-msg bot trade-notification';
+
+  // Extract mint address from message for buy button
+  const mintMatch = msg.match(/\b([1-9A-HJ-NP-Za-km-z]{32,44})\b/);
+  const mintAddress = mintMatch ? mintMatch[1] : null;
+
+  // Add buy button for potential buy signals
+  let actionButtons = '';
+  if (type === 'signal_forwarded' && mintAddress) {
+    actionButtons = `
+      <div style="margin-top:8px;display:flex;gap:6px">
+        <button class="btn btn-start" style="padding:4px 12px;font-size:12px" onclick="app.quickBuy('${mintAddress}', 0.05)">Buy 0.05 SOL</button>
+        <button class="btn btn-start" style="padding:4px 12px;font-size:12px" onclick="app.quickBuy('${mintAddress}', 0.1)">Buy 0.1 SOL</button>
+        <input type="number" id="custom-sol-${mintAddress.slice(0,8)}" style="width:60px;padding:4px;background:#1a1f2e;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:12px" value="0.05" step="0.01" min="0.01">
+        <button class="btn btn-outline" style="padding:4px 8px;font-size:12px" onclick="app.quickBuy('${mintAddress}', parseFloat(document.getElementById('custom-sol-${mintAddress.slice(0,8)}').value))">Buy Custom</button>
+      </div>`;
+  }
+
   div.innerHTML = `
     <div class="chat-avatar" style="background:${color}">W</div>
     <div class="chat-bubble" style="border-left:3px solid ${color}">
       <strong style="color:${color}">[${label}]</strong><br>
-      ${escapeHtml(msg)}
+      ${formattedMsg}
+      ${actionButtons}
     </div>
   `;
   container.appendChild(div);
   container.scrollTop = container.scrollHeight;
 });
 
-// ── Also feed bot logs into alerts for key events ──
+// ── Bot logs → only alerts panel (not chat) for key events ──
 window.wildtrade.onBotLog(entry => {
   addLogEntry(entry);
 
-  // Parse important log lines into alerts
+  // ONLY parse truly actionable log events into alerts (NO duplicates from IPC)
   const msg = typeof entry === 'string' ? entry : (entry.message || '');
   const lower = msg.toLowerCase();
 
-  if (lower.includes('[scanner]') && lower.includes('scanned:')) {
-    addAlert('token_scanned', msg.replace(/.*\[scanner\]\s*/i, ''));
-  }
-  if (lower.includes('[scanner]') && lower.includes('signal forwarded')) {
-    addAlert('signal_forwarded', msg.replace(/.*\[scanner\]\s*/i, ''));
-  }
-  if (lower.includes('[smart-money]') && lower.includes('cluster')) {
-    addAlert('smart_money_cluster', msg.replace(/.*\[smart-money\]\s*/i, ''));
-  }
-  if (lower.includes('[wallet-intel]') && lower.includes('discovered')) {
-    addAlert('wallet_intel', msg.replace(/.*\[wallet-intel\]\s*/i, ''));
-  }
-  if (lower.includes('[kol-intel]') && lower.includes('found')) {
-    addAlert('kol_intel', msg.replace(/.*\[kol-intel\]\s*/i, ''));
-  }
+  // Safety alerts from logs
   if (lower.includes('rugcheck') && lower.includes('failed')) {
-    addAlert('safety_alert', msg);
+    if (!isDuplicateAlert(msg)) addAlert('safety_alert', msg);
   }
-  if (lower.includes('[alpha-scout]') && lower.includes('new token from pumpportal')) {
-    addAlert('new_token_detected', msg.replace(/.*\[alpha-scout\]\s*/i, ''));
+
+  // Trader activity
+  if (lower.includes('[trader]') && (lower.includes('entering position') || lower.includes('dca leg'))) {
+    if (!isDuplicateAlert(msg)) addAlert('dca_entry', msg);
   }
-  if (lower.includes('dexscreener') && (lower.includes('profiles:') || lower.includes('boosts:'))) {
-    addAlert('dexscreener_update', msg.replace(/.*\[scanner\]\s*/i, ''));
+  if (lower.includes('[trader]') && (lower.includes('exit tier') || lower.includes('stop loss'))) {
+    if (!isDuplicateAlert(msg)) addAlert('exit', msg);
+  }
+  if (lower.includes('[trader]') && lower.includes('position closed')) {
+    if (!isDuplicateAlert(msg)) addAlert('position_closed', msg);
+  }
+
+  // Convergence / smart money
+  if (lower.includes('[convergence]') && lower.includes('convergence:')) {
+    if (!isDuplicateAlert(msg)) addAlert('smart_money_cluster', msg);
   }
 });
 
+// ── Portfolio Tab ──
+function refreshPortfolio() {
+  if (!window.wildtrade.getPortfolio) return;
+  window.wildtrade.getPortfolio().then(data => {
+    if (!data) return;
+
+    // Stats cards
+    const mode = data.paper ? 'PAPER' : 'LIVE';
+    document.getElementById('portfolio-mode').textContent = mode;
+    document.getElementById('portfolio-mode').className = `mode-badge ${data.paper ? 'paper' : 'live'}`;
+    document.getElementById('pf-budget').textContent = `${data.budget} SOL`;
+    document.getElementById('pf-deployed').textContent = `${data.deployed} SOL`;
+    document.getElementById('pf-available').textContent = `${data.available} SOL`;
+    document.getElementById('pf-winrate').textContent = `${data.winRate}% (${data.trades})`;
+
+    const pnlBadge = document.getElementById('portfolio-pnl');
+    const pnlSign = data.realized >= 0 ? '+' : '';
+    pnlBadge.textContent = `PnL: ${pnlSign}${data.realized} SOL`;
+    pnlBadge.style.color = data.realized >= 0 ? 'var(--green)' : 'var(--red)';
+
+    // Dashboard cards
+    document.getElementById('val-positions').textContent = data.positions.length;
+    document.getElementById('val-pnl').textContent = `${pnlSign}${data.realized} SOL`;
+    document.getElementById('val-pnl').style.color = data.realized >= 0 ? 'var(--green)' : 'var(--red)';
+
+    // Open positions
+    const posContainer = document.getElementById('positions-container');
+    if (data.positions.length === 0) {
+      posContainer.innerHTML = '<div class="positions-empty">No open positions. The bot will enter trades when it finds qualifying signals.</div>';
+    } else {
+      posContainer.innerHTML = '';
+      for (const p of data.positions) {
+        const mult = p.currentPrice > 0 && p.entryPrice > 0 ? (p.currentPrice / p.entryPrice).toFixed(2) : '?';
+        const multClass = parseFloat(mult) >= 1 ? 'up' : 'down';
+        const pnlSign = p.pnlPct >= 0 ? '+' : '';
+        const div = document.createElement('div');
+        div.className = 'position-row';
+        div.innerHTML = `
+          <span class="position-symbol"><a href="https://dexscreener.com/solana/${p.mintAddress}" target="_blank" class="token-link">${escapeHtml(p.symbol)}</a></span>
+          <span class="position-mult ${multClass}">${mult}x</span>
+          <span class="position-detail">${p.solDeployed.toFixed(4)} SOL | ${pnlSign}${p.pnlPct.toFixed(1)}% | DCA ${p.dcaLegsExecuted}/3</span>
+          <div class="position-actions">
+            <button class="btn-sell-half" data-mint="${p.mintAddress}" onclick="app.sellPosition('${p.mintAddress}', 0.5)">Sell 50%</button>
+            <button class="btn-sell-all" data-mint="${p.mintAddress}" onclick="app.sellPosition('${p.mintAddress}', 1.0)">Sell All</button>
+          </div>
+        `;
+        posContainer.appendChild(div);
+      }
+    }
+
+    // Trade history
+    const histContainer = document.getElementById('history-container');
+    if (data.history.length === 0) {
+      histContainer.innerHTML = '<div class="positions-empty">No trade history yet.</div>';
+    } else {
+      histContainer.innerHTML = '';
+      for (const t of data.history.slice(-20).reverse()) {
+        const sign = t.pnlPct >= 0 ? '+' : '';
+        const winClass = t.pnlPct >= 0 ? 'win' : 'loss';
+        const mins = Math.round(t.holdTimeMs / 60000);
+        const div = document.createElement('div');
+        div.className = 'history-row';
+        div.innerHTML = `
+          <span style="min-width:70px;font-weight:600">${escapeHtml(t.symbol)}</span>
+          <span class="history-pnl ${winClass}">${sign}${t.pnlPct.toFixed(1)}%</span>
+          <span style="color:var(--text-dim)">${mins}m held</span>
+          <span style="color:var(--text-dim)">${escapeHtml(t.exitReason)}</span>
+        `;
+        histContainer.appendChild(div);
+      }
+    }
+  }).catch(() => {});
+}
+
+// Start portfolio refresh when on portfolio tab
+document.querySelector('[data-tab="portfolio"]')?.addEventListener('click', () => {
+  refreshPortfolio();
+  if (!portfolioInterval) {
+    portfolioInterval = setInterval(refreshPortfolio, 5000);
+  }
+});
+
+// ── Sell position from portfolio ──
+app.sellPosition = async function(mint, pct) {
+  const result = await window.wildtrade.chatSend(`sell ${mint} ${pct * 100}%`);
+  if (result.reply) {
+    addChatMessage('bot', formatMarkdown(result.reply));
+  }
+  setTimeout(refreshPortfolio, 2000);
+};
+
+// ── Buy from alert ──
+app.buyFromAlert = async function(mint, symbol) {
+  const input = document.getElementById(`sol-input-${mint.slice(0,8)}`);
+  const sol = input ? parseFloat(input.value) || 0.1 : 0.1;
+  addChatMessage('bot', `Buying ${symbol || mint.slice(0,8)} with ${sol} SOL...`);
+  const result = await window.wildtrade.chatSend(`buy ${mint} ${sol}`);
+  if (result.reply) {
+    addChatMessage('bot', formatMarkdown(result.reply));
+  }
+  setTimeout(refreshPortfolio, 2000);
+};
+
+app.quickBuy = async function(mint, sol) {
+  const symbol = mint.slice(0,8);
+  addChatMessage('user', `buy ${symbol} ${sol}`);
+  addChatMessage('bot', `Executing buy order for ${sol} SOL...`);
+  const result = await window.wildtrade.chatSend(`buy ${mint} ${sol}`);
+  if (result.reply) {
+    addChatMessage('bot', formatMarkdown(result.reply));
+  }
+  setTimeout(refreshPortfolio, 2000);
+};
+
 // ── Init ──
+// Intercept all link clicks to open in system browser
+document.addEventListener('click', (e) => {
+  const link = e.target.closest('a[href]');
+  if (link && link.href && (link.href.startsWith('https://') || link.href.startsWith('http://'))) {
+    e.preventDefault();
+    if (window.wildtrade?.openExternal) {
+      window.wildtrade.openExternal(link.href);
+    }
+  }
+});
+
 (async () => {
   await loadSettings();
   const status = await window.wildtrade.getBotStatus();

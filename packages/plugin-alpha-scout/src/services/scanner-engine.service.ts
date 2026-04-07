@@ -274,13 +274,25 @@ async function processToken(token: {
     return;
   }
 
-  // 3. Fetch market data from DexScreener
+  // 3. Fetch market data from DexScreener (includes pairCreatedAt for age detection)
   let market = { price: 0, volume24h: 0, marketCap: 0, liquidity: 0 };
+  let tokenAgeMinutes = -1;  // -1 = unknown
+  let priceChange5m = 0;
+  let priceChange1h = 0;
+
   try {
     const dexRes = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${mint}`);
     if (dexRes.ok) {
       const dexData = await dexRes.json() as { pairs?: Array<Record<string, unknown>> };
-      const pair = dexData.pairs?.[0];
+      // Pick the pair with highest liquidity
+      const pairs = dexData.pairs ?? [];
+      const solanaPairs = pairs.filter((p: Record<string, unknown>) =>
+        String(p.chainId ?? p.chain ?? '') === 'solana' || !p.chainId
+      );
+      const pair = solanaPairs.sort((a: Record<string, unknown>, b: Record<string, unknown>) =>
+        Number((b.liquidity as Record<string, unknown>)?.usd ?? 0) - Number((a.liquidity as Record<string, unknown>)?.usd ?? 0)
+      )[0] ?? pairs[0];
+
       if (pair) {
         market = {
           price: Number(pair.priceUsd ?? 0),
@@ -288,7 +300,18 @@ async function processToken(token: {
           marketCap: Number(pair.marketCap ?? pair.fdv ?? 0),
           liquidity: Number((pair.liquidity as Record<string, unknown>)?.usd ?? 0),
         };
-        // Also grab symbol/name from DexScreener if we don't have them
+        // Extract price changes
+        const priceChange = pair.priceChange as Record<string, unknown> ?? {};
+        priceChange5m = Number(priceChange.m5 ?? 0);
+        priceChange1h = Number(priceChange.h1 ?? 0);
+
+        // Token age from pairCreatedAt (TrenchClaw technique — DexScreener free field)
+        const createdAt = pair.pairCreatedAt;
+        if (createdAt && Number(createdAt) > 0) {
+          tokenAgeMinutes = (Date.now() - Number(createdAt)) / 60_000;
+        }
+
+        // Symbol/name from DexScreener
         if (!token.symbol && pair.baseToken) {
           const bt = pair.baseToken as Record<string, unknown>;
           token.symbol = String(bt.symbol ?? '');
@@ -300,25 +323,94 @@ async function processToken(token: {
     // Market data unavailable
   }
 
-  // 4. Score
+  // Skip tokens that are too old (> 2 hours) — stale opportunities
+  if (tokenAgeMinutes > 120) {
+    return;  // Quietly skip old tokens — there are thousands of them
+  }
+
+  // Holder concentration check via Solana RPC (free — no API key needed)
+  // This is the TrenchClaw technique: detect rug risk and whale accumulation
+  let topHolderPct = 0;
+  let holderCount = 0;
+  try {
+    const SOLANA_RPC = process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com';
+    const holdersRes = await fetch(SOLANA_RPC, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0', id: 1,
+        method: 'getTokenLargestAccounts',
+        params: [mint, { commitment: 'confirmed' }],
+      }),
+    });
+    if (holdersRes.ok) {
+      const holdersData = await holdersRes.json() as {
+        result?: { value?: Array<{ amount: string; uiAmount: number }> };
+      };
+      const accounts = holdersData.result?.value ?? [];
+      if (accounts.length > 0) {
+        holderCount = accounts.length; // coarse count — top 20 largest
+        const totalAmount = accounts.reduce((sum, a) => sum + (a.uiAmount ?? 0), 0);
+        const topAmount = accounts[0]?.uiAmount ?? 0;
+        topHolderPct = totalAmount > 0 ? (topAmount / totalAmount) * 100 : 0;
+      }
+    }
+  } catch {
+    // Holder check failed — proceed without it
+  }
+
+  // Hard rug filter: single wallet holding > 30% is a red flag (unless it's a known liquidity pool)
+  if (topHolderPct > 30) {
+    logCb('info', `${token.symbol || mint.slice(0, 8)}: top holder = ${topHolderPct.toFixed(1)}% — likely rug. Skipping.`);
+    return;
+  }
+
+  // 4. Score with all signals
   const score = calculateCompositeScore({
     volume24h: market.volume24h,
-    holderCount: 0,
-    top10Concentration: 0,
+    holderCount,
+    top10Concentration: topHolderPct,
     kolMentions: 0,
     whaleNetFlow: 0,
     liquidityUsd: market.liquidity,
   });
 
+  // ── Token age bonus (TrenchClaw technique) ──
+  // Sweet spot: 5-20 min old fresh PumpFun launch
+  if (tokenAgeMinutes >= 0 && tokenAgeMinutes <= 5 && market.liquidity > 500) {
+    // Very early (< 5 min) — high risk but high reward
+    score.total = Math.min(100, score.total + 10);
+    logCb('info', `${token.symbol || mint.slice(0, 8)}: AGE BONUS +10 (${tokenAgeMinutes.toFixed(1)}min old — very early)`);
+  } else if (tokenAgeMinutes > 5 && tokenAgeMinutes <= 20) {
+    // Sweet spot — proven some momentum, still early
+    score.total = Math.min(100, score.total + 20);
+    if (score.total >= 65) score.conviction = 'medium';
+    if (score.total >= 75) score.conviction = 'high';
+    logCb('info', `${token.symbol || mint.slice(0, 8)}: AGE BONUS +20 (${tokenAgeMinutes.toFixed(1)}min old — SWEET SPOT)`);
+  } else if (tokenAgeMinutes > 20 && tokenAgeMinutes <= 60) {
+    // Still fresh window
+    score.total = Math.min(100, score.total + 8);
+  }
+
+  // Momentum bonus: strong 5m price action on a fresh token = extra signal
+  if (priceChange5m > 20 && tokenAgeMinutes > 0 && tokenAgeMinutes <= 30) {
+    score.total = Math.min(100, score.total + 10);
+    logCb('info', `${token.symbol || mint.slice(0, 8)}: MOMENTUM +10 (+${priceChange5m.toFixed(1)}% in 5m)`);
+  }
+
   signalCount++;
 
   // Only log tokens that have some market data
   if (market.marketCap > 0 || market.volume24h > 0) {
+    const ageStr = tokenAgeMinutes >= 0 ? `${tokenAgeMinutes.toFixed(0)}min old` : 'age unknown';
+    const holderStr = topHolderPct > 0 ? ` | Top holder: ${topHolderPct.toFixed(1)}%` : '';
+    const momentumStr = priceChange5m !== 0 ? ` | 5m: ${priceChange5m > 0 ? '+' : ''}${priceChange5m.toFixed(1)}%` : '';
     logCb('info',
       `Scanned: ${token.symbol || mint.slice(0, 8)} | ` +
+      `${ageStr} | ` +
       `MCap: $${market.marketCap.toLocaleString()} | ` +
       `Vol: $${market.volume24h.toLocaleString()} | ` +
-      `Liq: $${market.liquidity.toLocaleString()} | ` +
+      `Liq: $${market.liquidity.toLocaleString()}${holderStr}${momentumStr} | ` +
       `Score: ${score.total}/100 (${score.conviction})`,
     );
   }
@@ -395,9 +487,10 @@ async function processToken(token: {
     }
 
     logCb('info',
-      `SIGNAL FORWARDED: ${token.symbol || mint.slice(0, 8)} → Trader | ` +
+      `SIGNAL FORWARDED: ${token.symbol || mint.slice(0, 8)} (${mint}) → Trader | ` +
       `Score: ${score.total} | MCap: $${market.marketCap.toLocaleString()} | ` +
-      `Liq: $${market.liquidity.toLocaleString()}`,
+      `Liq: $${market.liquidity.toLocaleString()} | ` +
+      `https://dexscreener.com/solana/${mint}`,
     );
   }
 }

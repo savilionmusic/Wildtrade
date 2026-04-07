@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import { mkdirSync } from 'fs';
-import { getDb, closeDb } from '@wildtrade/shared';
+import { v4 as uuidv4 } from 'uuid';
+import { getDb, closeDb, SCORE_THRESHOLDS, SIGNAL_DEFAULT_TTL_MS } from '@wildtrade/shared';
 import { getElizaAdapter } from './db-adapter.js';
 import { createFinderRuntime } from './agents/finder.js';
 import { createTraderRuntime } from './agents/trader.js';
@@ -23,7 +24,19 @@ import {
   getKolStats,
   configureTelegram,
   sendTelegramAlert,
+  startConvergenceDetector,
+  stopConvergenceDetector,
+  getTrackedWallets,
+  onTelegramMessage,
+  stopTelegramPolling,
 } from '@wildtrade/plugin-alpha-scout';
+import {
+  startAutonomousTrader,
+  stopAutonomousTrader,
+  getTraderStats,
+  getOpenPositions,
+  getTradeHistory,
+} from '@wildtrade/plugin-smart-trader';
 
 const requiredEnvVars = [
   'OPENROUTER_API_KEY',
@@ -96,6 +109,14 @@ async function main(): Promise<void> {
   if (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID) {
     configureTelegram(process.env.TELEGRAM_BOT_TOKEN, process.env.TELEGRAM_CHAT_ID);
     console.log('[boot] Telegram notifications configured.');
+
+    // Two-way Telegram: user can send commands back to bot
+    onTelegramMessage(async (text: string) => {
+      console.log(`[telegram] User command: "${text}"`);
+      const response = await handleChatMessage(finder, text);
+      return response.text;
+    });
+    console.log('[boot] Two-way Telegram active — user can send commands via Telegram.');
   } else {
     console.log('[boot] Telegram not configured — set bot token + chat ID in Settings for push alerts.');
   }
@@ -110,7 +131,7 @@ async function main(): Promise<void> {
   await startSmartMoneyMonitor(
     (signal) => {
       // When a cluster is detected, log it and broadcast to UI
-      const clusterMsg = `CLUSTER: ${signal.tokenSymbol || signal.tokenAddress.slice(0, 8)} — ${signal.smartWalletCount} wallets, ${signal.totalSolInvested.toFixed(2)} SOL, ${signal.confidence} confidence`;
+      const clusterMsg = `CLUSTER: ${signal.tokenSymbol || signal.tokenAddress.slice(0, 8)} — ${signal.smartWalletCount} wallets, ${signal.totalSolInvested.toFixed(2)} SOL, ${signal.confidence} confidence | https://dexscreener.com/solana/${signal.tokenAddress}`;
       console.log(`[smart-money] ${clusterMsg}`);
       addProactiveAlert('smart_money_cluster', clusterMsg);
       sendToParent({ type: 'proactive-alert', alertType: 'smart_money_cluster', message: clusterMsg });
@@ -162,12 +183,10 @@ async function main(): Promise<void> {
   console.log('[boot] Starting token scanner (PumpPortal + DexScreener)...');
   startScanner(finder, (level, msg) => {
     console.log(`[scanner] ${msg}`);
-    // Feed scanner events to proactive alerts
-    if (msg.includes('SIGNAL FORWARDED') || msg.includes('Scanned:')) {
-      addProactiveAlert('scanner', msg);
-      sendToParent({ type: 'proactive-alert', alertType: 'scanner', message: msg });
-    }
+    // Only forward actual signals to UI (not every scanned token)
     if (msg.includes('SIGNAL FORWARDED')) {
+      addProactiveAlert('signal_forwarded', msg);
+      sendToParent({ type: 'proactive-alert', alertType: 'signal_forwarded', message: msg });
       sendTelegramAlert('signal_forwarded', msg);
     }
   });
@@ -177,7 +196,8 @@ async function main(): Promise<void> {
   console.log('[boot] Starting wallet intelligence...');
   startWalletIntelligence((msg) => {
     console.log(`[wallet-intel] ${msg}`);
-    if (msg.includes('Discovered') || msg.includes('new wallets')) {
+    // Only alert on significant discoveries (not routine updates)
+    if (msg.includes('Discovered') && msg.includes('new wallets')) {
       addProactiveAlert('wallet_intel', msg);
       sendToParent({ type: 'proactive-alert', alertType: 'wallet_intel', message: msg });
     }
@@ -202,14 +222,95 @@ async function main(): Promise<void> {
   });
   console.log('[boot] KOL intelligence active — monitoring social signals, CTOs, and ads.');
 
-  // Phase 6d: Periodic status report
+  // Phase 6d: Wallet Convergence Detector
+  console.log('[boot] Starting wallet convergence detector...');
+  const trackedWallets = getTrackedWallets().map(w => w.address);
+  const convergenceWallets = trackedWallets.length > 0 ? trackedWallets : userWallets;
+  if (convergenceWallets.length >= 2) {
+    startConvergenceDetector(
+      convergenceWallets,
+      async (signal) => {
+        const convMsg = `CONVERGENCE: ${signal.tokenSymbol || signal.tokenMint.slice(0, 8)} — ${signal.walletCount} wallets converge | MCap: $${signal.marketCap.toLocaleString()} | ${signal.confidence} | https://dexscreener.com/solana/${signal.tokenMint}`;
+        console.log(`[convergence] ${convMsg}`);
+        addProactiveAlert('smart_money_cluster', convMsg);
+        sendToParent({ type: 'proactive-alert', alertType: 'smart_money_cluster', message: convMsg });
+        sendTelegramAlert('smart_money_cluster', convMsg);
+
+        // Score based on wallet convergence count
+        const baseScore = signal.walletCount >= 5 ? 85
+          : signal.walletCount >= 4 ? 80
+          : signal.walletCount >= 3 ? 75
+          : 70;
+
+        // Write a high-priority signal directly to DB so autonomous trader picks it up immediately
+        try {
+          const db = await getDb();
+          const now = Date.now();
+          await db.query(
+            `INSERT INTO signals (id, mint, symbol, name, market_cap_usd, liquidity_usd,
+               sources, score_json, discovered_at, expires_at, tweet_urls, whale_wallets,
+               rugcheck_passed, rugcheck_score, creator_addr, in_denylist, expired)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,0)
+             ON CONFLICT (id) DO NOTHING`,
+            [
+              uuidv4(),
+              signal.tokenMint,
+              signal.tokenSymbol || signal.tokenMint.slice(0, 8),
+              signal.tokenName || '',
+              signal.marketCap || 0,
+              signal.liquidity || 0,
+              JSON.stringify(['convergence']),
+              JSON.stringify({ total: baseScore, conviction: signal.walletCount >= 4 ? 'high' : 'medium', signals: {} }),
+              now,
+              now + SIGNAL_DEFAULT_TTL_MS,
+              JSON.stringify([]),
+              JSON.stringify([]),
+              1, 85, '', 0,
+            ],
+          );
+          console.log(`[convergence] Injected ${signal.tokenSymbol || signal.tokenMint.slice(0, 8)} into signals DB (score=${baseScore}) — autonomous trader will pick up.`);
+        } catch (err) {
+          console.log(`[convergence] DB inject error: ${err}`);
+        }
+      },
+      (msg) => console.log(`[convergence] ${msg}`),
+    );
+    console.log(`[boot] Convergence detector active — scanning ${convergenceWallets.length} wallets for token overlap.`);
+  } else {
+    console.log('[boot] Convergence detector skipped — need 2+ wallets. Add SMART_MONEY_WALLETS in Settings.');
+  }
+
+  // Phase 6e: Autonomous Trader
+  console.log('[boot] Starting autonomous trader...');
+  startAutonomousTrader({
+    onLog: (msg) => {
+      console.log(`[trader] ${msg}`);
+      // Feed trade events to proactive alerts + parent + telegram
+      if (msg.includes('ENTERING') || msg.includes('DCA LEG') || msg.includes('EXIT') || msg.includes('STOP LOSS')) {
+        addProactiveAlert('dca_entry', msg);
+        sendToParent({ type: 'proactive-alert', alertType: 'dca_entry', message: msg });
+        sendTelegramAlert('dca_entry', msg);
+      }
+    },
+    onAlert: (type, alertMsg) => {
+      addProactiveAlert(type, alertMsg);
+      sendToParent({ type: 'proactive-alert', alertType: type, message: alertMsg });
+      sendTelegramAlert(type, alertMsg);
+    },
+  });
+  const traderStats = getTraderStats();
+  console.log(`[boot] Autonomous trader ${traderStats.running ? 'ONLINE' : 'FAILED TO START'} | Mode: ${paperMode ? 'PAPER' : 'LIVE'} | Budget: ${process.env.TOTAL_BUDGET_SOL || '1.0'} SOL`);
+
+  // Phase 6f: Periodic status report
   setInterval(() => {
     const walletStats = getWalletIntelStats();
     const kolStats = getKolStats();
+    const tStats = getTraderStats();
     console.log(
       `[status] Wallets tracked: ${walletStats.tracked} | ` +
       `Recent buys: ${walletStats.recentBuys} | ` +
-      `KOL signals: ${kolStats.totalSignals} (${kolStats.recentSignals} recent)`,
+      `KOL signals: ${kolStats.totalSignals} (${kolStats.recentSignals} recent) | ` +
+      `Trader: ${tStats.positions} positions, ${tStats.deployed} SOL deployed, PnL: ${tStats.realized} SOL, Win: ${tStats.winRate}%`,
     );
   }, 120_000); // every 2 min
 
@@ -237,6 +338,27 @@ async function main(): Promise<void> {
           });
         }
       }
+
+      if (msg?.type === 'portfolio:get') {
+        const tStats = getTraderStats();
+        const openPos = getOpenPositions();
+        const history = getTradeHistory();
+        process.send!({
+          type: 'portfolio:response',
+          id: msg.id,
+          data: {
+            paper: process.env.PAPER_TRADING !== 'false',
+            budget: tStats.budget,
+            deployed: tStats.deployed,
+            available: tStats.available,
+            realized: tStats.realized,
+            winRate: tStats.winRate,
+            trades: tStats.trades,
+            positions: openPos,
+            history,
+          },
+        });
+      }
     });
   }
 
@@ -258,6 +380,9 @@ async function main(): Promise<void> {
     stopWalletIntelligence();
     stopKolIntelligence();
     stopSmartMoneyMonitor();
+    stopConvergenceDetector();
+    stopAutonomousTrader();
+    stopTelegramPolling();
 
     broadcast('agent:status', 'finder', { agent: 'finder', status: 'offline' });
     broadcast('agent:status', 'trader', { agent: 'trader', status: 'offline' });

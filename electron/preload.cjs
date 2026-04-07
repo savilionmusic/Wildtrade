@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, shell } = require('electron');
 
 contextBridge.exposeInMainWorld('wildtrade', {
   // Config
@@ -10,6 +10,9 @@ contextBridge.exposeInMainWorld('wildtrade', {
   stopBot: () => ipcRenderer.invoke('bot:stop'),
   getBotStatus: () => ipcRenderer.invoke('bot:status'),
   getBotLogs: () => ipcRenderer.invoke('bot:logs'),
+
+  // Open URLs in system browser
+  openExternal: (url) => ipcRenderer.invoke('open-external', url),
 
   // Events from main
   onBotLog: (cb) => {
@@ -41,4 +44,7 @@ contextBridge.exposeInMainWorld('wildtrade', {
   // AI Chat
   chatSend: (message) => ipcRenderer.invoke('chat:send', message),
   chatClear: () => ipcRenderer.invoke('chat:clear'),
+
+  // Portfolio
+  getPortfolio: () => ipcRenderer.invoke('portfolio:get'),
 });

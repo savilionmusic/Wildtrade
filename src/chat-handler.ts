@@ -23,6 +23,7 @@ import type {
   UUID,
 } from '@elizaos/core';
 import { getScannerStats, getWalletIntelStats, getKolStats } from '@wildtrade/plugin-alpha-scout';
+import { getTraderStats, getOpenPositions, getTradeHistory, manualBuy, manualSell } from '@wildtrade/plugin-smart-trader';
 
 // Stable room ID for the user↔Scout chat
 const CHAT_ROOM_ID = stringToUuid('wildtrade-user-chat-room');
@@ -49,6 +50,71 @@ export async function handleChatMessage(
   runtime: AgentRuntime,
   userText: string,
 ): Promise<{ text: string; action?: string }> {
+  const lower = userText.toLowerCase().trim();
+
+  // ── Direct command shortcuts (no LLM needed — instant response) ──
+  // These address the user's request: "why won't chat respond to buy/sell commands?"
+
+  // BUY command: "buy <MINT> <SOL>" or "buy <MINT>"
+  const buyMatch = userText.match(/\bbuy\b\s+([1-9A-HJ-NP-Za-km-z]{32,44})(?:\s+([\d.]+))?/i);
+  if (buyMatch) {
+    const mintAddress = buyMatch[1];
+    const solAmount = parseFloat(buyMatch[2] ?? '0.1');
+    const result = await manualBuy(mintAddress, '', solAmount);
+    return { text: result };
+  }
+
+  // SELL command: "sell <MINT> <PCT>" or "sell <MINT>"
+  const sellMatch = userText.match(/\bsell\b\s+([1-9A-HJ-NP-Za-km-z]{32,44})(?:\s+([\d.]+)%?)?/i);
+  if (sellMatch) {
+    const mintAddress = sellMatch[1];
+    const pct = sellMatch[2] ? Math.min(1.0, parseFloat(sellMatch[2]) / 100) : 1.0;
+    const result = await manualSell(mintAddress, pct);
+    return { text: result };
+  }
+
+  // SELL ALL command
+  if (/\bsell\s+all\b/i.test(userText)) {
+    const openPositions = getOpenPositions();
+    if (openPositions.length === 0) return { text: 'No open positions to sell.' };
+    const results: string[] = [];
+    for (const pos of openPositions) {
+      results.push(await manualSell(pos.mintAddress, 1.0));
+    }
+    return { text: results.join('\n') };
+  }
+
+  // SELL HALF command
+  if (/\bsell\s+half\b/i.test(userText)) {
+    const openPositions = getOpenPositions();
+    if (openPositions.length === 0) return { text: 'No open positions to half-sell.' };
+    const results: string[] = [];
+    for (const pos of openPositions) {
+      results.push(await manualSell(pos.mintAddress, 0.5));
+    }
+    return { text: results.join('\n') };
+  }
+
+  // STATUS shortcut — instant answer without LLM latency
+  if (/^(status|portfolio|positions?|pnl|balance|how are we|what.s happening)\??$/i.test(lower)) {
+    const tStats = getTraderStats();
+    const openPos = getOpenPositions();
+    const scanStats = getScannerStats();
+    let statusMsg = `Portfolio: ${tStats.deployed} SOL deployed | PnL: ${tStats.realized >= 0 ? '+' : ''}${tStats.realized} SOL | Win rate: ${tStats.winRate}% (${tStats.trades} trades) | Mode: ${process.env.PAPER_TRADING !== 'false' ? 'PAPER' : 'LIVE'}\n`;
+    statusMsg += `Scanner: ${scanStats.running ? 'ACTIVE' : 'stopped'} | Processed: ${scanStats.processed} | Signals: ${scanStats.signals} | Forwarded: ${scanStats.forwarded}\n`;
+    if (openPos.length > 0) {
+      statusMsg += `\nOpen positions (${openPos.length}):\n`;
+      for (const p of openPos) {
+        const mult = p.currentPrice > 0 && p.entryPrice > 0 ? (p.currentPrice / p.entryPrice).toFixed(2) : '?';
+        const pnlSign = p.pnlPct >= 0 ? '+' : '';
+        statusMsg += `  ${p.symbol}: ${mult}x | ${pnlSign}${p.pnlPct.toFixed(1)}% PnL | ${p.solDeployed.toFixed(4)} SOL | DCA ${p.dcaLegsExecuted}/3 — https://dexscreener.com/solana/${p.mintAddress}\n`;
+      }
+    } else {
+      statusMsg += 'No open positions.';
+    }
+    return { text: statusMsg.trim() };
+  }
+
   // 1. Create a Memory for the user's message
   const userMessage: Memory = {
     id: stringToUuid(`msg-${Date.now()}-${Math.random().toString(36).slice(2)}`),
@@ -74,7 +140,11 @@ export async function handleChatMessage(
     state = await runtime.composeState(userMessage);
   } catch (err) {
     console.log(`[chat] composeState failed: ${err}`);
-    // Fallback to minimal state
+    // Fallback to minimal state with proper action metadata
+    const allActions = (runtime as any).actions || [];
+    const actionNames = allActions.map((a: any) => a.name).join(', ');
+    const actionDescriptions = allActions.map((a: any) => `${a.name}: ${a.description}`).join('\n');
+
     state = {
       bio: (runtime.character.bio as string[])?.join(' ') ?? '',
       lore: (runtime.character.lore as string[])?.join(' ') ?? '',
@@ -87,7 +157,11 @@ export async function handleChatMessage(
       recentMessages: '',
       recentMessagesData: [],
       providers: '',
-    };
+      actionNames: actionNames,
+      actionStrings: allActions.map((a: any) => a.name),
+      actions: actionDescriptions,
+      actionExamples: '',
+    } as any;
   }
 
   // 3. Inject additional trading context into state
@@ -105,10 +179,25 @@ export async function handleChatMessage(
   const paperMode = process.env.PAPER_TRADING !== 'false';
   const budget = process.env.TOTAL_BUDGET_SOL || '1.0';
 
+  // Trader stats
+  const tStats = getTraderStats();
+  const openPos = getOpenPositions();
+  const positionsText = openPos.length > 0
+    ? openPos.map(p => {
+        const pnlSign = p.pnlPct >= 0 ? '+' : '';
+        const mult = p.currentPrice > 0 && p.entryPrice > 0 ? (p.currentPrice / p.entryPrice).toFixed(2) : '?';
+        return `  ${p.symbol} (https://dexscreener.com/solana/${p.mintAddress}): ${p.solDeployed.toFixed(4)} SOL deployed, ${mult}x, ${pnlSign}${p.pnlPct.toFixed(1)}% PnL, DCA ${p.dcaLegsExecuted}/3`;
+      }).join('\n')
+    : '(no open positions)';
+
   const tradingContext = [
     `\n=== Trading Status ===`,
     `Mode: ${paperMode ? 'PAPER TRADING (simulated)' : 'LIVE TRADING'}`,
     `Budget: ${budget} SOL | Goal: 10 SOL`,
+    `Phase: ${(tStats as any).phase || 'Phase 1'} | Target MCap: ${(tStats as any).targetMCap || 'micro caps'}`,
+    `Trader: ${tStats.running ? 'ACTIVE' : 'STOPPED'} | Deployed: ${tStats.deployed} SOL | Available: ${tStats.available} SOL | PnL: ${tStats.realized} SOL | Win Rate: ${tStats.winRate}% (${tStats.trades} trades)`,
+    `Open Positions (${tStats.positions}):`,
+    positionsText,
     `Scanner: ${scannerStats.running ? 'ACTIVE' : 'stopped'} | Processed: ${scannerStats.processed} tokens | Signals: ${scannerStats.signals} | Forwarded to Trader: ${scannerStats.forwarded}`,
     `Queue: ${scannerStats.queueSize} tokens waiting`,
     `\n=== Intelligence Systems ===`,
@@ -118,8 +207,18 @@ export async function handleChatMessage(
     alertsText ? `\n=== Recent Activity (IMPORTANT — reference this!) ===\n${alertsText}` : '(no recent activity — scanning is active, waiting for signals)',
   ].join('\n');
 
+  // Add recent trade history for learning context
+  const history = getTradeHistory().slice(-5);
+  const historyText = history.length > 0
+    ? '\n=== Last 5 Trades ===\n' + history.map(t => {
+        const sign = t.pnlPct >= 0 ? '+' : '';
+        const mins = Math.round(t.holdTimeMs / 60000);
+        return `  ${t.symbol}: ${sign}${t.pnlPct.toFixed(1)}% | held ${mins}m | exit: ${t.exitReason}`;
+      }).join('\n')
+    : '';
+
   // Append trading context to providers
-  state.providers = (state.providers || '') + tradingContext;
+  state.providers = (state.providers || '') + tradingContext + historyText;
 
   // 4. Build the response template
   const template = `# About {{agentName}}
@@ -137,13 +236,20 @@ export async function handleChatMessage(
 # Available actions you can take: {{actionNames}}
 {{actions}}
 
-Respond to the user's latest message as {{agentName}}, the Wildtrade team leader. You are their personal trading partner managing the 10 SOL challenge. Be proactive, reference real data from your providers above, and take action when appropriate. Keep responses punchy (2-4 sentences) unless they ask for detail.
+CRITICAL RULES FOR {{agentName}}:
+1. ALWAYS reference REAL data from the "Live data from your systems" section above. Quote actual numbers (scores, wallet counts, prices, MCap, volume).
+2. If the user asks "what's happening" or "any signals" — look at the Recent Activity section and report EXACTLY what you see. If there's a signal, give the token symbol, score, MCap, and DexScreener link.
+3. Include DexScreener links when mentioning tokens: https://dexscreener.com/solana/MINT_ADDRESS_HERE
+4. NEVER say "I'll look into it" or "let me check" without giving actual data you already have. You have live data above — USE IT.
+5. If you have open positions, report their status with multipliers and PnL.
+6. If nothing is happening, say exactly that: "market's quiet, scanner running, 0 signals in last X min, watching Y wallets"
+7. Keep responses short and punchy (2-4 sentences). Start with the most important data point.
 
 {{actionExamples}}
 
-Response format should be formatted in a valid JSON block like this:
+Respond ONLY with this JSON (no other text, no markdown outside the block):
 \`\`\`json
-{ "user": "{{agentName}}", "text": "<string>", "action": "<AVAILABLE_ACTION or null>" }
+{ "user": "{{agentName}}", "text": "your actual response here", "action": "ACTION_NAME_OR_null" }
 \`\`\``;
 
   const context = composeContext({ state, template });

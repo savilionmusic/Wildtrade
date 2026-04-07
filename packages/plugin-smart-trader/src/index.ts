@@ -34,3 +34,10 @@ export { exitConditionEvaluator } from './evaluators/exit-condition.evaluator.js
 export { calculateDCALegs } from './lib/dca-calculator.js';
 export { buildExitTiers } from './lib/exit-strategy.js';
 export { getKeypair, getPublicKey } from './lib/wallet.js';
+
+// Autonomous Trader
+export {
+  startAutonomousTrader, stopAutonomousTrader,
+  getTraderStats, getOpenPositions, getTradeHistory,
+  manualBuy, manualSell,
+} from './services/autonomous-trader.service.js';

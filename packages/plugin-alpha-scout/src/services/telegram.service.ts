@@ -138,3 +138,69 @@ function escapeMarkdown(text: string): string {
   // Escape Telegram Markdown v1 special chars (but keep basic formatting)
   return text.replace(/([_*\[\]()~`>#+\-=|{}.!])/g, '\\$1');
 }
+
+// ── Two-Way: Poll for incoming user messages ──
+
+type IncomingHandler = (text: string) => Promise<string>;
+let incomingHandler: IncomingHandler | null = null;
+let lastUpdateId = 0;
+let pollTimer: ReturnType<typeof setInterval> | null = null;
+
+/**
+ * Register a handler for messages sent by the user TO the bot via Telegram.
+ * The handler should return the bot's text response.
+ */
+export function onTelegramMessage(handler: IncomingHandler): void {
+  incomingHandler = handler;
+
+  if (!enabled || pollTimer) return;
+
+  // Start polling for updates every 5 seconds
+  pollTimer = setInterval(pollUpdates, 5_000);
+  console.log('[telegram] Two-way mode active — listening for user commands');
+}
+
+export function stopTelegramPolling(): void {
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = null;
+}
+
+async function pollUpdates(): Promise<void> {
+  if (!enabled || !incomingHandler) return;
+
+  try {
+    const url = `${TELEGRAM_API}${telegramToken}/getUpdates?offset=${lastUpdateId + 1}&timeout=0&allowed_updates=["message"]`;
+    const res = await fetch(url);
+    if (!res.ok) return;
+
+    const data = await res.json() as { ok?: boolean; result?: Array<{
+      update_id: number;
+      message?: { text?: string; chat?: { id: number }; from?: { id: number } };
+    }> };
+
+    if (!data.ok || !data.result) return;
+
+    for (const update of data.result) {
+      lastUpdateId = update.update_id;
+      const text = update.message?.text;
+      const chatId = String(update.message?.chat?.id ?? '');
+
+      // Only respond to messages from the configured chat
+      if (!text || chatId !== telegramChatId) continue;
+
+      console.log(`[telegram] Received: "${text}"`);
+
+      try {
+        const reply = await incomingHandler(text);
+        if (reply) {
+          await sendMessage(escapeMarkdown(reply));
+        }
+      } catch (err) {
+        console.log(`[telegram] Handler error: ${String(err)}`);
+        await sendMessage('\u274C Error processing command');
+      }
+    }
+  } catch (err) {
+    // Silent fail on poll errors
+  }
+}

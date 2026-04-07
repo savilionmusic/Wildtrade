@@ -68,7 +68,15 @@ export type { KolSignal } from './services/kol-intelligence.service.js';
 // Telegram Notifications
 export {
   configureTelegram, sendTelegramAlert, isTelegramEnabled,
+  onTelegramMessage, stopTelegramPolling,
 } from './services/telegram.service.js';
+
+// Convergence Detector
+export {
+  startConvergenceDetector, stopConvergenceDetector,
+  getRecentConvergences, updateWalletList as updateConvergenceWallets,
+} from './services/convergence-detector.service.js';
+export type { ConvergenceSignal, ConvergenceCallback } from './services/convergence-detector.service.js';
 
 // Re-export lib utilities
 export { calculateCompositeScore } from './lib/score-calculator.js';

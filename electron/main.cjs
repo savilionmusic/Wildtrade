@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, nativeTheme } = require('electron');
+const { app, BrowserWindow, ipcMain, nativeTheme, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { fork } = require('child_process');
@@ -106,13 +106,12 @@ function startBot() {
   });
 
   botProcess.stdout.on('data', (data) => {
-    const line = data.toString().trim();
-    if (line) addLog('info', line);
+    // Split on newlines to avoid garbled multi-line log entries
+    data.toString().split('\n').map(l => l.trim()).filter(Boolean).forEach(line => addLog('info', line));
   });
 
   botProcess.stderr.on('data', (data) => {
-    const line = data.toString().trim();
-    if (line) addLog('error', line);
+    data.toString().split('\n').map(l => l.trim()).filter(Boolean).forEach(line => addLog('error', line));
   });
 
   botProcess.on('message', (msg) => {
@@ -257,6 +256,13 @@ ipcMain.handle('bot:status', () => {
 
 ipcMain.handle('bot:logs', () => botLogs);
 
+// Open URLs in system browser (for DexScreener links etc.)
+ipcMain.handle('open-external', (_, url) => {
+  if (typeof url === 'string' && (url.startsWith('https://') || url.startsWith('http://'))) {
+    shell.openExternal(url);
+  }
+});
+
 // ── AI Chat ──
 
 // Trade activity log for the chat to reference
@@ -300,21 +306,30 @@ function parseLogForActivity(message) {
     addTradeActivity({ type: 'smart_money_update', message });
   }
 
-  // Trading activity
-  if (msg.includes('dca') && (msg.includes('executed') || msg.includes('entry'))) {
+  // Trading activity — match actual autonomous trader log format
+  if (msg.includes('[trader]') && (msg.includes('dca leg') || msg.includes('entering position'))) {
     addTradeActivity({ type: 'dca_entry', message });
   }
 
-  if (msg.includes('exit') && (msg.includes('triggered') || msg.includes('sold'))) {
+  if (msg.includes('[trader]') && (msg.includes('exit tier') || msg.includes('take-profit'))) {
     addTradeActivity({ type: 'exit', message });
   }
 
-  if (msg.includes('position') && (msg.includes('opened') || msg.includes('created'))) {
+  if (msg.includes('[trader]') && msg.includes('stop loss')) {
+    addTradeActivity({ type: 'exit', message });
+  }
+
+  if (msg.includes('[trader]') && msg.includes('entering position')) {
     addTradeActivity({ type: 'position_opened', message });
   }
 
-  if (msg.includes('position') && (msg.includes('closed') || msg.includes('cancelled'))) {
+  if (msg.includes('[trader]') && msg.includes('position closed')) {
     addTradeActivity({ type: 'position_closed', message });
+  }
+
+  // Convergence
+  if (msg.includes('[convergence]') && msg.includes('convergence:')) {
+    addTradeActivity({ type: 'smart_money_cluster', message });
   }
 
   // Safety
@@ -358,12 +373,14 @@ function chatViaBotIPC(message) {
 function handleBotMessage(msg) {
   if (!msg || typeof msg !== 'object') return;
 
-  if (msg.type === 'chat:response') {
+  if (msg.type === 'chat:response' || msg.type === 'portfolio:response') {
     const pending = pendingChatResponses.get(msg.id);
     if (pending) {
       clearTimeout(pending.timeout);
       pendingChatResponses.delete(msg.id);
-      if (msg.error) {
+      if (msg.type === 'portfolio:response') {
+        pending.resolve(msg.data);
+      } else if (msg.error) {
         pending.resolve({ error: msg.text });
       } else {
         pending.resolve({ reply: msg.text, action: msg.action });
@@ -465,6 +482,22 @@ ${recentLogs || '(no logs)'}`;
 ipcMain.handle('chat:clear', () => {
   chatHistory = [];
   return { ok: true };
+});
+
+// ── Portfolio IPC ──
+ipcMain.handle('portfolio:get', async () => {
+  if (!botProcess) {
+    return { positions: [], history: [], budget: 0, deployed: 0, available: 0, realized: 0, winRate: 0, trades: 0, paper: true };
+  }
+  return new Promise((resolve) => {
+    const id = ++chatIPCCounter;
+    const timeout = setTimeout(() => {
+      pendingChatResponses.delete(id);
+      resolve({ positions: [], history: [], budget: 0, deployed: 0, available: 0, realized: 0, winRate: 0, trades: 0, paper: true });
+    }, 5000);
+    pendingChatResponses.set(id, { resolve, timeout });
+    botProcess.send({ type: 'portfolio:get', id });
+  });
 });
 
 // ── App lifecycle ──

@@ -4,12 +4,34 @@ import path from 'path';
 
 let instance: PGlite | null = null;
 
+// Migration: add new columns to existing positions table if they don't exist yet
+const MIGRATION_SQL = `
+ALTER TABLE positions ADD COLUMN IF NOT EXISTS symbol TEXT NOT NULL DEFAULT '';
+ALTER TABLE positions ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT '';
+ALTER TABLE positions ADD COLUMN IF NOT EXISTS budget_sol REAL NOT NULL DEFAULT 0;
+ALTER TABLE positions ADD COLUMN IF NOT EXISTS entry_price_usd REAL;
+ALTER TABLE positions ADD COLUMN IF NOT EXISTS current_price_usd REAL;
+ALTER TABLE positions ADD COLUMN IF NOT EXISTS sol_deployed REAL NOT NULL DEFAULT 0;
+ALTER TABLE positions ADD COLUMN IF NOT EXISTS sol_returned REAL NOT NULL DEFAULT 0;
+ALTER TABLE positions ADD COLUMN IF NOT EXISTS pnl_sol REAL NOT NULL DEFAULT 0;
+ALTER TABLE positions ADD COLUMN IF NOT EXISTS pnl_pct REAL NOT NULL DEFAULT 0;
+ALTER TABLE positions ADD COLUMN IF NOT EXISTS dca_legs TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE positions ADD COLUMN IF NOT EXISTS exit_tiers TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE positions ADD COLUMN IF NOT EXISTS paper INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE positions ADD COLUMN IF NOT EXISTS opened_at BIGINT;
+`;
+
 export async function getDb(): Promise<PGlite> {
   if (instance) return instance;
   const rawDir = process.env.PGLITE_DATA_DIR || './.wildtrade-db';
   const dataDir = path.isAbsolute(rawDir) ? rawDir : path.resolve(process.cwd(), rawDir);
   instance = new PGlite(dataDir);
   await instance.exec(SCHEMA_SQL);
+  try {
+    await instance.exec(MIGRATION_SQL);
+  } catch {
+    // Migrations may fail silently if columns already exist from the new schema
+  }
   return instance;
 }
 

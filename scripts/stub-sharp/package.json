@@ -1,0 +1,6 @@
+{
+  "name": "sharp",
+  "version": "0.34.5",
+  "description": "Stub: image processing not needed for trading bot",
+  "main": "index.js"
+}

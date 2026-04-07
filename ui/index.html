@@ -27,6 +27,10 @@
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
         Dashboard
       </button>
+      <button class="nav-btn" data-tab="chat">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        Chat
+      </button>
       <button class="nav-btn" data-tab="settings">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
         Settings
@@ -106,6 +110,31 @@
       <div id="dashboard-logs" class="log-preview"></div>
     </section>
 
+    <!-- Chat Tab -->
+    <section id="tab-chat" class="tab">
+      <div class="tab-header">
+        <h1>Chat</h1>
+        <button class="btn btn-outline" onclick="app.runDiagnostics()">Run Diagnostics</button>
+      </div>
+      <div id="chat-messages" class="chat-messages">
+        <div class="chat-msg bot">
+          <div class="chat-avatar">W</div>
+          <div class="chat-bubble">Welcome to Wildtrade! I can help you set up and troubleshoot your bot. Try asking me:
+            <ul>
+              <li>"Run diagnostics" - check your setup</li>
+              <li>"What API keys do I need?" - setup guide</li>
+              <li>"Show my portfolio" - view positions</li>
+              <li>"What's the bot status?" - system health</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+      <div class="chat-input-wrap">
+        <input type="text" id="chat-input" class="chat-input" placeholder="Ask the bot anything..." autocomplete="off">
+        <button class="btn btn-start chat-send" onclick="app.sendChat()">Send</button>
+      </div>
+    </section>
+
     <!-- Settings Tab -->
     <section id="tab-settings" class="tab">
       <div class="tab-header">
@@ -119,9 +148,52 @@
         <fieldset class="settings-group">
           <legend>LLM / OpenRouter</legend>
           <label>OpenRouter API Key <input type="password" id="cfg-OPENROUTER_API_KEY" placeholder="sk-or-v1-..." autocomplete="off"></label>
-          <label>Finder Model <input type="text" id="cfg-FINDER_MODEL" placeholder="anthropic/claude-sonnet-4-5"></label>
-          <label>Trader Model <input type="text" id="cfg-TRADER_MODEL" placeholder="openai/gpt-4o-mini"></label>
-          <label>Auditor Model <input type="text" id="cfg-AUDITOR_MODEL" placeholder="openai/gpt-4o-mini"></label>
+          <label>Finder Model (Reasoning)
+            <select id="cfg-FINDER_MODEL">
+              <optgroup label="Recommended for Finder">
+                <option value="anthropic/claude-sonnet-4-5">Claude Sonnet 4.5 (Best reasoning)</option>
+                <option value="anthropic/claude-3.5-sonnet">Claude 3.5 Sonnet</option>
+                <option value="deepseek/deepseek-r1">DeepSeek R1 (Cheap + strong)</option>
+                <option value="google/gemini-2.5-pro-preview">Gemini 2.5 Pro</option>
+              </optgroup>
+              <optgroup label="Budget Options">
+                <option value="anthropic/claude-3.5-haiku">Claude 3.5 Haiku</option>
+                <option value="openai/gpt-4o-mini">GPT-4o-mini</option>
+                <option value="deepseek/deepseek-chat">DeepSeek Chat (Very cheap)</option>
+              </optgroup>
+              <optgroup label="Premium">
+                <option value="anthropic/claude-opus-4">Claude Opus 4 (Most capable)</option>
+                <option value="openai/gpt-4o">GPT-4o</option>
+                <option value="openai/o1">OpenAI o1</option>
+              </optgroup>
+            </select>
+          </label>
+          <label>Trader Model (Fast execution)
+            <select id="cfg-TRADER_MODEL">
+              <optgroup label="Recommended for Trader">
+                <option value="openai/gpt-4o-mini">GPT-4o-mini (Fast + cheap)</option>
+                <option value="anthropic/claude-3.5-haiku">Claude 3.5 Haiku</option>
+                <option value="deepseek/deepseek-chat">DeepSeek Chat</option>
+              </optgroup>
+              <optgroup label="More Capable">
+                <option value="anthropic/claude-sonnet-4-5">Claude Sonnet 4.5</option>
+                <option value="openai/gpt-4o">GPT-4o</option>
+              </optgroup>
+            </select>
+          </label>
+          <label>Auditor Model (Error analysis)
+            <select id="cfg-AUDITOR_MODEL">
+              <optgroup label="Recommended for Auditor">
+                <option value="openai/gpt-4o-mini">GPT-4o-mini (Fast + cheap)</option>
+                <option value="anthropic/claude-3.5-haiku">Claude 3.5 Haiku</option>
+                <option value="deepseek/deepseek-chat">DeepSeek Chat</option>
+              </optgroup>
+              <optgroup label="More Capable">
+                <option value="anthropic/claude-sonnet-4-5">Claude Sonnet 4.5</option>
+                <option value="openai/gpt-4o">GPT-4o</option>
+              </optgroup>
+            </select>
+          </label>
         </fieldset>
 
         <fieldset class="settings-group">

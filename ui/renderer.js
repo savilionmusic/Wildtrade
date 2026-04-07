@@ -258,6 +258,8 @@ window.wildtrade.onTradeUpdate(update => {
     new_token_detected: 'New Token',
     token_scanned: 'Token Scanned',
     dexscreener_update: 'DexScreener',
+    agent_action: 'Agent Action',
+    alert: 'Alert',
   };
 
   const typeColors = {
@@ -273,11 +275,13 @@ window.wildtrade.onTradeUpdate(update => {
     new_token_detected: '#6366f1',
     token_scanned: '#8b949e',
     dexscreener_update: '#6366f1',
+    agent_action: '#f59e0b',
+    alert: '#6366f1',
   };
 
   // Only show high-value notifications in chat (not every token scan)
   const chatWorthy = ['smart_money_alert', 'signal_forwarded', 'dca_entry', 'exit',
-    'position_opened', 'position_closed', 'safety_alert'];
+    'position_opened', 'position_closed', 'safety_alert', 'agent_action', 'alert'];
   if (!chatWorthy.includes(update.type)) return;
 
   const label = typeLabels[update.type] || 'Update';

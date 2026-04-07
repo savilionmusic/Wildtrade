@@ -8,6 +8,7 @@ import { createAuditorRuntime } from './agents/auditor.js';
 import { createSocketServer, broadcast } from './server.js';
 import { initApprovalGate } from './approval-gate.js';
 import { startCLI } from './cli.js';
+import { handleChatMessage, addProactiveAlert } from './chat-handler.js';
 import {
   startSmartMoneyMonitor,
   stopSmartMoneyMonitor,
@@ -33,6 +34,11 @@ function validateEnv(): void {
 }
 
 async function main(): Promise<void> {
+  // Helper to send IPC messages to Electron parent process
+  const sendToParent = (msg: unknown) => {
+    if (process.send) process.send(msg);
+  };
+
   console.log('╔═══════════════════════════════════════════╗');
   console.log('║   WILDTRADE - Tri-Squad Trading Bot       ║');
   console.log('║   1-to-10 SOL Challenge                   ║');
@@ -87,7 +93,10 @@ async function main(): Promise<void> {
   await startSmartMoneyMonitor(
     (signal) => {
       // When a cluster is detected, log it and broadcast to UI
-      console.log(`[smart-money] CLUSTER: ${signal.tokenSymbol || signal.tokenAddress.slice(0, 8)} — ${signal.smartWalletCount} wallets, ${signal.totalSolInvested.toFixed(2)} SOL, ${signal.confidence} confidence`);
+      const clusterMsg = `CLUSTER: ${signal.tokenSymbol || signal.tokenAddress.slice(0, 8)} — ${signal.smartWalletCount} wallets, ${signal.totalSolInvested.toFixed(2)} SOL, ${signal.confidence} confidence`;
+      console.log(`[smart-money] ${clusterMsg}`);
+      addProactiveAlert('smart_money_cluster', clusterMsg);
+      sendToParent({ type: 'proactive-alert', alertType: 'smart_money_cluster', message: clusterMsg });
 
       broadcast('smart-money:cluster', 'finder', {
         tokenAddress: signal.tokenAddress,
@@ -135,8 +144,40 @@ async function main(): Promise<void> {
   console.log('[boot] Starting token scanner (PumpPortal + DexScreener)...');
   startScanner(finder, (level, msg) => {
     console.log(`[scanner] ${msg}`);
+    // Feed scanner events to proactive alerts
+    if (msg.includes('SIGNAL FORWARDED') || msg.includes('Scanned:')) {
+      addProactiveAlert('scanner', msg);
+      sendToParent({ type: 'proactive-alert', alertType: 'scanner', message: msg });
+    }
   });
   console.log('[boot] Token scanner active — watching for new launches and trending tokens.');
+
+  // Phase 7: IPC Chat Handler (Electron ↔ ElizaOS)
+  // When running as a child process of Electron, listen for chat messages
+  if (process.send) {
+    console.log('[boot] IPC bridge active — chat routes through Scout agent.');
+
+    process.on('message', async (msg: any) => {
+      if (msg?.type === 'chat:message') {
+        try {
+          const response = await handleChatMessage(finder, msg.text);
+          process.send!({
+            type: 'chat:response',
+            id: msg.id,
+            text: response.text,
+            action: response.action,
+          });
+        } catch (err) {
+          process.send!({
+            type: 'chat:response',
+            id: msg.id,
+            text: `got an error processing that: ${String(err)}`,
+            error: true,
+          });
+        }
+      }
+    });
+  }
 
   // Phase 7: Health Heartbeat
   const heartbeatInterval = setInterval(() => {

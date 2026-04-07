@@ -116,6 +116,7 @@ function startBot() {
   });
 
   botProcess.on('message', (msg) => {
+    handleBotMessage(msg);
     sendToRenderer('bot:message', msg);
   });
 
@@ -326,6 +327,71 @@ function parseLogForActivity(message) {
 }
 
 ipcMain.handle('chat:send', async (_, message) => {
+  // Route through ElizaOS agent when bot is running
+  if (botProcess) {
+    return chatViaBotIPC(message);
+  }
+  // Fallback to direct OpenRouter when bot is stopped
+  return chatViaOpenRouter(message);
+});
+
+// ── Chat via Bot IPC (ElizaOS Agent) ──
+let chatIPCCounter = 0;
+const pendingChatResponses = new Map();
+
+function chatViaBotIPC(message) {
+  return new Promise((resolve) => {
+    const id = ++chatIPCCounter;
+    const timeout = setTimeout(() => {
+      pendingChatResponses.delete(id);
+      // If IPC times out, fall back to direct OpenRouter
+      resolve(chatViaOpenRouter(message));
+    }, 30000);
+
+    pendingChatResponses.set(id, { resolve, timeout });
+    botProcess.send({ type: 'chat:message', id, text: message });
+  });
+}
+
+// Handle IPC responses from bot process
+function handleBotMessage(msg) {
+  if (!msg || typeof msg !== 'object') return;
+
+  if (msg.type === 'chat:response') {
+    const pending = pendingChatResponses.get(msg.id);
+    if (pending) {
+      clearTimeout(pending.timeout);
+      pendingChatResponses.delete(msg.id);
+      if (msg.error) {
+        pending.resolve({ error: msg.text });
+      } else {
+        pending.resolve({ reply: msg.text, action: msg.action });
+      }
+    }
+  }
+
+  if (msg.type === 'chat:action-result') {
+    // Action was triggered by the agent — show result in chat
+    sendToRenderer('bot:trade-update', {
+      type: 'agent_action',
+      action: msg.action,
+      message: msg.result || `Action ${msg.action} executed`,
+    });
+  }
+
+  if (msg.type === 'proactive-alert') {
+    // Proactive alert from scanner/smart money — push to chat
+    sendToRenderer('bot:trade-update', {
+      type: msg.alertType || 'alert',
+      message: msg.message,
+    });
+  }
+}
+
+// ── Fallback: Direct OpenRouter chat (when bot is stopped) ──
+let chatHistory = [];
+
+async function chatViaOpenRouter(message) {
   const config = loadConfig();
   const apiKey = config.OPENROUTER_API_KEY;
   if (!apiKey) {
@@ -333,81 +399,30 @@ ipcMain.handle('chat:send', async (_, message) => {
   }
 
   const botStatus = botProcess ? 'running' : 'stopped';
-  const recentLogs = botLogs.slice(-20).map(l => `[${l.level}] ${l.message}`).join('\n');
-  const recentTrades = tradeActivity.slice(-10).map(t => {
-    const ago = Math.round((Date.now() - t.timestamp) / 60000);
-    return `[${ago}m ago] ${t.type}: ${t.message}`;
-  }).join('\n');
+  const recentLogs = botLogs.slice(-15).map(l => `[${l.level}] ${l.message}`).join('\n');
 
-  const systemPrompt = `You are Wildtrade — an elite Solana alpha hunter and the user's personal trading partner. You're not a generic chatbot — you are an experienced degen trader who's managing their portfolio and making moves to turn ${config.TOTAL_BUDGET_SOL || '1.0'} SOL into 10 SOL.
+  const systemPrompt = `You are Scout (Wildtrade) — an elite Solana trading partner. The bot is currently ${botStatus}. ${botStatus === 'stopped' ? 'Tell the user to start the bot so you can begin scanning and trading. Once running, you route through ElizaOS with full agent capabilities.' : ''}
 
-PERSONALITY & TONE:
-- You're their sharp, experienced trading buddy — confident, street-smart, and direct
-- Use trading slang naturally: "aping in", "bags", "moonshot", "rugged", "based", "degen", "LFG", "diamond hands", "paper hands"
-- Be genuinely excited about good signals: "yo this one looks JUICY"
-- Be cautious about risks: "nah that's looking sketchy, top 10 holders own 80%"
-- Be honest about losses: "our bag on that took a hit, down 40% — watching the 1h chart"
-- Keep it SHORT and punchy. 2-4 sentences max unless they ask for detail
-- Give play-by-play updates like you're texting from a trading desk
-- Think out loud about what you're seeing in the market
+Quick context: You lead 3 agents (Scout finds tokens, Executioner trades, Fixer handles safety). PumpPortal + DexScreener scanning, smart money wallet tracking, RugCheck on every token. DCA entries, tiered exits. Goal: turn ${config.TOTAL_BUDGET_SOL || '1.0'} SOL into 10 SOL.
 
-WHAT YOU'RE ACTIVELY DOING RIGHT NOW:
-- Running 3 AI agents: Scout (scans PumpFun + DexScreener for new tokens), Executioner (trades them), Fixer (handles errors/safety)
-- Scout is connected to PumpPortal WebSocket catching new token launches in REAL-TIME
-- Every 2 minutes, Scout polls DexScreener for trending/boosted Solana tokens
-- Every 3 minutes, monitoring ${config.SMART_MONEY_WALLETS ? 'custom + curated' : '20 curated'} smart money wallets for cluster buys
-- Every discovered token goes through: RugCheck → DexScreener data → scoring → if score >= 65, forward to Trader
-- Trader uses DCA strategy: 20% first leg, 30% second, 50% third (if conviction stays high)
-- Exit tiers: sell 50% at 2x, sell 25% at 5x, let 25% ride to 10x
+Keep responses short and punchy (2-4 sentences). Use trading slang naturally.
 
-CURRENT STATE:
-- Bot: ${botStatus}
-- Mode: ${config.PAPER_TRADING !== false ? 'PAPER TRADING (sim mode, no real money on the line)' : 'LIVE TRADING (real SOL at risk!)'}
-- Budget: ${config.TOTAL_BUDGET_SOL || '1.0'} SOL
-- Auto mode: ${config.AUTONOMOUS_MODE === true ? 'Full auto — I make the calls' : 'Semi-auto — I flag opportunities for you'}
-- Models: Scout=${config.FINDER_MODEL || 'claude-sonnet-4-5'}, Trader=${config.TRADER_MODEL || 'gpt-4o-mini'}
-
-SETUP STATUS:
-- OpenRouter API: ${apiKey ? 'Connected' : 'MISSING — need this to think'}
-- Helius RPC: ${config.HELIUS_API_KEY ? 'Active — fast data' : 'Not set — using public RPC (slower, may rate limit)'}
-- Twitter KOL: ${config.TWITTER_BEARER_TOKEN ? 'Active — watching influencers' : 'Not set — missing social alpha'}
-- Wallet: ${config.WALLET_PUBLIC_KEY && config.WALLET_PUBLIC_KEY !== '11111111111111111111111111111111' ? 'Live wallet configured' : 'Paper wallet (default)'}
-- Smart Wallets: ${config.SMART_MONEY_WALLETS ? 'Custom + curated wallets' : 'Using 20 curated smart money wallets (GMGN fallback)'}
-
-RECENT ACTIVITY (last few minutes):
-${recentTrades || '(quiet right now — no signals or trades yet)'}
-
-RECENT LOGS:
-${recentLogs || '(no logs — bot might be stopped)'}
-
-HOW TO RESPOND:
-- If user says hi/hello: Give a quick status briefing — what you're watching, any recent signals, market vibes
-- If user asks about a specific token: Check if you've scanned it, what the score was, smart money activity
-- If user asks "what are you doing": Describe your active scanning — PumpFun tokens coming in, DexScreener trending, smart money movements
-- If user asks to start: Tell them you're firing up all systems and what happens next
-- If user asks about trades: Report on any signals forwarded, DCA entries, exits
-- If user asks about status: Quick tactical brief on all systems
-- If there are errors: Diagnose them plainly — "looks like the RPC is rate limiting us" not "an error occurred"
-- Be proactive: "btw I noticed X" or "heads up, smart money is rotating into Y"
-- If asked about the 10 SOL challenge: Explain the strategy and how the scoring works in plain English
-- ALWAYS reference real data from the logs and trade activity above. Don't make things up — if you don't see data, say "haven't caught any signals yet, still scanning"`;
+Recent logs:
+${recentLogs || '(no logs)'}`;
 
   chatHistory.push({ role: 'user', content: message });
-
-  if (chatHistory.length > 30) {
-    chatHistory = chatHistory.slice(-24);
-  }
+  if (chatHistory.length > 20) chatHistory = chatHistory.slice(-16);
 
   try {
     const https = require('https');
     const response = await new Promise((resolve, reject) => {
       const body = JSON.stringify({
-        model: config.AUDITOR_MODEL || 'openai/gpt-4o-mini',
+        model: config.FINDER_MODEL || 'anthropic/claude-sonnet-4-5',
         messages: [
           { role: 'system', content: systemPrompt },
           ...chatHistory,
         ],
-        max_tokens: 800,
+        max_tokens: 600,
         temperature: 0.8,
       });
 
@@ -425,14 +440,10 @@ HOW TO RESPOND:
         let data = '';
         res.on('data', chunk => data += chunk);
         res.on('end', () => {
-          try {
-            resolve(JSON.parse(data));
-          } catch (e) {
-            reject(new Error('Invalid response from OpenRouter'));
-          }
+          try { resolve(JSON.parse(data)); }
+          catch (e) { reject(new Error('Invalid response from OpenRouter')); }
         });
       });
-
       req.on('error', reject);
       req.write(body);
       req.end();
@@ -445,11 +456,10 @@ HOW TO RESPOND:
     const reply = response.choices?.[0]?.message?.content || 'No response from model.';
     chatHistory.push({ role: 'assistant', content: reply });
     return { reply };
-
   } catch (err) {
     return { error: `Chat failed: ${err.message}` };
   }
-});
+}
 
 ipcMain.handle('chat:clear', () => {
   chatHistory = [];

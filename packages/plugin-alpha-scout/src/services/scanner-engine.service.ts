@@ -228,12 +228,13 @@ async function pollDexScreenerTrending(): Promise<void> {
         // High priority - enqueue even if we've seen it before, if it's getting boosted right now
         // And bypass the normal size check by pushing to the FRONT of the queue
         if (!tokenQueue.find(t => t.mint === b.tokenAddress!)) {
-        tokenQueue.push({
-          mint: b.tokenAddress!,
-          symbol: b.baseToken?.symbol || b.tokenAddress!.slice(0, 8),
-          name: b.baseToken?.name || '',
-          source: 'dexscreener',
-        });
+          tokenQueue.push({
+            mint: b.tokenAddress!,
+            symbol: b.baseToken?.symbol || b.tokenAddress!.slice(0, 8),
+            name: b.baseToken?.name || '',
+            source: 'dexscreener',
+          });
+        }
       }
       if (solanaBoosts.length > 0) {
         logCb('info', `[social-scout] Polled DexScreener HOT Boosts: found ${solanaBoosts.length} highly-boosted Solana tokens. Fast-tracking to queue.`);

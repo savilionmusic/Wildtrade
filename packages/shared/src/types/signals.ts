@@ -2,10 +2,11 @@ export type SignalSource = 'pumpportal' | 'helius_whale' | 'twitter_kol';
 export type SignalConviction = 'low' | 'medium' | 'high';
 
 export interface CompositeScore {
-  volumeScore: number;       // 0–25
-  holderScore: number;       // 0–25
-  socialScore: number;       // 0–25
-  whaleScore: number;        // 0–25
+  volumeScore: number;       // 0–20
+  holderScore: number;       // 0–20
+  socialScore: number;       // 0–20
+  whaleScore: number;        // 0–20
+  liquidityScore: number;    // 0–15
   total: number;             // 0–100
   conviction: SignalConviction;
 }

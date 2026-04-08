@@ -252,7 +252,7 @@ async function processToken(token: {
   }
 
   // 2. Quick rugcheck
-  let rugcheckPassed = true;
+  let rugcheckPassed = false; // Fail-closed: if API fails, treat as unsafe
   let rugcheckScore = 50;
   try {
     const rugRes = await fetch(`${RUGCHECK_API_BASE}/tokens/${mint}/report`);
@@ -279,6 +279,7 @@ async function processToken(token: {
   let tokenAgeMinutes = -1;  // -1 = unknown
   let priceChange5m = 0;
   let priceChange1h = 0;
+  let buySellRatio = 1.0;  // 1.0 = balanced, >1 = buy pressure, <1 = sell pressure
 
   try {
     const dexRes = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${mint}`);
@@ -305,6 +306,14 @@ async function processToken(token: {
         priceChange5m = Number(priceChange.m5 ?? 0);
         priceChange1h = Number(priceChange.h1 ?? 0);
 
+        // Buy/sell transaction ratio from DexScreener
+        const txns = pair.txns as Record<string, unknown> ?? {};
+        const h1Txns = txns.h1 as Record<string, unknown> ?? {};
+        const buys = Number(h1Txns.buys ?? 0);
+        const sells = Number(h1Txns.sells ?? 0);
+        if (sells > 0) buySellRatio = buys / sells;
+        else if (buys > 0) buySellRatio = 5.0; // All buys, no sells = very bullish
+
         // Token age from pairCreatedAt (TrenchClaw technique — DexScreener free field)
         const createdAt = pair.pairCreatedAt;
         if (createdAt && Number(createdAt) > 0) {
@@ -326,6 +335,17 @@ async function processToken(token: {
   // Skip tokens that are too old (> 2 hours) — stale opportunities
   if (tokenAgeMinutes > 120) {
     return;  // Quietly skip old tokens — there are thousands of them
+  }
+
+  // Minimum liquidity gate — $3k minimum to avoid slippage death
+  if (market.liquidity < 3000) {
+    return; // Silently skip — too thin to trade
+  }
+
+  // Buy/sell pressure filter — skip tokens where sells dominate (dump in progress)
+  if (buySellRatio < 0.7 && market.volume24h > 0) {
+    logCb('info', `${token.symbol || mint.slice(0, 8)}: sell pressure (buy/sell ratio: ${buySellRatio.toFixed(2)}) — skipping dump`);
+    return;
   }
 
   // Holder concentration check via Solana RPC (free — no API key needed)
@@ -375,27 +395,32 @@ async function processToken(token: {
     liquidityUsd: market.liquidity,
   });
 
-  // ── Token age bonus (TrenchClaw technique) ──
-  // Sweet spot: 5-20 min old fresh PumpFun launch
-  if (tokenAgeMinutes >= 0 && tokenAgeMinutes <= 5 && market.liquidity > 500) {
-    // Very early (< 5 min) — high risk but high reward
-    score.total = Math.min(100, score.total + 10);
-    logCb('info', `${token.symbol || mint.slice(0, 8)}: AGE BONUS +10 (${tokenAgeMinutes.toFixed(1)}min old — very early)`);
+  // ── Token age bonus (reduced — prevent FOMO inflation) ──
+  if (tokenAgeMinutes >= 0 && tokenAgeMinutes <= 5 && market.liquidity > 3000) {
+    // Very early (< 5 min) — moderate bonus only
+    score.total = Math.min(100, score.total + 5);
+    logCb('info', `${token.symbol || mint.slice(0, 8)}: AGE BONUS +5 (${tokenAgeMinutes.toFixed(1)}min old — very early)`);
   } else if (tokenAgeMinutes > 5 && tokenAgeMinutes <= 20) {
     // Sweet spot — proven some momentum, still early
-    score.total = Math.min(100, score.total + 20);
+    score.total = Math.min(100, score.total + 12);
     if (score.total >= 65) score.conviction = 'medium';
     if (score.total >= 75) score.conviction = 'high';
-    logCb('info', `${token.symbol || mint.slice(0, 8)}: AGE BONUS +20 (${tokenAgeMinutes.toFixed(1)}min old — SWEET SPOT)`);
+    logCb('info', `${token.symbol || mint.slice(0, 8)}: AGE BONUS +12 (${tokenAgeMinutes.toFixed(1)}min old — SWEET SPOT)`);
   } else if (tokenAgeMinutes > 20 && tokenAgeMinutes <= 60) {
     // Still fresh window
-    score.total = Math.min(100, score.total + 8);
+    score.total = Math.min(100, score.total + 4);
   }
 
-  // Momentum bonus: strong 5m price action on a fresh token = extra signal
+  // Momentum bonus: reduced from +10 to +6
   if (priceChange5m > 20 && tokenAgeMinutes > 0 && tokenAgeMinutes <= 30) {
-    score.total = Math.min(100, score.total + 10);
-    logCb('info', `${token.symbol || mint.slice(0, 8)}: MOMENTUM +10 (+${priceChange5m.toFixed(1)}% in 5m)`);
+    score.total = Math.min(100, score.total + 6);
+    logCb('info', `${token.symbol || mint.slice(0, 8)}: MOMENTUM +6 (+${priceChange5m.toFixed(1)}% in 5m)`);
+  }
+
+  // Buy pressure bonus: reward tokens with strong buy/sell ratio
+  if (buySellRatio >= 2.0) {
+    score.total = Math.min(100, score.total + 5);
+    logCb('info', `${token.symbol || mint.slice(0, 8)}: BUY PRESSURE +5 (ratio: ${buySellRatio.toFixed(1)})`);
   }
 
   signalCount++;

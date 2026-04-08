@@ -24,18 +24,19 @@ import bs58 from 'bs58';
 
 // ── Config ──
 const POLL_INTERVAL_MS = 15_000;
-const PRICE_CHECK_INTERVAL_MS = 30_000;
+const PRICE_CHECK_INTERVAL_MS = 10_000;
 const DCA_LEG2_DELAY_MS = 60_000;
 const DCA_LEG3_DELAY_MS = 180_000;
-const DCA_LEGS = [0.2, 0.3, 0.5];
+const DCA_LEGS = [0.5, 0.3, 0.2];
 
 const EXIT_TIERS = [
-  { multiplier: 2.0, sellPct: 0.50 },
+  { multiplier: 1.3, sellPct: 0.25 },
+  { multiplier: 2.0, sellPct: 0.25 },
   { multiplier: 5.0, sellPct: 0.25 },
   { multiplier: 10.0, sellPct: 0.25 },
 ];
 
-const STOP_LOSS_MULTIPLIER = 0.5;
+const STOP_LOSS_MULTIPLIER = 0.70;
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
 
 // ── Trade Limits ──
@@ -114,6 +115,7 @@ interface Position {
   paper: boolean;
   marketCap: number;        // MCap at time of entry
   entryScore: number;       // Score at time of entry
+  highWaterMark: number;    // Highest multiplier seen (for graduated trailing stop)
 }
 
 // ── Deep Trade Memory ──
@@ -213,7 +215,17 @@ function getWalletKeypair(): Keypair | null {
 // ── Portfolio Helpers ──
 
 function getPortfolioValue(): number {
-  return totalBudgetSol - deployedSol + realizedPnlSol + deployedSol; // budget + unrealized
+  // Include unrealized PnL from open positions
+  let unrealizedPnlSol = 0;
+  for (const p of positions.values()) {
+    if (p.status === 'open' || p.status === 'partial_exit') {
+      if (p.currentPrice > 0 && p.entryPrice > 0 && p.solDeployed > 0) {
+        const currentValue = p.tokenBalance * p.currentPrice / (cachedSolPrice || 150);
+        unrealizedPnlSol += currentValue - p.solDeployed + p.solReturned;
+      }
+    }
+  }
+  return totalBudgetSol + realizedPnlSol + unrealizedPnlSol;
 }
 
 function getCurrentPhase(): TradingPhase {
@@ -233,33 +245,20 @@ function getAdaptiveMinScore(): number {
   const phase = getCurrentPhase();
   let minScore = phase.minScore;
 
-  // Apply learned adjustment
-  minScore += learnedMinScore;
+  // Single adaptive adjustment — capped at +10 to prevent deadlock
+  let adjust = learnedMinScore; // from lesson engine, max ±5 now
 
-  // Adapt based on win rate after 3+ trades
-  if (tradeCount >= 3) {
+  if (tradeCount >= 5) {
     const wr = winCount / tradeCount;
-    if (wr < 0.25) {
-      minScore += 15;
-    } else if (wr < 0.4) {
-      minScore += 8;
-    } else if (wr > 0.6) {
-      minScore -= 5;
-    }
+    if (wr < 0.25) adjust += 5;
+    else if (wr < 0.4) adjust += 3;
+    else if (wr > 0.6) adjust -= 3;
   }
 
-  // Adapt based on recent performance (last 10 trades) — more reactive
-  const recent = tradeHistory.slice(-10);
-  if (recent.length >= 5) {
-    const recentWR = recent.filter(t => t.pnlPct > 0).length / recent.length;
-    if (recentWR < 0.2) {
-      minScore += 10; // Recent cold streak — be pickier
-    } else if (recentWR > 0.7) {
-      minScore -= 3;  // Recent hot streak — slightly more aggressive
-    }
-  }
+  // Cap total adjustment to prevent deadlock
+  minScore += Math.max(-5, Math.min(10, adjust));
 
-  return Math.max(45, Math.min(85, minScore));
+  return Math.max(45, Math.min(75, minScore)); // Hard cap at 75, not 85
 }
 
 // ── Learning Analysis Helpers ──
@@ -360,6 +359,8 @@ function generateLessons(): void {
   if (worstMCapBucket) {
     const stats = mcapPerformance.get(worstMCapBucket)!;
     if (stats.totalTrades >= 3 && stats.avgPnl < -10) {
+      // Cap at 1 avoided bucket — never block all MCap ranges
+      avoidMCapBuckets.length = 0;
       avoidMCapBuckets.push(worstMCapBucket);
       lessons.push({
         dimension: 'mcap', insight: `Avoid ${worstMCapBucket} MCap (${stats.avgPnl.toFixed(1)}% avg, ${wr(stats)} WR) — bleeding money`,
@@ -380,7 +381,7 @@ function generateLessons(): void {
       // If low-score tokens are losing money, raise the bar
       if (worstScoreBucket === '<55' || worstScoreBucket === '55-65') {
         if (worstStats.avgPnl < -5) {
-          learnedMinScore = Math.min(15, Math.max(learnedMinScore, Math.abs(worstStats.avgPnl) * 0.5));
+          learnedMinScore = Math.min(5, Math.max(learnedMinScore, Math.abs(worstStats.avgPnl) * 0.2));
           lessons.push({
             dimension: 'score', insight: `Low-score tokens (${worstScoreBucket}) lose ${Math.abs(worstStats.avgPnl).toFixed(1)}% avg — raising bar by ${learnedMinScore.toFixed(0)} pts`,
             action: 'raise_min_score', value: learnedMinScore, confidence: Math.min(1, worstStats.totalTrades / 8), updatedAt: now,
@@ -459,13 +460,13 @@ function generateLessons(): void {
     const bigAvgPnl = bigHalf.reduce((s, t) => s + t.pnlPct, 0) / bigHalf.length;
 
     if (smallAvgPnl > bigAvgPnl + 5) {
-      learnedPositionSizeMult = Math.max(0.5, learnedPositionSizeMult - 0.05);
+      learnedPositionSizeMult = Math.max(0.7, learnedPositionSizeMult - 0.05);
       lessons.push({
         dimension: 'size', insight: `Smaller positions avg +${smallAvgPnl.toFixed(1)}% vs +${bigAvgPnl.toFixed(1)}% for larger — scaling down`,
         action: 'reduce_size', value: learnedPositionSizeMult, confidence: 0.5, updatedAt: now,
       });
     } else if (bigAvgPnl > smallAvgPnl + 10) {
-      learnedPositionSizeMult = Math.min(1.5, learnedPositionSizeMult + 0.05);
+      learnedPositionSizeMult = Math.min(1.3, learnedPositionSizeMult + 0.05);
       lessons.push({
         dimension: 'size', insight: `Larger positions avg +${bigAvgPnl.toFixed(1)}% vs +${smallAvgPnl.toFixed(1)}% for smaller — scaling up`,
         action: 'increase_size', value: learnedPositionSizeMult, confidence: 0.5, updatedAt: now,
@@ -482,7 +483,7 @@ function generateLessons(): void {
         dimension: 'exits', insight: `${(stopLossRate * 100).toFixed(0)}% of trades hit stop loss — entries are too aggressive or stop too tight`,
         action: 'widen_stop_or_raise_score', value: stopLossRate, confidence: 0.7, updatedAt: now,
       });
-      learnedMinScore = Math.min(20, learnedMinScore + 3);
+      learnedMinScore = Math.min(5, learnedMinScore + 1);
     }
   }
 
@@ -558,10 +559,20 @@ function canTrade(): { allowed: boolean; reason?: string } {
   if (getTradesThisHour() >= MAX_TRADES_PER_HOUR) {
     return { allowed: false, reason: `Hourly trade limit reached (${MAX_TRADES_PER_HOUR})` };
   }
-  // Check daily loss limit
+  // Check daily loss limit — include unrealized losses
   const dailyLossLimit = totalBudgetSol * (MAX_DAILY_LOSS_PCT / 100);
-  if (realizedPnlSol < -dailyLossLimit) {
-    return { allowed: false, reason: `Daily loss limit hit (${MAX_DAILY_LOSS_PCT}% = ${dailyLossLimit.toFixed(4)} SOL)` };
+  let unrealizedPnl = 0;
+  for (const p of positions.values()) {
+    if (p.status === 'open' || p.status === 'partial_exit') {
+      if (p.currentPrice > 0 && p.entryPrice > 0 && p.solDeployed > 0) {
+        const currentValue = p.tokenBalance * p.currentPrice / (cachedSolPrice || 150);
+        unrealizedPnl += currentValue - p.solDeployed + p.solReturned;
+      }
+    }
+  }
+  const totalPnl = realizedPnlSol + unrealizedPnl;
+  if (totalPnl < -dailyLossLimit) {
+    return { allowed: false, reason: `Daily loss limit hit (${MAX_DAILY_LOSS_PCT}% = ${dailyLossLimit.toFixed(4)} SOL, current: ${totalPnl.toFixed(4)})` };
   }
   return { allowed: true };
 }
@@ -594,7 +605,18 @@ export async function startAutonomousTrader(opts: {
   dcaTimer = setInterval(processPendingDcaLegs, 10_000);
   stateTimer = setInterval(saveState, 30_000); // Persist state every 30s
 
-  log('Signal polling active (every 15s) | Price monitoring active (every 30s) | State save every 30s');
+  // Decay learned parameters every 6 hours to prevent permanent deadlock
+  setInterval(() => {
+    if (learnedMinScore > 0) {
+      learnedMinScore = Math.max(0, learnedMinScore - 1);
+      log(`DECAY: learnedMinScore decayed to ${learnedMinScore}`);
+    }
+    if (learnedPositionSizeMult < 1.0) {
+      learnedPositionSizeMult = Math.min(1.0, learnedPositionSizeMult + 0.05);
+    }
+  }, 6 * 3_600_000);
+
+  log('Signal polling active (every 15s) | Price monitoring active (every 10s) | State save every 30s');
 }
 
 export async function stopAutonomousTrader(): Promise<void> {
@@ -756,7 +778,7 @@ async function pollForSignals(): Promise<void> {
     const maxPos = userMaxPositions ?? phase.maxPositions;
     if (openCount >= maxPos) return; // Max positions limit
 
-    // Get qualifying signals — filter by MCap range for current phase
+    // Get qualifying signals — filter by MCap range, liquidity, score
     const result = await db.query(
       `SELECT * FROM signals
        WHERE expired = 0
@@ -764,10 +786,11 @@ async function pollForSignals(): Promise<void> {
        AND (score_json::jsonb->>'total')::integer >= ${minScore}
        AND market_cap_usd >= $1
        AND market_cap_usd <= $2
+       AND liquidity_usd >= 3000
        AND discovered_at > $3
        ORDER BY (score_json::jsonb->>'total')::integer DESC
        LIMIT 3`,
-      [phase.targetMCapMin, phase.targetMCapMax, Date.now() - 1_800_000],
+      [phase.targetMCapMin, phase.targetMCapMax, Date.now() - 600_000],
     );
 
     const signals = (result?.rows ?? []) as Array<Record<string, unknown>>;
@@ -862,6 +885,7 @@ async function openPosition(
     paper: process.env.PAPER_TRADING !== 'false',
     marketCap,
     entryScore: score,
+    highWaterMark: 1.0,
   };
 
   positions.set(position.id, position);
@@ -1084,6 +1108,17 @@ async function processPendingDcaLegs(): Promise<void> {
       continue;
     }
 
+    // Price-gated DCA: cancel leg if price has dropped too far
+    const currentMultiplier = position.currentPrice > 0 && position.entryPrice > 0
+      ? position.currentPrice / position.entryPrice
+      : 1.0;
+    const priceGate = leg.leg === 2 ? 0.85 : 0.80; // Leg 2: must be >= 0.85x, Leg 3: >= 0.80x
+    if (currentMultiplier < priceGate) {
+      log(`DCA LEG ${leg.leg} CANCELLED for ${position.symbol}: price at ${currentMultiplier.toFixed(2)}x < ${priceGate}x gate`);
+      pendingDcaLegs = pendingDcaLegs.filter(l => l !== leg);
+      continue;
+    }
+
     await executeBuy(position, leg.solAmount, leg.leg);
     pendingDcaLegs = pendingDcaLegs.filter(l => l !== leg);
   }
@@ -1110,13 +1145,28 @@ async function checkPricesAndExits(): Promise<void> {
       const holdTimeMs = Date.now() - position.openedAt;
       const holdMins = holdTimeMs / 60_000;
 
-      // ── Trailing stop: once we hit 1.5x, move stop to breakeven ──
-      const trailingStop = multiplier > 1.5 ? 1.0 : STOP_LOSS_MULTIPLIER;
+      // ── Update high water mark for graduated trailing stop ──
+      if (multiplier > (position.highWaterMark ?? 1.0)) {
+        position.highWaterMark = multiplier;
+      }
+      const hwm = position.highWaterMark ?? 1.0;
+
+      // ── Graduated trailing stop ──
+      let trailingStop = STOP_LOSS_MULTIPLIER; // default 0.70
+      if (hwm >= 3.0) {
+        trailingStop = 2.20;  // Lock in 120% gain
+      } else if (hwm >= 2.0) {
+        trailingStop = 1.50;  // Lock in 50% gain
+      } else if (hwm >= 1.5) {
+        trailingStop = 1.15;  // Lock in 15% gain
+      } else if (hwm >= 1.2) {
+        trailingStop = 0.95;  // Lock in max 5% loss
+      }
 
       // ── Stop loss (or trailing stop) ──
       if (multiplier <= trailingStop) {
         const reason = trailingStop > STOP_LOSS_MULTIPLIER
-          ? `trailing_stop (${multiplier.toFixed(2)}x, breakeven protected)`
+          ? `trailing_stop (${multiplier.toFixed(2)}x, trail from ${hwm.toFixed(2)}x peak)`
           : `stop_loss (${multiplier.toFixed(2)}x)`;
         log(`${reason.toUpperCase()} triggered for ${position.symbol}`);
         await executeSell(position, 1.0, reason);
@@ -1124,32 +1174,32 @@ async function checkPricesAndExits(): Promise<void> {
         continue;
       }
 
+      // ── Momentum exit: cut losers at -25% after 30 min (not 60) ──
+      if (multiplier <= 0.75 && holdMins >= 30) {
+        log(`MOMENTUM EXIT: ${position.symbol} at ${multiplier.toFixed(2)}x after ${Math.round(holdMins)}m — cutting losses`);
+        await executeSell(position, 1.0, `momentum_exit (${multiplier.toFixed(2)}x, ${Math.round(holdMins)}m)`);
+        continue;
+      }
+
       // ── Time-based exit: use learned optimal hold time, or default 2h ──
       const maxHoldMins = learnedMaxHoldMs > 0 ? learnedMaxHoldMs / 60_000 : 120;
-      if (holdMins >= maxHoldMins && multiplier >= 0.8 && multiplier <= 1.2) {
+      if (holdMins >= maxHoldMins && multiplier >= 0.85 && multiplier <= 1.15) {
         log(`TIME EXIT: ${position.symbol} flat at ${multiplier.toFixed(2)}x for ${Math.round(holdMins)}m (learned max: ${Math.round(maxHoldMins)}m) — freeing capital`);
         await executeSell(position, 1.0, `time_exit (flat ${multiplier.toFixed(2)}x, ${Math.round(holdMins)}m)`);
         continue;
       }
 
-      // ── Smart DCA: if dipped 20-40% from entry, apply learned DCA aggression ──
-      if (multiplier >= 0.6 && multiplier <= 0.8 && holdMins <= 30 && position.dcaLegsExecuted < 3) {
+      // ── Recovery DCA: only if price bounced back above 0.9x after dipping ──
+      // (Never DCA into a falling knife — only on recovery signals)
+      if (multiplier >= 0.88 && multiplier <= 0.95 && hwm >= 1.0 && holdMins <= 20 && position.dcaLegsExecuted < 3) {
         const phase = getCurrentPhase();
         const available = totalBudgetSol - deployedSol + realizedPnlSol;
-        const baseDca = Math.min(phase.positionSizeMin, available * 0.15);
-        const dcaAmount = baseDca * learnedDcaAggression; // Apply learned DCA multiplier
+        const dcaAmount = Math.min(phase.positionSizeMin * 0.5, available * 0.10) * learnedDcaAggression;
         if (dcaAmount >= 0.01) {
-          log(`SMART DCA: ${position.symbol} dipped to ${multiplier.toFixed(2)}x — adding ${dcaAmount.toFixed(4)} SOL (aggression: ${learnedDcaAggression.toFixed(2)}x)`);
-          alert('dca_entry', `Smart DCA: ${position.symbol} dipped ${((1 - multiplier) * 100).toFixed(0)}% — adding ${dcaAmount.toFixed(4)} SOL`);
+          log(`RECOVERY DCA: ${position.symbol} bounced to ${multiplier.toFixed(2)}x — adding ${dcaAmount.toFixed(4)} SOL`);
+          alert('dca_entry', `Recovery DCA: ${position.symbol} at ${multiplier.toFixed(2)}x — adding ${dcaAmount.toFixed(4)} SOL`);
           await executeBuy(position, dcaAmount, position.dcaLegsExecuted + 1);
         }
-      }
-
-      // ── Momentum exit: if lost 30%+ after 1 hour, cut losses early ──
-      if (multiplier <= 0.7 && holdMins >= 60) {
-        log(`MOMENTUM EXIT: ${position.symbol} at ${multiplier.toFixed(2)}x after ${Math.round(holdMins)}m — cutting losses`);
-        await executeSell(position, 1.0, `momentum_exit (${multiplier.toFixed(2)}x, ${Math.round(holdMins)}m)`);
-        continue;
       }
 
       // ── Exit tiers (take profit) ──
@@ -1162,7 +1212,7 @@ async function checkPricesAndExits(): Promise<void> {
         }
       }
 
-      await sleep(1500);
+      await sleep(1000);
     } catch {
       continue;
     }

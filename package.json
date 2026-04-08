@@ -1,6 +1,8 @@
 {
   "name": "wildtrade",
   "version": "1.0.0",
+  "description": "Tri-squad multi-agent Solana trading bot desktop app and bundled bot runtime.",
+  "author": "savilionmusic",
   "private": true,
   "type": "module",
   "main": "electron/main.cjs",
@@ -11,10 +13,10 @@
     "lint": "eslint packages/*/src src --ext .ts",
     "build:bot": "node scripts/build-bot.js",
     "electron:dev": "npm run build:bot && electron .",
-    "build:mac": "npm run build:bot && electron-builder --mac",
-    "build:win": "npm run build:bot && electron-builder --win",
-    "build:linux": "npm run build:bot && electron-builder --linux",
-    "postinstall": "electron-builder install-app-deps || true"
+    "build:mac": "npm run build:bot && electron-builder --mac --config.npmRebuild=false --config.nodeGypRebuild=false",
+    "build:win": "npm run build:bot && electron-builder --win --config.npmRebuild=false --config.nodeGypRebuild=false",
+    "build:linux": "npm run build:bot && electron-builder --linux --config.npmRebuild=false --config.nodeGypRebuild=false",
+    "postinstall": "node -e \"process.exit(0)\""
   },
   "build": {
     "appId": "com.wildtrade.app",
@@ -33,6 +35,14 @@
       {
         "from": "dist/",
         "to": "bot/dist/"
+      },
+      {
+        "from": "node_modules/@electric-sql/",
+        "to": "bot/node_modules/@electric-sql/"
+      },
+      {
+        "from": "node_modules/sql.js/",
+        "to": "bot/node_modules/sql.js/"
       }
     ],
     "mac": {
@@ -51,7 +61,8 @@
     "dmg": {
       "title": "Wildtrade",
       "backgroundColor": "#0d1117"
-    }
+    },
+    "npmRebuild": false
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.2.17",

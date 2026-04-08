@@ -66,28 +66,28 @@ const PHASES: TradingPhase[] = [
     minPortfolio: 0, maxPortfolio: 2,
     targetMCapMin: 5_000, targetMCapMax: 100_000,
     positionSizeMin: 0.03, positionSizeMax: 0.15,
-    maxPositions: 5, minScore: 48,
+    maxPositions: 5, minScore: 52,
   },
   {
     name: 'Phase 2: Small Caps',
     minPortfolio: 2, maxPortfolio: 5,
     targetMCapMin: 20_000, targetMCapMax: 500_000,
     positionSizeMin: 0.08, positionSizeMax: 0.3,
-    maxPositions: 4, minScore: 53,
+    maxPositions: 4, minScore: 56,
   },
   {
     name: 'Phase 3: Scaling Up',
     minPortfolio: 5, maxPortfolio: 10,
     targetMCapMin: 50_000, targetMCapMax: 2_000_000,
     positionSizeMin: 0.15, positionSizeMax: 0.5,
-    maxPositions: 3, minScore: 58,
+    maxPositions: 3, minScore: 60,
   },
   {
     name: 'Phase 4: Mission Complete',
     minPortfolio: 10, maxPortfolio: Infinity,
     targetMCapMin: 100_000, targetMCapMax: 10_000_000,
     positionSizeMin: 0.3, positionSizeMax: 1.0,
-    maxPositions: 3, minScore: 62,
+    maxPositions: 3, minScore: 64,
   },
 ];
 
@@ -921,7 +921,12 @@ async function pollForSignals(): Promise<void> {
        AND (score_json::jsonb->>'total')::integer >= ${minScore}
        AND market_cap_usd >= $1
        AND market_cap_usd <= $2
-       AND liquidity_usd >= 3000
+       AND liquidity_usd >= 8000
+       AND (
+         COALESCE((score_json::jsonb->>'socialScore')::integer, 0) >= 8
+         OR COALESCE((score_json::jsonb->>'whaleScore')::integer, 0) >= 10
+         OR COALESCE((score_json::jsonb->>'liquidityScore')::integer, 0) >= 15
+       )
        AND discovered_at > $3
        ORDER BY (score_json::jsonb->>'total')::integer DESC
        LIMIT 3`,
@@ -1054,13 +1059,14 @@ async function openPosition(
     const db = await getDb();
     await db.query(
       `INSERT INTO positions (id, signal_id, mint, symbol, name, status, budget_sol, entry_price_usd,
-        token_balance, sol_deployed, sol_returned, pnl_sol, pnl_pct, dca_legs, exit_tiers, paper, opened_at)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
+        token_balance, sol_deployed, sol_returned, pnl_sol, pnl_pct, dca_legs, exit_tiers, paper, opened_at, total_budget_lamports)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
       [
         position.id, signalId, mintAddress, symbol, name, 'open',
         budgetSol, price, 0, 0, 0, 0, 0,
         JSON.stringify(DCA_LEGS), JSON.stringify(EXIT_TIERS),
         position.paper ? 1 : 0, position.openedAt,
+        Math.floor(totalBudgetSol * 1_000_000_000).toString(),
       ],
     );
   } catch { /* DB write not fatal */ }
@@ -1517,17 +1523,18 @@ async function saveState(): Promise<void> {
     for (const p of positions.values()) {
       await db.query(
         `INSERT INTO positions (id, signal_id, mint, symbol, name, status, budget_sol, entry_price_usd,
-          token_balance, sol_deployed, sol_returned, pnl_sol, pnl_pct, dca_legs, exit_tiers, paper, opened_at, closed_at, current_price_usd, entry_mcap)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+          token_balance, sol_deployed, sol_returned, pnl_sol, pnl_pct, dca_legs, exit_tiers, paper, opened_at, closed_at, current_price_usd, entry_mcap, total_budget_lamports)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
          ON CONFLICT (id) DO UPDATE SET
            status=$6, token_balance=$9, sol_deployed=$10, sol_returned=$11,
-           pnl_sol=$12, pnl_pct=$13, current_price_usd=$19, closed_at=$18`,
+           pnl_sol=$12, pnl_pct=$13, current_price_usd=$19, closed_at=$18, total_budget_lamports=$21`,
         [
           p.id, p.signalId || '', p.mintAddress, p.symbol, p.name || '',
           p.status, p.budgetSol, p.entryPrice,
           p.tokenBalance, p.solDeployed, p.solReturned, p.pnlSol, p.pnlPct,
           JSON.stringify(DCA_LEGS), JSON.stringify(EXIT_TIERS),
           p.paper ? 1 : 0, p.openedAt, p.closedAt, p.currentPrice, p.marketCap,
+          Math.floor(totalBudgetSol * 1_000_000_000).toString(),
         ],
       );
     }

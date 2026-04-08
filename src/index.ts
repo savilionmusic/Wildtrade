@@ -256,7 +256,6 @@ async function main(): Promise<void> {
 
   // Wire KOL signals into the scanner queue
   setTokenMentionCallback((signal) => {
-    console.log(`[kol-intel] Token mention: ${signal.tokenMint.slice(0, 8)} from ${signal.source} (${signal.confidence})`);
     addProactiveAlert('kol_signal', `${signal.source}: ${signal.context}`);
     sendToParent({ type: 'proactive-alert', alertType: 'kol_signal', message: `${signal.source}: ${signal.context}` });
   });

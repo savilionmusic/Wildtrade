@@ -245,36 +245,35 @@ function getAdaptiveMinScore(): number {
   const phase = getCurrentPhase();
   let minScore = phase.minScore;
 
-  // Single adaptive adjustment — capped at +3 to prevent deadlock
-  let adjust = learnedMinScore; // from lesson engine, max ±3 now
+  // Adaptive adjustment — very conservative upward, generous downward
+  let adjust = Math.min(2, learnedMinScore); // from lesson engine, hard cap at +2
 
   if (tradeCount >= 5) {
     const wr = winCount / tradeCount;
-    // Only raise score bar slightly on very bad streaks — never freeze trading
-    if (wr < 0.15) adjust += 2;
-    else if (wr < 0.25) adjust += 1;
-    else if (wr > 0.5) adjust -= 3;  // Winning more than half? Lower the bar!
-    else if (wr > 0.4) adjust -= 2;
+    // Reward winning streaks aggressively — loosen the bar to keep momentum
+    if (wr > 0.5) adjust -= 5;
+    else if (wr > 0.4) adjust -= 3;
+    else if (wr > 0.3) adjust -= 1;
+    // Only raise bar on catastrophic performance (< 15% win rate)
+    else if (wr < 0.15) adjust += 1;
   }
 
   // After a losing streak, check recent trades (last 5) not all-time
-  // If last 5 trades lost, DON'T raise the bar — log warning and reset
+  // If last 5 trades lost, RESET the bar completely — the bot must keep trading
   const recentTrades = tradeHistory.slice(-5);
   if (recentTrades.length >= 5) {
     const recentWins = recentTrades.filter(t => t.pnlPct > 0).length;
     if (recentWins === 0) {
-      // Full losing streak — DO NOT raise bar further, cap at +2 max
-      // The problem is that raising the bar stops the bot from trading,
-      // which prevents recovery. Better to keep trading with normal criteria.
-      adjust = Math.min(adjust, 2);
-      log(`WARNING: 5 consecutive losses detected. Keeping score bar low (+${adjust}) to allow recovery trades.`);
+      // Full losing streak — LOWER the bar to find new opportunities
+      adjust = Math.min(adjust, 0);
+      log(`WARNING: 5 consecutive losses. Resetting score bar to base (no adjustment) to allow recovery.`);
     }
   }
 
-  // Cap total adjustment to prevent deadlock — max +3, never higher
-  minScore += Math.max(-5, Math.min(3, adjust));
+  // Cap total adjustment — max +2 up, -5 down
+  minScore += Math.max(-5, Math.min(2, adjust));
 
-  return Math.max(40, Math.min(65, minScore)); // Hard floor at 40, cap at 65 (was 70)
+  return Math.max(40, Math.min(60, minScore)); // Hard floor at 40, cap at 60 (more permissive)
 }
 
 // ── Learning Analysis Helpers ──
@@ -337,8 +336,9 @@ function analyzeTradeAndLearn(entry: TradeMemoryEntry): void {
     : 'other';
   updateDimensionStats(exitReasonStats, exitCat, entry.pnlPct);
 
-  // Generate lessons (only after enough data)
-  if (tradeHistory.length >= 5) {
+  // Generate lessons — only after enough data AND not too frequently
+  // Running on every trade causes compounding over-adjustments
+  if (tradeHistory.length >= 8 && tradeHistory.length % 3 === 0) {
     generateLessons();
   }
 
@@ -374,7 +374,8 @@ function generateLessons(): void {
   }
   if (worstMCapBucket) {
     const stats = mcapPerformance.get(worstMCapBucket)!;
-    if (stats.totalTrades >= 3 && stats.avgPnl < -10) {
+    // Require at least 5 trades AND very bad performance before avoiding — 3 trades is too aggressive
+    if (stats.totalTrades >= 5 && stats.avgPnl < -15 && stats.wins / stats.totalTrades < 0.2) {
       // Cap at 1 avoided bucket — never block all MCap ranges
       avoidMCapBuckets.length = 0;
       avoidMCapBuckets.push(worstMCapBucket);
@@ -499,8 +500,8 @@ function generateLessons(): void {
         dimension: 'exits', insight: `${(stopLossRate * 100).toFixed(0)}% of trades hit stop loss — entries are too aggressive or stop too tight`,
         action: 'widen_stop_or_raise_score', value: stopLossRate, confidence: 0.7, updatedAt: now,
       });
-      // Very conservative increase — cap at 2 total from stop loss
-      learnedMinScore = Math.min(2, learnedMinScore + 0.3);
+      // Set (not add) to max 1 — prevents compounding on every lesson cycle
+      learnedMinScore = Math.max(learnedMinScore, 1);
     }
   }
 
@@ -596,6 +597,39 @@ function canTrade(): { allowed: boolean; reason?: string } {
 
 // ── Public API ──
 
+export async function triggerInstantSnipe(mintAddress: string, symbol: string): Promise<void> {
+  if (!running) return;
+  const limitCheck = canTrade();
+  if (!limitCheck.allowed) {
+    log(`Snipe skipped: ${limitCheck.reason}`);
+    return;
+  }
+
+  const phase = getCurrentPhase();
+  const openCount = Array.from(positions.values()).filter(p => p.status === 'open' || p.status === 'partial_exit').length;
+  const maxPos = userMaxPositions ?? phase.maxPositions;
+  if (openCount >= maxPos) return;
+
+  const existing = Array.from(positions.values()).find(
+    p => p.mintAddress === mintAddress && p.status !== 'closed' && p.status !== 'stopped_out'
+  );
+  if (existing) return;
+
+  const available = totalBudgetSol - deployedSol + realizedPnlSol;
+  const positionSize = Math.max(phase.positionSizeMin, Math.min(phase.positionSizeMax, available * 0.25) * learnedPositionSizeMult);
+
+  if (positionSize < phase.positionSizeMin || available < phase.positionSizeMin) {
+    log(`Snipe skipped: Budget tight — available: ${available.toFixed(4)} SOL`);
+    return;
+  }
+
+  log(`🚀 INSTANT SNIPE: ${symbol || mintAddress.slice(0, 8)} | Size: ${positionSize.toFixed(4)} SOL`);
+  alert('dca_entry', `🚀 INSTANT SNIPE: ${symbol || mintAddress.slice(0, 8)} | ${positionSize.toFixed(4)} SOL`);
+
+  recordCoinEntry(mintAddress);
+  await openPosition(`snipe-${Date.now()}`, mintAddress, symbol || mintAddress.slice(0, 8), 'PumpSwap Migration', positionSize, 100, 0);
+}
+
 export async function startAutonomousTrader(opts: {
   onLog?: TradingLogCb;
   onAlert?: (type: string, msg: string) => void;
@@ -622,16 +656,31 @@ export async function startAutonomousTrader(opts: {
   dcaTimer = setInterval(processPendingDcaLegs, 10_000);
   stateTimer = setInterval(saveState, 30_000); // Persist state every 30s
 
-  // Decay learned parameters every 1 hour to prevent permanent deadlock
+  // Decay ALL learned parameters every 30 min to prevent compounding loss aversion
   setInterval(() => {
+    let decayed = false;
     if (learnedMinScore > 0) {
-      learnedMinScore = Math.max(0, learnedMinScore - 3);
-      log(`DECAY: learnedMinScore decayed to ${learnedMinScore}`);
+      learnedMinScore = Math.max(0, learnedMinScore - 1);
+      decayed = true;
     }
     if (learnedPositionSizeMult < 1.0) {
-      learnedPositionSizeMult = Math.min(1.0, learnedPositionSizeMult + 0.15);
+      learnedPositionSizeMult = Math.min(1.0, learnedPositionSizeMult + 0.1);
+      decayed = true;
     }
-  }, 3_600_000);
+    if (learnedDcaAggression < 1.0) {
+      learnedDcaAggression = Math.min(1.0, learnedDcaAggression + 0.1);
+      decayed = true;
+    }
+    // Clear MCap avoidance after 30 min — market conditions change
+    if (avoidMCapBuckets.length > 0) {
+      log(`DECAY: Clearing avoided MCap buckets [${avoidMCapBuckets.join(',')}] — reassessing market`);
+      avoidMCapBuckets.length = 0;
+      decayed = true;
+    }
+    if (decayed) {
+      log(`DECAY: minScore+${learnedMinScore.toFixed(0)} | sizeMult:${learnedPositionSizeMult.toFixed(2)} | dca:${learnedDcaAggression.toFixed(2)} | avoid:[${avoidMCapBuckets.join(',')}]`);
+    }
+  }, 1_800_000); // Every 30 min
 
   log('Signal polling active (every 15s) | Price monitoring active (every 10s) | State save every 30s');
 }

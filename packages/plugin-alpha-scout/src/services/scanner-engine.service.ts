@@ -32,6 +32,8 @@ import type { PumpPortalToken } from './pumpportal.service.js';
 import { getKolSignals } from './kol-intelligence.service.js';
 import { getRecentSmartBuys } from './smart-money-monitor.service.js';
 import { getRecentWalletBuys } from './wallet-intelligence.service.js';
+import { getCachedWhaleActivity } from './helius.service.js';
+import { triggerInstantSnipe } from '@wildtrade/plugin-smart-trader';
 import { startPumpSwapSniper, stopPumpSwapSniper, onPumpPortalMigration } from './pumpswap-sniper.service.js';
 import type { MigrationSnipeEvent } from './pumpswap-sniper.service.js';
 
@@ -107,14 +109,13 @@ export function startScanner(
   startPumpSwapSniper(
     (snipeEvent: MigrationSnipeEvent) => {
       logCb('info', `🎯 PUMPSWAP SNIPE: ${snipeEvent.symbol || snipeEvent.mint.slice(0, 8)} — migration detected via ${snipeEvent.source}!`);
-      // Fast-track into queue with migration flag
-      tokenQueue.unshift({
-        mint: snipeEvent.mint,
-        symbol: snipeEvent.symbol || '',
-        name: snipeEvent.name || '',
-        source: 'migration',
-        isMigration: true,
+      
+      // Fast-track DIRECTLY to autonomous trader as an instant snipe
+      // Skip the signals db and inter-agent messages — execute the buy function immediately
+      triggerInstantSnipe(snipeEvent.mint, snipeEvent.symbol || snipeEvent.mint.slice(0, 8)).catch(err => {
+        logCb('error', `Snipe trigger failed for ${snipeEvent.mint}: ${String(err)}`);
       });
+      logCb('info', `🚀 MIGRATION FORWARDED: Sent ${snipeEvent.mint.slice(0, 8)} directly to trader for instant buy!`);
     },
     (msg) => logCb('info', msg),
   );
@@ -491,7 +492,7 @@ async function processToken(token: {
     }
   } catch { /* no KOL data available */ }
 
-  // Look up smart money buys for this mint
+  // Look up smart money buys for this mint (GMGN + Wallet Intel + Helius)
   let whaleNetFlow = 0;
   try {
     const smartBuys = getRecentSmartBuys();
@@ -508,6 +509,16 @@ async function processToken(token: {
     const walletMintBuys = walletBuys.filter(b => b.tokenMint === mint);
     if (walletMintBuys.length > 0) {
       whaleNetFlow += walletMintBuys.reduce((sum, b) => sum + b.solSpent, 0);
+    }
+    // Also check Helius whale transactions (if HELIUS_API_KEY is set)
+    const heliusTxs = await getCachedWhaleActivity();
+    const heliusBuys = heliusTxs.filter(t => t.mint === mint && t.type === 'buy');
+    if (heliusBuys.length > 0) {
+      const heliusFlow = heliusBuys.reduce((sum, b) => sum + b.amountSol, 0);
+      whaleNetFlow += heliusFlow;
+      if (heliusFlow > 0) {
+        logCb('info', `${token.symbol || mint.slice(0, 8)}: Helius whale buys! ${heliusBuys.length} txs, ${heliusFlow.toFixed(2)} SOL`);
+      }
     }
   } catch { /* no smart money data available */ }
 

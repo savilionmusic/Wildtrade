@@ -29,6 +29,7 @@ import {
   getTrackedWallets,
   onTelegramMessage,
   stopTelegramPolling,
+  enqueueToken,
 } from '@wildtrade/plugin-alpha-scout';
 import {
   startAutonomousTrader,
@@ -298,6 +299,9 @@ async function main(): Promise<void> {
   setTokenMentionCallback((signal) => {
     addProactiveAlert('kol_signal', `${signal.source}: ${signal.context}`);
     sendToParent({ type: 'proactive-alert', alertType: 'kol_signal', message: `${signal.source}: ${signal.context}` });
+    
+    // Actually push this token into the deep-analysis scanner queue!
+    enqueueToken(signal.tokenMint, signal.tokenSymbol, signal.context, 'twitter_kol');
   });
   console.log('[boot] KOL intelligence active — monitoring social signals, CTOs, and ads.');
 

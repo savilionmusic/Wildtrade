@@ -44,7 +44,7 @@ export {
 export type { SmartMoneySignal, SmartMoneyCallback, WalletBuy } from './services/smart-money-monitor.service.js';
 
 export {
-  startScanner, stopScanner, getScannerStats,
+  startScanner, stopScanner, getScannerStats, enqueueToken,
 } from './services/scanner-engine.service.js';
 
 // PumpSwap Migration Sniper

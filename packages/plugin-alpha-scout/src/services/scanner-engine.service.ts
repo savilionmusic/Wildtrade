@@ -30,6 +30,7 @@ import { isInDenylist } from '../lib/denylist-guard.js';
 import { connect as connectPumpPortal, disconnect as disconnectPumpPortal, onMigration as onPumpMigration } from './pumpportal.service.js';
 import type { PumpPortalToken } from './pumpportal.service.js';
 import { getKolSignals } from './kol-intelligence.service.js';
+import { isGoldKol } from './kol-scraper.service.js';
 import { getRecentSmartBuys } from './smart-money-monitor.service.js';
 import { getRecentWalletBuys } from './wallet-intelligence.service.js';
 import { getCachedWhaleActivity } from './helius.service.js';
@@ -84,9 +85,12 @@ export function startScanner(
   logCb('info', 'Starting token scanner...');
 
   // 1. Connect PumpPortal for real-time new launches
-  logCb('info', 'Connecting to PumpPortal for new token launches...');
+  logCb('info', 'Connecting to PumpPortal for new token launches (tracking only, unfiltered drops will bypass APIs)...');
   connectPumpPortal((token: PumpPortalToken) => {
-    enqueueToken(token.mint, token.symbol, token.name, 'pumpportal', token.creator);
+    // We NO LONGER enqueue every single PumpPortal token. It spams 10/sec and rate-limits RugCheck/DexScreener.
+    // Instead, we only track them quietly, relying on KOL Mentions, Smart Money, or DexScreener trending
+    // to actually trigger the expensive scoring pipeline.
+    // enqueueToken(token.mint, token.symbol, token.name, 'pumpportal', token.creator);
   });
 
   // 1b. Subscribe to PumpFun migration events (tokens moving to Raydium = big pump opportunity)
@@ -155,7 +159,7 @@ export function getScannerStats(): {
 
 // ── Queue Management ──
 
-function enqueueToken(
+export function enqueueToken(
   mint: string,
   symbol: string,
   name: string,

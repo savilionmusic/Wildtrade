@@ -1,4 +1,5 @@
 import { Scraper } from 'agent-twitter-client';
+import { isGoldKol } from './kol-scraper.service.js';
 
 export interface KolTweetResult {
   userId: string;

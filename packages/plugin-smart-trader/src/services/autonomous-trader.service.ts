@@ -1267,10 +1267,9 @@ async function processPendingDcaLegs(): Promise<void> {
       continue;
     }
 
-    // Price-based DCA: Wait for a dip to buy more!
-    // Leg 2: Only buy if price has dropped at least 15% from entry.
-    // Leg 3: Only buy if price has dropped at least 25% from entry.
-    // We do NOT cancel the leg if it isn't met — we just delay it, making it an open limit-order effectively.
+    // Trailing DCA: Wait for a dip from the HIGHEST price seen!
+    // Leg 2: Only buy if price has dropped at least 15% from the local high.
+    // Leg 3: Only buy if price has dropped at least 25% from the local high.
     const price = await getTokenPriceWithRetry(position.mintAddress, 2);
     if (price && price > 0) position.currentPrice = price;
 
@@ -1278,25 +1277,24 @@ async function processPendingDcaLegs(): Promise<void> {
       ? position.currentPrice / position.entryPrice
       : 1.0;
 
-    const maxMultiplierAllowed = leg.leg === 2 ? 0.85 : 0.75;
+    // Track the highest price we've seen since bagging it
+    if (currentMultiplier > position.highWaterMark) {
+      position.highWaterMark = currentMultiplier;
+    }
 
-    // If price rallied or hasn't dipped enough, do NOT buy yet. Wait for next tick.
-    if (currentMultiplier > maxMultiplierAllowed) {
-      // Just skip this leg for now, don't remove it from the array. It acts like a limit order.
-      // But let's log occasionally so the user knows
-      if (now % 30_000 < 10_000) { // Log roughly every 30s
-        log(`DCA LEG ${leg.leg} WAITING for ${position.symbol}: price ${currentMultiplier.toFixed(2)}x is too high to DCA (waiting for <= ${maxMultiplierAllowed}x dip)`);
-      }
-      // Also, if it has 2x'd, just cancel the remaining DCA legs and ride the win
-      if (currentMultiplier >= 2.0) {
-         log(`DCA LEG ${leg.leg} CANCELLED for ${position.symbol}: bagged a 2x, riding initial entry!`);
-         pendingDcaLegs = pendingDcaLegs.filter(l => l !== leg);
-      }
+    // Calculate the trailing trigger point
+    const pullbackRequired = leg.leg === 2 ? 0.85 : 0.75; 
+    const triggerThreshold = position.highWaterMark * pullbackRequired;
+
+    // If price hasn't dipped enough from the local high, wait.
+    if (currentMultiplier > triggerThreshold) {
+      // Spammy log removed. 
+      // 2x cancellation removed — we now trail the pump until we get a 15% dip.
       continue;
     }
 
-    // If we're here, it has dipped into our target zone!
-    log(`DCA LEG ${leg.leg} TRIGGERED for ${position.symbol}: price dipped to ${currentMultiplier.toFixed(2)}x — buying the dip!`);
+    // If we're here, it has dipped 15%+ from the local peak!
+    log(`DCA LEG ${leg.leg} TRIGGERED for ${position.symbol}: pulled back from ${position.highWaterMark.toFixed(2)}x high to ${currentMultiplier.toFixed(2)}x — TRAILING DCA executing!`);
     await executeBuy(position, leg.solAmount, leg.leg);
     pendingDcaLegs = pendingDcaLegs.filter(l => l !== leg);
   }

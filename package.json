@@ -37,12 +37,8 @@
         "to": "bot/dist/"
       },
       {
-        "from": "node_modules/@electric-sql/",
-        "to": "bot/node_modules/@electric-sql/"
-      },
-      {
-        "from": "node_modules/sql.js/",
-        "to": "bot/node_modules/sql.js/"
+        "from": "node_modules/",
+        "to": "bot/node_modules/"
       }
     ],
     "mac": {

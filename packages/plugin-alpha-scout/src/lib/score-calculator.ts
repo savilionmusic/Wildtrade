@@ -15,11 +15,13 @@ function clamp(value: number, min: number, max: number): number {
 
 /**
  * Volume score: 0-20
- * $0 = 0, $50k+ = 20, linear scale between.
+ * Strict check: Tokens with less than $50k volume get severely penalized.
+ * $50k+ = 10, $1M+ = 20, <$50k = -30 (volume is crucial for exit liquidity)
  */
 function scoreVolume(volume24h: number): number {
-  const MAX_VOLUME = 50_000;
-  return clamp(Math.round((volume24h / MAX_VOLUME) * 20), 0, 20);
+  if (volume24h < 50_000) return -30; // Kill low volume tokens instantly
+  const MAX_VOLUME = 1_000_000;
+  return 10 + clamp(Math.round((volume24h / MAX_VOLUME) * 10), 0, 10);
 }
 
 /**

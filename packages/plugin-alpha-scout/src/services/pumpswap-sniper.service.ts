@@ -167,73 +167,10 @@ export function getSnipeStats(): {
 // ── Internal: Solana Log Subscription ──
 
 function subscribeToMigrationLogs(): void {
-  if (!connection) return;
-
-  try {
-    // Monitor logs from the PumpSwap migration program
-    logsSubscriptionId = connection.onLogs(
-      new PublicKey(PUMPSWAP_MIGRATION_PROGRAM),
-      (logInfo) => {
-        if (!running) return;
-
-        try {
-          // Parse the log to extract migration details
-          const logs = logInfo.logs || [];
-          const signature = logInfo.signature;
-
-          // Look for token mint in the log instructions
-          let detectedMint = '';
-          let detectedPool = '';
-
-          for (const logLine of logs) {
-            // PumpSwap migration logs typically contain the token mint
-            // Look for patterns like "Program log: Migrate ..." or account references
-            if (logLine.includes('Migrate') || logLine.includes('migrate')) {
-              log(`Migration log detected in tx ${signature.slice(0, 16)}...`);
-            }
-
-            // Extract mint from instruction data
-            // The migration instruction typically references the token mint
-            const mintMatch = logLine.match(/mint[:\s]+([A-Za-z0-9]{32,44})/i);
-            if (mintMatch) {
-              detectedMint = mintMatch[1];
-            }
-
-            const poolMatch = logLine.match(/pool[:\s]+([A-Za-z0-9]{32,44})/i);
-            if (poolMatch) {
-              detectedPool = poolMatch[1];
-            }
-          }
-
-          // If we found a mint, also parse from the transaction accounts
-          if (!detectedMint && logInfo.err === null) {
-            // The migration transaction includes the token mint as one of the accounts
-            // We'll need to fetch the transaction to get account keys
-            fetchMigrationDetails(signature).catch(() => {});
-          }
-
-          if (detectedMint) {
-            handleMigrationDetected({
-              mint: detectedMint,
-              symbol: '',
-              name: '',
-              pool: detectedPool,
-              source: 'solana_logs',
-              detectedAt: Date.now(),
-              migrationTx: signature,
-            });
-          }
-        } catch (err) {
-          // Don't crash on log parse errors
-        }
-      },
-      'confirmed',
-    );
-
-    log('Subscribed to PumpSwap migration program logs');
-  } catch (err) {
-    log(`Failed to subscribe to migration logs: ${String(err)}`);
-  }
+  // WEBSOCKET OVERRIDE: We no longer poll Solana RPC for migration logs.
+  // We rely entirely on `pumpportal.service.ts` WebSocket which feeds `onPumpPortalMigration`.
+  // Fetching `getParsedTransaction` on every migration was causing massive 429 rate limit bans.
+  log(`Skipping direct RPC log subscription to save rate limits. Relying on PumpPortal WebSocket.`);
 }
 
 async function fetchMigrationDetails(signature: string): Promise<void> {
@@ -276,17 +213,19 @@ async function fetchMigrationDetails(signature: string): Promise<void> {
       candidates.push(pubkey);
     }
 
-    // Try to validate candidates are actual token mints via getAccountInfo
-    for (const candidate of candidates.slice(0, 5)) { // Check at most 5
-      try {
-        const acctInfo = await connection!.getParsedAccountInfo(new PublicKey(candidate));
-        const data = acctInfo?.value?.data;
-        if (data && typeof data === 'object' && 'parsed' in data) {
-          const parsed = data.parsed as { type?: string; info?: { decimals?: number } };
-          if (parsed.type === 'mint' && parsed.info?.decimals !== undefined) {
-            // Confirmed SPL token mint
+    // Try to validate candidates are actual token mints via getMultipleAccountsInfo (single RPC call to avoid 429 limits)
+    try {
+      const candidatesToValidate = candidates.slice(0, 5);
+      const pubKeys = candidatesToValidate.map(c => new PublicKey(c));
+      const accounts = await connection!.getMultipleAccountsInfo(pubKeys);
+
+      for (let i = 0; i < accounts.length; i++) {
+        const acct = accounts[i];
+        if (acct && acct.owner.toBase58() === 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA') {
+          // It's an SPL token. A mint account is 82 bytes.
+          if (acct.data.length === 82) {
             handleMigrationDetected({
-              mint: candidate,
+              mint: candidatesToValidate[i]!,
               symbol: '',
               name: '',
               pool: '',
@@ -297,9 +236,9 @@ async function fetchMigrationDetails(signature: string): Promise<void> {
             return;
           }
         }
-      } catch {
-        // Skip this candidate
       }
+    } catch {
+      // Fetch failed, skip and avoid blocking
     }
 
     // No confirmed mint found — do NOT fire on unverified accounts

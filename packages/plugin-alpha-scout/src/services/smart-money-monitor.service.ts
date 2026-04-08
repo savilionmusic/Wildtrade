@@ -292,6 +292,9 @@ async function pollActivityCycle(): Promise<void> {
     try {
       const buys = await getWalletBuys(wallet.address, CONFIG.BUYS_PER_WALLET);
       wallet.lastChecked = Date.now();
+      
+      // Delay 1 second between wallets to avoid free-tier rate limits!
+      await new Promise(r => setTimeout(r, 1000));
 
       for (const buy of buys) {
         // Only count recent buys within the cluster window

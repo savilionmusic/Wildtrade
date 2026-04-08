@@ -14,14 +14,27 @@ function clamp(value: number, min: number, max: number): number {
 }
 
 /**
- * Volume score: 0-20
- * Strict check: Tokens with less than $50k volume get severely penalized.
- * $50k+ = 10, $1M+ = 20, <$50k = -30 (volume is crucial for exit liquidity)
+ * Volume score: 0-20 (Dynamic V/L Ratio)
+ * Rather than a flat $50k hurdle, we score based on Volume-to-Liquidity ratio (V/L).
+ * If a token has $10k liquidity and $30k volume (3.0x ratio), it is churning fast = healthy hype.
+ * If a token has $10k liquidity and $800 volume (0.08x ratio), it is dead = penalty.
  */
-function scoreVolume(volume24h: number): number {
-  if (volume24h < 50_000) return -30; // Kill low volume tokens instantly
-  const MAX_VOLUME = 1_000_000;
-  return 10 + clamp(Math.round((volume24h / MAX_VOLUME) * 10), 0, 10);
+function scoreVolume(volume24h: number, liquidityUsd: number): number {
+  // Prevent division by zero and kill absolute dead tokens mapping to early snipes
+  if (liquidityUsd < 100 || volume24h < 500) return -30;
+
+  const vlRatio = volume24h / liquidityUsd;
+
+  // Stagnant dead coins (high risk of trapping your money)
+  if (vlRatio < 0.2) return -30;
+
+  // Slow moving coins
+  if (vlRatio < 0.5) return 0;
+
+  // Healthy volume scaling from a 0.5x ratio up to a 2.0x ratio
+  // 0.5x ratio = 5 pts, 1.0x ratio = 10 pts, 2.0+ ratio = 20 pts
+  const score = Math.round((vlRatio / 2.0) * 20);
+  return clamp(score, 5, 20);
 }
 
 /**
@@ -98,7 +111,7 @@ function deriveConviction(total: number): SignalConviction {
 }
 
 export function calculateCompositeScore(params: ScoreParams): CompositeScore {
-  const volumeScore = scoreVolume(params.volume24h);
+  const volumeScore = scoreVolume(params.volume24h, params.liquidityUsd);
   const holderScore = scoreHolders(params.holderCount, params.top10Concentration);
   const socialScore = scoreSocial(params.kolMentions);
   const whaleScore = scoreWhale(params.whaleNetFlow, params.liquidityUsd);

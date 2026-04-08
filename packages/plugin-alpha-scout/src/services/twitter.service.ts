@@ -1,4 +1,4 @@
-import { TwitterApi } from 'twitter-api-v2';
+import { Scraper } from 'agent-twitter-client';
 
 export interface KolTweetResult {
   userId: string;
@@ -9,20 +9,12 @@ export interface KolTweetResult {
 }
 
 // Solana addresses are base58-encoded, typically 32-44 characters
-// We target 43-44 character strings that look like Solana mint addresses
 const SOLANA_MINT_REGEX = /[1-9A-HJ-NP-Za-km-z]{43,44}/g;
-
-function getBearerToken(): string {
-  const token = process.env.TWITTER_BEARER_TOKEN ?? '';
-  if (!token) {
-    console.log('[alpha-scout] WARNING: TWITTER_BEARER_TOKEN not set');
-  }
-  return token;
-}
 
 function getKolUserIds(): string[] {
   const raw = process.env.TWITTER_KOL_USER_IDS ?? '';
   if (!raw) return [];
+  // For agent-twitter-client, we need usernames (handles) rather than numerical IDs
   return raw.split(',').map((id) => id.trim()).filter(Boolean);
 }
 
@@ -38,65 +30,98 @@ function getPollIntervalMs(): number {
 function extractMints(text: string): string[] {
   const matches = text.match(SOLANA_MINT_REGEX);
   if (!matches) return [];
-  // Deduplicate
-  return [...new Set(matches)];
+  return [...new Set(matches)]; // Deduplicate
 }
 
-let client: TwitterApi | null = null;
+let scraper: Scraper | null = null;
+let isLoggingIn = false;
+let isLoggedIn = false;
 
-function getClient(): TwitterApi | null {
-  if (client) return client;
-  const token = getBearerToken();
-  if (!token) return null;
-  client = new TwitterApi(token);
-  return client;
+async function getClient(): Promise<Scraper | null> {
+  if (isLoggedIn && scraper) return scraper;
+  if (isLoggingIn) return null; // Wait for next tick if already trying
+
+  const username = process.env.TWITTER_USERNAME;
+  const password = process.env.TWITTER_PASSWORD;
+  const email = process.env.TWITTER_EMAIL;
+
+  if (!username || !password) {
+    console.log('[alpha-scout] WARNING: TWITTER_USERNAME or TWITTER_PASSWORD not set. X/Twitter scraping disabled.');
+    return null;
+  }
+
+  isLoggingIn = true;
+  console.log(`[alpha-scout] Logging into X (Twitter) as @${username}...`);
+  try {
+    scraper = new Scraper();
+    await scraper.login(username, password, email);
+    isLoggedIn = await scraper.isLoggedIn();
+    if (isLoggedIn) {
+      console.log(`[alpha-scout] Successfully logged into X!`);
+    } else {
+      console.log(`[alpha-scout] Failed to confirm X login status.`);
+    }
+  } catch (err) {
+    console.log(`[alpha-scout] X Login Error: ${String(err)}`);
+  } finally {
+    isLoggingIn = false;
+  }
+
+  return isLoggedIn ? scraper : null;
 }
 
 // Track the last seen tweet ID per user to avoid duplicates
 const lastSeenTweetIds = new Map<string, string>();
 
 export async function pollKolTimelines(): Promise<KolTweetResult[]> {
-  const api = getClient();
+  const api = await getClient();
   if (!api) return [];
 
-  const userIds = getKolUserIds();
-  if (userIds.length === 0) {
-    console.log('[alpha-scout] No KOL user IDs configured');
+  const handles = getKolUserIds();
+  if (handles.length === 0) {
+    console.log('[alpha-scout] No KOL handles configured in TWITTER_KOL_USER_IDS');
     return [];
   }
 
   const results: KolTweetResult[] = [];
 
-  for (const userId of userIds) {
+  for (const handle of handles) {
     try {
-      const sinceId = lastSeenTweetIds.get(userId);
-      const params: Record<string, unknown> = {
-        max_results: 10,
-        'tweet.fields': 'created_at',
-      };
-      if (sinceId) {
-        (params as Record<string, string>).since_id = sinceId;
+      // Get the latest tweets for the user
+      // agent-twitter-client getTweets is an async generator
+      const tweetGenerator = api.getTweets(handle, 10);
+      const tweets = [];
+      for await (const tweet of tweetGenerator) {
+        tweets.push(tweet);
+        if (tweets.length >= 10) break;
       }
 
-      const timeline = await api.v2.userTimeline(userId, params as Parameters<typeof api.v2.userTimeline>[1]);
-
-      const tweets = timeline.data?.data;
       if (!tweets || tweets.length === 0) continue;
-
-      // Update last seen
-      lastSeenTweetIds.set(userId, tweets[0].id);
+      
+      const lastSeenId = lastSeenTweetIds.get(handle);
+      
+      // agent-twitter-client returns tweets newest first
+      // Update last seen immediately to the newest tweet
+      if (tweets[0].id) {
+        lastSeenTweetIds.set(handle, tweets[0].id);
+      }
 
       for (const tweet of tweets) {
+        if (!tweet.id || !tweet.text) continue;
+        
+        // Stop processing if we hit a tweet we've already seen
+        if (lastSeenId && tweet.id === lastSeenId) break;
+
         const mints = extractMints(tweet.text);
         if (mints.length === 0) continue;
 
-        const tweetUrl = `https://twitter.com/i/status/${tweet.id}`;
-        const timestamp = tweet.created_at
-          ? new Date(tweet.created_at).getTime()
+        const tweetUrl = `https://x.com/${handle}/status/${tweet.id}`;
+        const timestamp = tweet.timestamp
+          ? tweet.timestamp * 1000 // agent-twitter-client uses unix timestamps
           : Date.now();
 
         results.push({
-          userId,
+          userId: handle,
           tweetId: tweet.id,
           tweetUrl,
           mints,
@@ -104,11 +129,13 @@ export async function pollKolTimelines(): Promise<KolTweetResult[]> {
         });
       }
     } catch (err) {
-      console.log(`[alpha-scout] Twitter poll error for user ${userId}: ${String(err)}`);
+      console.log(`[alpha-scout] X poll error for @${handle}: ${String(err)}`);
     }
   }
 
-  console.log(`[alpha-scout] Twitter poll: found ${results.length} tweets with mint addresses`);
+  if (results.length > 0) {
+    console.log(`[alpha-scout] X poll: found ${results.length} tweets with mint addresses`);
+  }
   return results;
 }
 

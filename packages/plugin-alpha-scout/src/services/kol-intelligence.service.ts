@@ -1,11 +1,13 @@
+import { pollKolTimelines, getTwitterPollIntervalMs } from './twitter.service.js';
+import { pollRedditNew, getRedditPollIntervalMs } from './reddit.service.js';
+
 /**
- * KOL Intelligence Service — Monitors crypto Twitter/X for alpha signals.
+ * KOL Intelligence Service — Monitors crypto Twitter/X and Reddit for alpha signals.
  *
- * Uses free DexScreener social data as the primary source (no Twitter API needed).
- * When a Twitter bearer token IS configured, also scrapes KOL feeds directly.
+ * Uses free DexScreener social data, agent-twitter-client for X, and free Reddit JSON.
  *
  * Signals extracted:
- *   - Token mentions ($TICKER, contract addresses, pump.fun links)
+ *   - Token mentions ($TICKER, contract addresses)
  *   - Community takeovers (CTOs) from DexScreener
  *   - Social engagement spikes on new tokens
  *
@@ -17,7 +19,7 @@
 export interface KolSignal {
   tokenMint: string;
   tokenSymbol: string;
-  source: 'dexscreener_social' | 'dexscreener_cto' | 'dexscreener_ads' | 'twitter_kol';
+  source: 'dexscreener_social' | 'dexscreener_cto' | 'dexscreener_ads' | 'twitter_kol' | 'reddit_alpha';
   confidence: 'low' | 'medium' | 'high';
   context: string;         // human-readable why this was flagged
   kolName?: string;        // which KOL mentioned it (if twitter)
@@ -47,11 +49,72 @@ export function startKolIntelligence(onLog?: KolLogCb): void {
   pollDexScreenerSocial();
   kolTimer = setInterval(pollDexScreenerSocial, 180_000);
 
-  // Also poll Twitter KOL timelines if configured
+  // Poll X/Twitter handles using free agent scraper
   pollTwitterKolFeeds();
-  setInterval(pollTwitterKolFeeds, 120_000); // Every 2 min
+  setInterval(pollTwitterKolFeeds, getTwitterPollIntervalMs());
 
-  log('KOL intelligence active — monitoring DexScreener social, CTOs, ads, and Twitter KOLs');
+  // Poll Reddit crypto communities using free API
+  pollRedditFeeds();
+  setInterval(pollRedditFeeds, getRedditPollIntervalMs());
+
+  log('KOL intelligence active — monitoring DexScreener social, CTOs, ads, Reddit feeds, and X/Twitter KOLs.');
+}
+
+async function pollTwitterKolFeeds(): Promise<void> {
+  if (!running) return;
+  try {
+    const tweets = await pollKolTimelines();
+    for (const tw of tweets) {
+      if (tw.mints.length === 0) continue;
+      // For each mint found in a tweet
+      for (const mint of tw.mints) {
+        const sigId = `x:${tw.userId}:${tw.tweetId}:${mint}`;
+        if (!seenTokens.has(sigId)) {
+          seenTokens.add(sigId);
+          const signal: KolSignal = {
+            tokenMint: mint,
+            tokenSymbol: '',
+            source: 'twitter_kol',
+            confidence: 'high',
+            context: `X mention by @${tw.userId} via agent-scraper`,
+            kolName: tw.userId,
+            timestamp: tw.timestamp,
+          };
+          addSignal(signal);
+        }
+      }
+    }
+  } catch (err) {
+    log(`X/Twitter error: ${String(err)}`);
+  }
+}
+
+async function pollRedditFeeds(): Promise<void> {
+  if (!running) return;
+  try {
+    const posts = await pollRedditNew();
+    for (const pt of posts) {
+      if (pt.mints.length === 0) continue;
+      // For each mint found in a reddit post
+      for (const mint of pt.mints) {
+        const sigId = `reddit:${pt.subreddit}:${pt.postId}:${mint}`;
+        if (!seenTokens.has(sigId)) {
+          seenTokens.add(sigId);
+          const signal: KolSignal = {
+            tokenMint: mint,
+            tokenSymbol: '',
+            source: 'reddit_alpha',
+            confidence: 'medium',
+            context: `Reddit post in r/${pt.subreddit}`,
+            timestamp: pt.timestamp,
+          };
+          addSignal(signal);
+        }
+      }
+    }
+  } catch (err) {
+    log(`Reddit error: ${String(err)}`);
+  }
 }
 
 export function stopKolIntelligence(): void {
@@ -198,6 +261,33 @@ async function pollDexScreenerSocial(): Promise<void> {
           tokenSymbol: '',
           source: 'dexscreener_social',
           confidence: 'low',
+          context: 'New DexScreener profile with X/Twitter linked',
+          timestamp: Date.now(),
+        };
+        addSignal(signal);
+        found++;
+      }
+      if (found > 0) log(`Found ${found} new tokens with social profiles`);
+    }
+  } catch (err) {
+    log(`Profile poll error: ${String(err)}`);
+  }
+}
+
+function addSignal(signal: KolSignal): void {
+  recentKolSignals.push(signal);
+  if (recentKolSignals.length > MAX_SIGNALS) {
+    recentKolSignals.shift();
+  }
+  log(`Token mention: ${signal.tokenMint.slice(0, 8)} from ${signal.source} (${signal.confidence})`);
+  if (onTokenMention) {
+    onTokenMention(signal);
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
           context: `New token profile with Twitter: ${p.description?.slice(0, 80) || 'no description'}`,
           timestamp: Date.now(),
         };

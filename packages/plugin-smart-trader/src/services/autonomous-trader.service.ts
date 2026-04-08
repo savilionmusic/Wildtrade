@@ -66,28 +66,28 @@ const PHASES: TradingPhase[] = [
     minPortfolio: 0, maxPortfolio: 2,
     targetMCapMin: 5_000, targetMCapMax: 100_000,
     positionSizeMin: 0.03, positionSizeMax: 0.15,
-    maxPositions: 5, minScore: 55,
+    maxPositions: 5, minScore: 48,
   },
   {
     name: 'Phase 2: Small Caps',
     minPortfolio: 2, maxPortfolio: 5,
     targetMCapMin: 20_000, targetMCapMax: 500_000,
     positionSizeMin: 0.08, positionSizeMax: 0.3,
-    maxPositions: 4, minScore: 60,
+    maxPositions: 4, minScore: 53,
   },
   {
     name: 'Phase 3: Scaling Up',
     minPortfolio: 5, maxPortfolio: 10,
     targetMCapMin: 50_000, targetMCapMax: 2_000_000,
     positionSizeMin: 0.15, positionSizeMax: 0.5,
-    maxPositions: 3, minScore: 65,
+    maxPositions: 3, minScore: 58,
   },
   {
     name: 'Phase 4: Mission Complete',
     minPortfolio: 10, maxPortfolio: Infinity,
     targetMCapMin: 100_000, targetMCapMax: 10_000_000,
     positionSizeMin: 0.3, positionSizeMax: 1.0,
-    maxPositions: 3, minScore: 70,
+    maxPositions: 3, minScore: 62,
   },
 ];
 
@@ -273,7 +273,7 @@ function getAdaptiveMinScore(): number {
   // Cap total adjustment — max +2 up, -5 down
   minScore += Math.max(-5, Math.min(2, adjust));
 
-  return Math.max(40, Math.min(60, minScore)); // Hard floor at 40, cap at 60 (more permissive)
+  return Math.max(35, Math.min(80, minScore)); // Hard floor at 35, cap at 80 (adapted for free-tier missing whale scores)
 }
 
 // ── Learning Analysis Helpers ──
@@ -597,6 +597,9 @@ function canTrade(): { allowed: boolean; reason?: string } {
 
 // ── Public API ──
 
+let lastRugCheckTime = 0;
+let RUGCHECK_COOLDOWN_MS = 1_000;
+
 export async function triggerInstantSnipe(mintAddress: string, symbol: string): Promise<void> {
   if (!running) {
     log(`🚀 SNIPE REJECTED: Trader not running`);
@@ -626,35 +629,52 @@ export async function triggerInstantSnipe(mintAddress: string, symbol: string): 
 
   // ── Safety checks for migration snipes ──
   // Quick RugCheck — block confirmed honeypots/mintables even on snipes
-  const rugcheckBase = process.env.RUGCHECK_API_BASE ?? 'https://api.rugcheck.xyz/v1';
-  try {
-    const rugRes = await fetch(`${rugcheckBase}/tokens/${mintAddress}/report`, {
-      signal: AbortSignal.timeout(5_000),
-    });
-    if (rugRes.ok) {
-      const rugData = await rugRes.json() as {
-        score?: number;
-        risks?: Array<{ name: string; level: string }>;
-      };
-      const risks = rugData.risks ?? [];
-      const hasCritical = risks.some(r =>
-        r.level === 'critical' ||
-        r.name?.toLowerCase().includes('honeypot') ||
-        r.name?.toLowerCase().includes('mintable')
-      );
-      if (hasCritical) {
-        log(`🚀 SNIPE REJECTED: RugCheck flagged ${symbol || mintAddress.slice(0, 8)} as dangerous (critical risk)`);
-        return;
+  // Only check if we haven't hit rate limits recently
+  const now = Date.now();
+  if (now < lastRugCheckTime + RUGCHECK_COOLDOWN_MS) {
+    log(`🚀 SNIPE WARNING: RugCheck on cooldown — proceeding blindly for ${mintAddress.slice(0, 8)}`);
+  } else {
+    lastRugCheckTime = now;
+    const rugcheckBase = process.env.RUGCHECK_API_BASE ?? 'https://api.rugcheck.xyz/v1';
+    try {
+      const rugRes = await fetch(`${rugcheckBase}/tokens/${mintAddress}/report`, {
+        headers: { 'Accept': 'application/json' },
+        signal: AbortSignal.timeout(3_000), // Reduced from 5s to fail-open faster on snipes
+      });
+      
+      if (rugRes.status === 429) {
+        log(`🚀 SNIPE WARNING: RugCheck rate limited (429) for ${symbol || mintAddress.slice(0, 8)} — backing off 10s`);
+        RUGCHECK_COOLDOWN_MS = 10_000; // Increase cooldown temporarily
+      } else if (rugRes.ok) {
+        RUGCHECK_COOLDOWN_MS = 1_000; // Reset cooldown
+        const rugData = await rugRes.json() as {
+          score?: number;
+          risks?: Array<{ name: string; level: string }>;
+        };
+        const risks = rugData.risks ?? [];
+        const hasCritical = risks.some(r =>
+          r.level === 'critical' ||
+          r.name?.toLowerCase().includes('honeypot') ||
+          r.name?.toLowerCase().includes('mintable')
+        );
+        if (hasCritical) {
+          log(`🚀 SNIPE REJECTED: RugCheck flagged ${symbol || mintAddress.slice(0, 8)} as dangerous (critical risk)`);
+          return;
+        }
+        const score = rugData.score ?? 50;
+        if (score < 20) {
+          log(`🚀 SNIPE REJECTED: RugCheck score ${score} too low for ${symbol || mintAddress.slice(0, 8)}`);
+          return;
+        }
       }
-      const score = rugData.score ?? 50;
-      if (score < 20) {
-        log(`🚀 SNIPE REJECTED: RugCheck score ${score} too low for ${symbol || mintAddress.slice(0, 8)}`);
-        return;
+      // If API is down, fail-open (proceed with snipe)
+    } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        log(`🚀 SNIPE WARNING: RugCheck timeout for ${symbol || mintAddress.slice(0, 8)} — proceeding blindly`);
+      } else {
+        log(`🚀 SNIPE WARNING: RugCheck fetch failed for ${symbol || mintAddress.slice(0, 8)} — proceeding blindly`);
       }
     }
-    // If API is down, fail-open (proceed with snipe)
-  } catch {
-    log(`🚀 SNIPE WARNING: RugCheck timeout for ${symbol || mintAddress.slice(0, 8)} — proceeding`);
   }
 
   const available = totalBudgetSol - deployedSol + realizedPnlSol;

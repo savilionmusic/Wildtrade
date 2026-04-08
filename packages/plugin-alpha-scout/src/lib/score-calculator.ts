@@ -39,13 +39,14 @@ function scoreHolders(holderCount: number, top10Concentration: number): number {
  * Social score: 0-25
  * KOL mentions and social signals are HIGH VALUE alpha.
  * Twitter KOL mentions count double (pre-boosted by scanner).
- * 0 = 0, 1 = 8, 2 = 16, 3 = 21, 4+ = 25
+ * Since we rely heavily on free-tier DexScreener signals, we award more points earlier.
+ * 0 = 0, 1 = 12, 2 = 18, 3 = 22, 4+ = 25
  */
 function scoreSocial(kolMentions: number): number {
   if (kolMentions <= 0) return 0;
-  if (kolMentions === 1) return 8;
-  if (kolMentions === 2) return 16;
-  if (kolMentions === 3) return 21;
+  if (kolMentions === 1) return 12;
+  if (kolMentions === 2) return 18;
+  if (kolMentions === 3) return 22;
   return 25;
 }
 

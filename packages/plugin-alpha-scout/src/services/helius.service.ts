@@ -97,17 +97,28 @@ export async function pollWhaleActivity(
 
   const results: WhaleTransaction[] = [];
 
-  const promises = walletsToTrack.map(async (wallet) => {
-    const txs = await fetchRecentTransactions(wallet, apiKey);
-    for (const raw of txs) {
-      const parsed = parseTransaction(wallet, raw as Record<string, unknown>);
-      if (parsed) {
-        results.push(parsed);
+  // Throttle Helius API calls (max 3 concurrent) instead of Promise.all on everything
+  // This prevents 429 Too Many Requests on free tier
+  const CONCURRENCY_LIMIT = 3;
+  for (let i = 0; i < walletsToTrack.length; i += CONCURRENCY_LIMIT) {
+    const chunk = walletsToTrack.slice(i, i + CONCURRENCY_LIMIT);
+    const chunkPromises = chunk.map(async (wallet) => {
+      const txs = await fetchRecentTransactions(wallet, apiKey);
+      for (const raw of txs) {
+        const parsed = parseTransaction(wallet, raw as Record<string, unknown>);
+        if (parsed) {
+          results.push(parsed);
+        }
       }
-    }
-  });
+    });
 
-  await Promise.all(promises);
+    await Promise.all(chunkPromises);
+    
+    // Add a small delay between chunks
+    if (i + CONCURRENCY_LIMIT < walletsToTrack.length) {
+      await new Promise(r => setTimeout(r, 500));
+    }
+  }
 
   console.log(`[alpha-scout] Polled ${walletsToTrack.length} whale wallets, found ${results.length} token transfers`);
   return results;

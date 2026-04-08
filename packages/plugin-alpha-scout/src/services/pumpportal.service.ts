@@ -45,8 +45,11 @@ function handleMessage(raw: WebSocket.RawData): void {
     const data = JSON.parse(raw.toString());
 
     // Detect migration events (PumpFun → Raydium)
-    const txType = data.txType ?? data.type ?? data.event ?? '';
-    if (txType === 'migration' || txType === 'migrate' || data.pool || data.migrated) {
+    // ONLY match on explicit migration txType — NOT on `data.pool` or `data.migrated`
+    // which appear on many non-migration messages and cause false positives.
+    const txType = String(data.txType ?? data.type ?? data.event ?? '').toLowerCase();
+    const isMigration = txType === 'migration' || txType === 'migrate' || txType === 'tokenmigration';
+    if (isMigration) {
       const mint: string | undefined = data.mint ?? data.tokenMint ?? data.address;
       if (mint && migrationCallback) {
         const migrationEvent: PumpMigrationEvent = {

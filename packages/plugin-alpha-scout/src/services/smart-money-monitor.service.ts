@@ -195,6 +195,13 @@ export function getRecentSmartBuys(): RecentBuy[] {
 }
 
 /**
+ * Get the current list of tracked wallet addresses (for passing to Helius, convergence, etc.).
+ */
+export function getTrackedWalletAddresses(): string[] {
+  return trackedWallets.map(w => w.address);
+}
+
+/**
  * Force a manual check (for CLI/chat commands).
  */
 export async function forceCheck(): Promise<SmartMoneySignal[]> {

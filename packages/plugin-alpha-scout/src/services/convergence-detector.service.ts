@@ -178,7 +178,11 @@ async function runConvergenceScan(): Promise<void> {
 
       // Skip stablecoins and wrapped tokens that snuck through (e.g. new USDT/USDC pairs)
       const symUpper = symbol.toUpperCase();
-      if (['USDT', 'USDC', 'USDD', 'DAI', 'BUSD', 'TUSD', 'FRAX', 'PYUSD', 'USDH', 'UXD'].includes(symUpper)) continue;
+      if ([
+        'USDT', 'USDC', 'USDD', 'DAI', 'BUSD', 'TUSD', 'FRAX', 'PYUSD', 'USDH', 'UXD',
+        'CUSD', 'SUSD', 'DOLA', 'MIM', 'LUSD', 'USDP', 'GUSD', 'WUSDC', 'WUSDT',
+        'UST', 'USDV', 'USDA', 'USDZ', 'EURC', 'USDS',
+      ].includes(symUpper)) continue;
       if (marketCap > 1_000_000_000) continue; // Skip mega-cap tokens (> $1B MCap)
 
       // Score confidence

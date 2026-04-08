@@ -46,15 +46,51 @@ const requiredEnvVars = [
   'OPENROUTER_API_KEY',
 ];
 
+function isPlaceholderValue(value: string | undefined): boolean {
+  const normalized = value?.trim() ?? '';
+  if (!normalized) return false;
+
+  return normalized.startsWith('YOUR_')
+    || normalized.includes('YOUR_KEY')
+    || normalized.includes('your-endpoint')
+    || normalized.includes('your-server.example.com')
+    || normalized.includes('wallet1pubkey')
+    || normalized.includes('wallet2pubkey')
+    || normalized === '12345678,87654321';
+}
+
+function clearPlaceholderEnv(key: string): void {
+  if (!isPlaceholderValue(process.env[key])) return;
+
+  console.log(`[boot] Ignoring placeholder value for ${key}`);
+  delete process.env[key];
+}
+
 function validateEnv(): void {
+  clearPlaceholderEnv('SOLANA_RPC_HELIUS');
+  clearPlaceholderEnv('SOLANA_RPC_QUICKNODE');
+  clearPlaceholderEnv('HELIUS_API_KEY');
+  clearPlaceholderEnv('HELIUS_WEBHOOK_URL');
+  clearPlaceholderEnv('HELIUS_WEBHOOK_SECRET');
+  clearPlaceholderEnv('TWITTER_BEARER_TOKEN');
+  clearPlaceholderEnv('TWITTER_KOL_USER_IDS');
+  clearPlaceholderEnv('SMART_MONEY_WALLETS');
+  clearPlaceholderEnv('TELEGRAM_BOT_TOKEN');
+  clearPlaceholderEnv('TELEGRAM_CHAT_ID');
+
   // Set defaults for paper trading
-  if (!process.env.WALLET_PUBLIC_KEY) {
+  if (!process.env.WALLET_PUBLIC_KEY || isPlaceholderValue(process.env.WALLET_PUBLIC_KEY)) {
     process.env.WALLET_PUBLIC_KEY = '11111111111111111111111111111111';
   }
-  const missing = requiredEnvVars.filter((v) => !process.env[v]);
+
+  const missing = requiredEnvVars.filter((v) => {
+    const value = process.env[v];
+    return !value || isPlaceholderValue(value);
+  });
+
   if (missing.length > 0) {
     console.error(`[boot] Missing required env vars: ${missing.join(', ')}`);
-    console.error('[boot] Go to Settings in the app and add your OpenRouter API key.');
+    console.error('[boot] Go to Settings in the app and add a real OpenRouter API key, not the placeholder from .env.example.');
     process.exit(1);
   }
 }

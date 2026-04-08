@@ -33,6 +33,7 @@ import { getKolSignals } from './kol-intelligence.service.js';
 import { getRecentSmartBuys } from './smart-money-monitor.service.js';
 import { getRecentWalletBuys } from './wallet-intelligence.service.js';
 import { getCachedWhaleActivity } from './helius.service.js';
+import { getTrackedWalletAddresses } from './smart-money-monitor.service.js';
 import { triggerInstantSnipe } from '@wildtrade/plugin-smart-trader';
 import { startPumpSwapSniper, stopPumpSwapSniper, onPumpPortalMigration } from './pumpswap-sniper.service.js';
 import type { MigrationSnipeEvent } from './pumpswap-sniper.service.js';
@@ -89,18 +90,11 @@ export function startScanner(
   });
 
   // 1b. Subscribe to PumpFun migration events (tokens moving to Raydium = big pump opportunity)
+  // ONLY forward to PumpSwap sniper → triggerInstantSnipe.
+  // Do NOT also enqueue in tokenQueue — that caused double-buys (once via instant snipe,
+  // once via normal signal pipeline with +20 migration bonus).
   onPumpMigration((migration) => {
-    logCb('info', `MIGRATION DETECTED: ${migration.symbol || migration.mint.slice(0, 8)} migrating from PumpFun to Raydium — fast-tracking!`);
-    // Put migration tokens at FRONT of queue (high priority)
-    tokenQueue.unshift({
-      mint: migration.mint,
-      symbol: migration.symbol || '',
-      name: migration.name || '',
-      source: 'pumpportal',
-      creator: migration.creator,
-      isMigration: true,
-    });
-    // Also feed to PumpSwap sniper for immediate on-chain monitoring
+    logCb('info', `MIGRATION DETECTED: ${migration.symbol || migration.mint.slice(0, 8)} migrating from PumpFun to Raydium — forwarding to sniper`);
     onPumpPortalMigration(migration);
   });
 
@@ -511,7 +505,7 @@ async function processToken(token: {
       whaleNetFlow += walletMintBuys.reduce((sum, b) => sum + b.solSpent, 0);
     }
     // Also check Helius whale transactions (if HELIUS_API_KEY is set)
-    const heliusTxs = await getCachedWhaleActivity();
+    const heliusTxs = await getCachedWhaleActivity(getTrackedWalletAddresses());
     const heliusBuys = heliusTxs.filter(t => t.mint === mint && t.type === 'buy');
     if (heliusBuys.length > 0) {
       const heliusFlow = heliusBuys.reduce((sum, b) => sum + b.amountSol, 0);
@@ -557,13 +551,6 @@ async function processToken(token: {
   if (buySellRatio >= 2.0) {
     score.total = Math.min(100, score.total + 5);
     logCb('info', `${token.symbol || mint.slice(0, 8)}: BUY PRESSURE +5 (ratio: ${buySellRatio.toFixed(1)})`);
-  }
-
-  // PumpFun migration bonus — tokens migrating to Raydium usually pump 50%+
-  if (token.isMigration) {
-    score.total = Math.min(100, score.total + 20);
-    score.conviction = 'high';
-    logCb('info', `${token.symbol || mint.slice(0, 8)}: MIGRATION BONUS +20 — PumpFun → Raydium migration detected!`);
   }
 
   // Social/KOL signal bonus — reward tokens with social backing

@@ -1,0 +1,417 @@
+[2026-04-08 14:02:56] [32mINFO[39m: [36mLoading embedding settings:[39m
+    [35mOLLAMA_EMBEDDING_MODEL[39m: "mxbai-embed-large"
+[2026-04-08 14:02:56] [32mINFO[39m: [36mLoading embedding settings:[39m
+    [35mOLLAMA_EMBEDDING_MODEL[39m: "mxbai-embed-large"
+╔═══════════════════════════════════════════╗
+║   WILDTRADE - Tri-Squad Trading Bot       ║
+║   1-to-10 SOL Challenge                   ║
+╚═══════════════════════════════════════════╝
+
+[boot] Mode: PAPER TRADING
+[boot] Autonomous: OFF (approval required for large trades)
+[boot] Initializing databases...
+(node:3836) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+[2026-04-08 14:02:56] [32mINFO[39m: [36mLoading character settings:[39m
+    [35mARGV[39m: [
+      "/usr/local/share/nvm/versions/node/v24.11.1/bin/node",
+      "/workspaces/Wildtrade/dist/bot.cjs"
+    ]
+    [35mCWD[39m: "/workspaces/Wildtrade"
+[2026-04-08 14:02:56] [32mINFO[39m: [36mParsed settings:[39m
+    [35mUSE_OPENAI_EMBEDDING_TYPE[39m: "undefined"
+    [35mUSE_OLLAMA_EMBEDDING_TYPE[39m: "undefined"
+    [35mOLLAMA_EMBEDDING_MODEL[39m: "mxbai-embed-large"
+[2026-04-08 14:02:56] [32mINFO[39m: [36mParsed settings:[39m
+    [35mUSE_OPENAI_EMBEDDING_TYPE[39m: "undefined"
+    [35mUSE_OLLAMA_EMBEDDING_TYPE[39m: "undefined"
+    [35mOLLAMA_EMBEDDING_MODEL[39m: "mxbai-embed-large"
+[boot] Databases ready.
+[boot] Starting Socket.IO server...
+[boot] Creating Auditor agent (Fixer)...
+[2026-04-08 14:02:59] [32mINFO[39m: [36mFixer(7397423e-15d2-0454-aac8-c89d302ffd28) - Initializing AgentRuntime with options:[39m
+    [35mcharacter[39m: "Fixer"
+    [35mmodelProvider[39m: "openrouter"
+    [35mcharacterModelProvider[39m: "openrouter"
+[boot] Creating Finder agent (Scout)...
+[2026-04-08 14:02:59] [31mERROR[39m: [36mError creating room[39m
+[boot] Creating Trader agent (Executioner)...
+[boot] All agents initialized.
+[boot] Telegram not configured — set bot token + chat ID in Settings for push alerts.
+[boot] Starting smart money monitor...
+[smart-money] Starting smart money monitor...
+[smart-money] Config: poll every 120s, cluster window 60min, min cluster size 2
+[smart-money] Added 2 user-configured wallets
+[smart-money] Refreshing wallet list from GMGN...
+[server] Socket.IO listening on port 3001
+[2026-04-08 14:02:59] [32mINFO[39m: [36mFixer(7397423e-15d2-0454-aac8-c89d302ffd28) - Setting Model Provider:[39m
+    [35mcharacterModelProvider[39m: "openrouter"
+    [35moptsModelProvider[39m: "openrouter"
+    [35mfinalSelection[39m: "openrouter"
+[2026-04-08 14:02:59] [32mINFO[39m: [36mFixer(7397423e-15d2-0454-aac8-c89d302ffd28) - Selected model provider: openrouter[39m
+[2026-04-08 14:02:59] [32mINFO[39m: [36mFixer(7397423e-15d2-0454-aac8-c89d302ffd28) - Selected image model provider: openrouter[39m
+[2026-04-08 14:02:59] [32mINFO[39m: [36mFixer(7397423e-15d2-0454-aac8-c89d302ffd28) - Selected image vision model provider: openrouter[39m
+[2026-04-08 14:02:59] [32mINFO[39m: [36mScout(56be36a0-f890-0c60-b8bb-745f74ef5ed6) - Initializing AgentRuntime with options:[39m
+    [35mcharacter[39m: "Scout"
+    [35mmodelProvider[39m: "openrouter"
+    [35mcharacterModelProvider[39m: "openrouter"
+[2026-04-08 14:02:59] [32mINFO[39m: [36mScout(56be36a0-f890-0c60-b8bb-745f74ef5ed6) - Setting Model Provider:[39m
+    [35mcharacterModelProvider[39m: "openrouter"
+    [35moptsModelProvider[39m: "openrouter"
+    [35mfinalSelection[39m: "openrouter"
+[2026-04-08 14:02:59] [32mINFO[39m: [36mScout(56be36a0-f890-0c60-b8bb-745f74ef5ed6) - Selected model provider: openrouter[39m
+[2026-04-08 14:02:59] [32mINFO[39m: [36mScout(56be36a0-f890-0c60-b8bb-745f74ef5ed6) - Selected image model provider: openrouter[39m
+[2026-04-08 14:02:59] [32mINFO[39m: [36mScout(56be36a0-f890-0c60-b8bb-745f74ef5ed6) - Selected image vision model provider: openrouter[39m
+[2026-04-08 14:02:59] [32mINFO[39m: [36mExecutioner(f5dfbe1c-ae9c-06ee-93bc-8bed3d0a7551) - Initializing AgentRuntime with options:[39m
+    [35mcharacter[39m: "Executioner"
+    [35mmodelProvider[39m: "openrouter"
+    [35mcharacterModelProvider[39m: "openrouter"
+[2026-04-08 14:02:59] [32mINFO[39m: [36mExecutioner(f5dfbe1c-ae9c-06ee-93bc-8bed3d0a7551) - Setting Model Provider:[39m
+    [35mcharacterModelProvider[39m: "openrouter"
+    [35moptsModelProvider[39m: "openrouter"
+    [35mfinalSelection[39m: "openrouter"
+[2026-04-08 14:02:59] [32mINFO[39m: [36mExecutioner(f5dfbe1c-ae9c-06ee-93bc-8bed3d0a7551) - Selected model provider: openrouter[39m
+[2026-04-08 14:02:59] [32mINFO[39m: [36mExecutioner(f5dfbe1c-ae9c-06ee-93bc-8bed3d0a7551) - Selected image model provider: openrouter[39m
+[2026-04-08 14:02:59] [32mINFO[39m: [36mExecutioner(f5dfbe1c-ae9c-06ee-93bc-8bed3d0a7551) - Selected image vision model provider: openrouter[39m
+[2026-04-08 14:02:59] [31mERROR[39m: [36mError creating room[39m
+[2026-04-08 14:02:59] [31mERROR[39m: [36mError creating room[39m
+[gmgn] API blocked by Cloudflare (403) — using curated wallets instead. This is normal.
+[gmgn] GMGN API blocked — using curated smart money wallets
+[smart-money] Tracking 22 wallets (2 user + 20 GMGN)
+[smart-money] Monitor started, tracking 22 wallets
+[boot] Smart money monitor started.
+[boot] Starting token scanner (PumpPortal + DexScreener)...
+[scanner] Starting token scanner...
+[scanner] Connecting to PumpPortal for new token launches...
+[scanner] Starting PumpSwap migration sniper for instant migration catches...
+[scanner] Starting PumpSwap migration sniper...
+[scanner] Subscribed to PumpSwap migration program logs
+[scanner] Monitoring PumpSwap migrations via Solana logs (wss://mainnet.helius-rpc.com/?api-key=YO...)
+[scanner] Starting DexScreener trending scanner...
+[scanner] Scanner fully active — watching PumpPortal + DexScreener
+[boot] Token scanner active — watching for new launches and trending tokens.
+[boot] Starting wallet intelligence...
+[wallet-intel] Starting wallet intelligence...
+[wallet-intel] Seeded 16 curated smart money wallets
+[wallet-intel] Wallet intelligence active — tracking 16 wallets
+[boot] Wallet intelligence active — tracking smart money leaderboard.
+[boot] Starting KOL intelligence...
+[kol-intel] Starting KOL intelligence...
+[kol-intel] KOL intelligence active — monitoring DexScreener social, CTOs, ads, and Twitter KOLs
+[boot] KOL intelligence active — monitoring social signals, CTOs, and ads.
+[boot] Starting wallet convergence detector...
+[convergence] Starting convergence detector for 16 wallets
+[boot] Convergence detector active — scanning 16 wallets for token overlap.
+[boot] Starting autonomous trader...
+[boot] Autonomous trader ONLINE | Mode: PAPER | Budget: 1.0 SOL
+
+[cli] Wildtrade Tri-Squad Bot ready. Commands:
+  status     - Show agent status
+  positions  - List open positions
+  signals    - List active signals
+  portfolio  - Show portfolio summary
+  denylist   - Show denylisted addresses
+  quit       - Shutdown gracefully
+
+[trader] Learning restored: 0 lessons, minScore adj: +0, sizeMult: 1.00, avoid: []
+[trader] Autonomous trader ONLINE | Mode: PAPER | Budget: 1 SOL | Phase 1: Micro Gems
+[trader] Restored: 0 open positions, 0 history, 0.0302 realized PnL
+[trader] Target MCap: $5,000 - $100,000 | Position size: 0.03-0.15 SOL
+[trader] Signal polling active (every 15s) | Price monitoring active (every 10s) | State save every 30s
+[alpha-scout] PumpPortal WebSocket connected
+[alpha-scout] Subscribed to new token events
+[alpha-scout] Subscribed to token migration events (PumpFun → Raydium)
+[kol-intel] Token mention: 9jwiCmcg from dexscreener_cto (medium)
+[kol-intel] Token mention: 5TNm9T7y from dexscreener_cto (medium)
+[kol-intel] Token mention: 5ZW2Wrxd from dexscreener_cto (medium)
+[kol-intel] Token mention: E6ifp2mJ from dexscreener_cto (medium)
+[kol-intel] Token mention: CgQthsLe from dexscreener_cto (medium)
+[kol-intel] Token mention: BaXZsqU6 from dexscreener_cto (medium)
+[kol-intel] Token mention: DjkL8nbr from dexscreener_cto (medium)
+[kol-intel] Token mention: 9YiTzXRb from dexscreener_cto (medium)
+[kol-intel] Token mention: DLd4HGpS from dexscreener_cto (medium)
+[kol-intel] Token mention: 2c1KjiyQ from dexscreener_cto (medium)
+[kol-intel] Found 10 new community takeovers
+ws error: Unexpected server response: 401
+[alpha-scout] Twitter poll error for user 12345678: Error: Request failed with code 401
+[scanner] DexScreener profiles: found 25 new Solana tokens
+[scanner] DexScreener boosts: found 28 boosted Solana tokens
+[alpha-scout] Twitter poll error for user 87654321: Error: Request failed with code 401
+[alpha-scout] Twitter poll: found 0 tweets with mint addresses
+ws error: Unexpected server response: 401
+[alpha-scout] New token from PumpPortal: INUDAY (9e3s3BNVbBvDKyCsj7gD7k8Rt6vDmRNuYpzfn6eapump)
+[kol-intel] Token mention: DRYp16KA from dexscreener_ads (low)
+[kol-intel] Token mention: 5Kc2PwwP from dexscreener_ads (low)
+[kol-intel] Token mention: AmSUtJcF from dexscreener_ads (low)
+[kol-intel] Token mention: 49Yc43Nj from dexscreener_ads (low)
+[kol-intel] Token mention: 2xm2WZ9k from dexscreener_ads (low)
+[kol-intel] Token mention: RBXJwCBk from dexscreener_ads (low)
+[kol-intel] Token mention: DECfruyL from dexscreener_ads (low)
+[kol-intel] Token mention: 423qgspa from dexscreener_ads (low)
+[kol-intel] Token mention: 7mHDBU9J from dexscreener_ads (low)
+[kol-intel] Token mention: RoARruzb from dexscreener_ads (low)
+[kol-intel] Token mention: 4SDT2p92 from dexscreener_ads (low)
+[kol-intel] Token mention: DkVbZFMb from dexscreener_ads (low)
+[kol-intel] Token mention: F2ePGQXK from dexscreener_ads (low)
+[kol-intel] Token mention: GvLpXC6i from dexscreener_ads (low)
+[kol-intel] Token mention: 5552z6Qp from dexscreener_ads (low)
+[kol-intel] Token mention: EgPExEWs from dexscreener_ads (low)
+[kol-intel] Token mention: 2N9d4EsH from dexscreener_ads (low)
+[kol-intel] Token mention: BdLpbJSX from dexscreener_ads (low)
+[kol-intel] Token mention: J41zYoVD from dexscreener_ads (low)
+[kol-intel] Token mention: 2pxVrnuo from dexscreener_ads (low)
+[kol-intel] Token mention: 5b8JHKDQ from dexscreener_ads (low)
+[kol-intel] Token mention: 72y6nk1Q from dexscreener_ads (low)
+[kol-intel] Token mention: G1ij1UjW from dexscreener_ads (low)
+[kol-intel] Found 23 new paid ads
+ws error: Unexpected server response: 401
+ws error: Unexpected server response: 401
+[alpha-scout] New token from PumpPortal: Mollie (3rARD3WQwTdC3dCAy4FpvpzqXjhHaPBB2DhsZBYfpump)
+[kol-intel] Token mention: Fw7uMrDq from dexscreener_social (low)
+[kol-intel] Token mention: 9iwDqEg1 from dexscreener_social (low)
+[kol-intel] Token mention: 5CXyE1uV from dexscreener_social (low)
+[kol-intel] Token mention: At6T8Bxp from dexscreener_social (low)
+[kol-intel] Token mention: FwabCKNH from dexscreener_social (low)
+[kol-intel] Token mention: G1gzV2H2 from dexscreener_social (low)
+[kol-intel] Token mention: 9KtZzMkB from dexscreener_social (low)
+[kol-intel] Token mention: pg15Zfuy from dexscreener_social (low)
+[kol-intel] Token mention: E9VnEEGc from dexscreener_social (low)
+[kol-intel] Token mention: DTp6oMA5 from dexscreener_social (low)
+[kol-intel] Token mention: 5rt5gHxD from dexscreener_social (low)
+[kol-intel] Token mention: 3bcqvTvM from dexscreener_social (low)
+[kol-intel] Token mention: Can1QcKq from dexscreener_social (low)
+[kol-intel] Token mention: GM3XgT9S from dexscreener_social (low)
+[kol-intel] Token mention: 2FbMPCMv from dexscreener_social (low)
+[kol-intel] Token mention: HVc4U76t from dexscreener_social (low)
+[kol-intel] Token mention: 1JW6qtFP from dexscreener_social (low)
+[kol-intel] Token mention: 5GRwHpN4 from dexscreener_social (low)
+[kol-intel] Token mention: 4Ro1KekR from dexscreener_social (low)
+[kol-intel] Token mention: 8Tacds4b from dexscreener_social (low)
+[kol-intel] Token mention: Sj1mAuvP from dexscreener_social (low)
+[kol-intel] Token mention: 69nEKVPC from dexscreener_social (low)
+[kol-intel] Token mention: CyYXHfoL from dexscreener_social (low)
+[kol-intel] Token mention: HraDe2yx from dexscreener_social (low)
+[kol-intel] Found 24 new tokens with social profiles
+ws error: Unexpected server response: 401
+[alpha-scout] New token from PumpPortal: SHAKE (6dJz1iKSs9WHjmb3EbpBMSG99Z5vF15cyDhBrhtXMZXT)
+[alpha-scout] Helius API error for wallet wallet2pubkey: 400
+[alpha-scout] Helius API error for wallet wallet1pubkey: 400
+[alpha-scout] Polled 2 whale wallets, found 0 token transfers
+[alpha-scout] Score breakdown: vol=20 hold=8 soc=8 whale=0 liq=8 total=44 conviction=medium
+[scanner] PETRO: BUY PRESSURE +5 (ratio: 4.1)
+[scanner] PETRO: SOCIAL BONUS +4 (1 KOL mention)
+[scanner] Scanned: PETRO | 31min old | MCap: $86,601 | Vol: $178,384.33 | Liq: $23,053.7 | 5m: +56.0% | Score: 57/100 (medium)
+[scanner] SIGNAL FORWARDED: PETRO (Fw7uMrDqbHhgiWfeWetoaeCQpYEk99JwDD8E1KB6pump) → Trader | Score: 57 | MCap: $86,601 | Liq: $23,053.7 | https://dexscreener.com/solana/Fw7uMrDqbHhgiWfeWetoaeCQpYEk99JwDD8E1KB6pump
+ws error: Unexpected server response: 401
+ws error: Unexpected server response: 401
+[alpha-scout] New token from PumpPortal: mayhem (9bHphs8qhoEN79BMSByGxnQ5GpJXhLRQx2BRKmQ6pump)
+[alpha-scout] New token from PumpPortal: GREEN (9geR5RbwYnPB7Aznhn7k1RX3d4iZC99vhegNTshLFVYQ)
+[alpha-scout] New token from PumpPortal: green (22qggKcAJaPG5S8mZAHYPfUxatBWB3821irxgQhZ5oqd)
+ws error: Unexpected server response: 401
+[alpha-scout] New token from PumpPortal: FEELS (3vPufMCuHvT2o2rA2agMgzzHRrQpZwLk5ggd2D7hXSff)
+ws error: Unexpected server response: 401
+[scanner] G1gzV2H2: RugCheck BLOCKED (score=1, critical=0). Skipping.
+[smart-money] Polling 8 wallets (cycle 0, 0 recent buys tracked)...
+ws error: Unexpected server response: 401
+ws error: Unexpected server response: 401
+[alpha-scout] New token from PumpPortal: SPECIAL (Gs3NPWthuNnX8HHTqr9j6g4pQrE7Uxt2DXLjioJmpump)
+ws error: Unexpected server response: 401
+[scanner] 9KtZzMkB: RugCheck BLOCKED (score=1, critical=0). Skipping.
+[alpha-scout] New token from PumpPortal: HIF (HDfZtt4MKW2vm9HX6vWhBLWs4x7WsViZCEzwmytFpump)
+ws error: Unexpected server response: 401
+[alpha-scout] New token from PumpPortal: feels (5i3YWniSFLX8h6Gc2D4zZQHqktbsz1mPAprwupQEdm5k)
+ws error: Unexpected server response: 401
+ws error: Unexpected server response: 401
+[trader] ENTERING POSITION: PETRO | Score: 57 | MCap: $86,601 | Size: 0.1500 SOL (x1.00) | Phase 1: Micro Gems
+[trader] DCA LEG 1: PETRO | Bought 16.23 tokens for 0.0750 SOL | Entry: $0.00008660 | Total deployed: 0.0750 SOL
+[alpha-scout] Helius API error for wallet wallet2pubkey: 400
+[alpha-scout] Helius API error for wallet wallet1pubkey: 400
+[alpha-scout] Polled 2 whale wallets, found 0 token transfers
+[alpha-scout] Score breakdown: vol=20 hold=8 soc=8 whale=0 liq=15 total=51 conviction=medium
+[scanner] PENEURO: SOCIAL BONUS +4 (1 KOL mention)
+[scanner] Scanned: PENEURO | 55min old | MCap: $48,761 | Vol: $865,793.1 | Liq: $63,324.93 | 5m: +1.0% | Score: 59/100 (medium)
+[scanner] SIGNAL FORWARDED: PENEURO (E9VnEEGcfe99PrWCu1g1eDroBBYW6LHYUoLvWqvUHyg8) → Trader | Score: 59 | MCap: $48,761 | Liq: $63,324.93 | https://dexscreener.com/solana/E9VnEEGcfe99PrWCu1g1eDroBBYW6LHYUoLvWqvUHyg8
+[gmgn] Rate limit: waiting 4042ms
+ws error: Unexpected server response: 401
+ws error: Unexpected server response: 401
+[alpha-scout] New token from PumpPortal: FEELS (AH15791GPoxnY8NEqkZVeCHoSL5MXwR4p2sBeFRipump)
+ws error: Unexpected server response: 401
+[alpha-scout] New token from PumpPortal: מַזָל (4RdzWHAtceVzTmxYM9bUgPX3Nw7QCNzSj4oYsJV3pump)
+[alpha-scout] New token from PumpPortal: RISE (21N1aXjLoUTY7j3vYQeoD99FJTRGo11fHPHdtpYgGZPq)
+ws error: Unexpected server response: 401
+ws error: Unexpected server response: 401
+ws error: Unexpected server response: 401
+[trader] State save warning: error: column "entry_mcap" of relation "positions" does not exist
+[alpha-scout] New token from PumpPortal: GREEN (DQUZ6Re5tCgLgwyJcVQcDZfeALYxXy6VWpZsH2scpump)
+[scanner] Can1QcKq: RugCheck BLOCKED (score=1, critical=0). Skipping.
+ws error: Unexpected server response: 401
+ws error: Unexpected server response: 401
+ws error: Unexpected server response: 401
+[scanner] GM3XgT9S: RugCheck BLOCKED (score=1, critical=0). Skipping.
+ws error: Unexpected server response: 401
+[gmgn] Rate limit: waiting 4053ms
+ws error: Unexpected server response: 401
+ws error: Unexpected server response: 401
+[scanner] 2FbMPCMv: RugCheck BLOCKED (score=1, critical=0). Skipping.
+[alpha-scout] New token from PumpPortal: POGO (66YpQrDrcehJQiZf2kvXiSE5HYgPpxnp3jenzYabpump)
+ws error: Unexpected server response: 401
+ws error: Unexpected server response: 401
+[convergence] Scanning 16 wallets for convergence...
+[trader] State save warning: error: column "entry_mcap" of relation "positions" does not exist
+[trader] ENTERING POSITION: PENEURO | Score: 59 | MCap: $48,761 | Size: 0.1500 SOL (x1.00) | Phase 1: Micro Gems
+[trader] DCA LEG 1: PENEURO | Bought 28824.86 tokens for 0.0750 SOL | Entry: $0.00000005 | Total deployed: 0.0750 SOL
+ws error: Unexpected server response: 401
+[alpha-scout] New token from PumpPortal: PVE (8qM7KDaJFzgfXaDpziEkMy2CXyGhW6EX1juZcQJLpump)
+[scanner] HVc4U76t: RugCheck BLOCKED (score=1, critical=0). Skipping.
+[trader] State save warning: error: column "entry_mcap" of relation "positions" does not exist
+ws error: Unexpected server response: 401
+ws error: Unexpected server response: 401
+ws error: Unexpected server response: 401
+[alpha-scout] Helius API error for wallet wallet1pubkey: 400
+ws error: Unexpected server response: 401
+[alpha-scout] Helius API error for wallet wallet2pubkey: 400
+[alpha-scout] Polled 2 whale wallets, found 0 token transfers
+[alpha-scout] Score breakdown: vol=20 hold=8 soc=8 whale=0 liq=8 total=44 conviction=medium
+[scanner] PTR: SOCIAL BONUS +4 (1 KOL mention)
+[scanner] Scanned: PTR | 45min old | MCap: $75,925 | Vol: $525,782.03 | Liq: $22,228.2 | 5m: -14.4% | Score: 52/100 (medium)
+ws error: Unexpected server response: 401
+ws error: Unexpected server response: 401
+ws error: Unexpected server response: 401
+[scanner] 5GRwHpN4: RugCheck BLOCKED (score=1, critical=0). Skipping.
+[alpha-scout] New token from PumpPortal: Feels (4zFNor5nDwvCDhqecegiH8qvAixQLmJoH9Ci9gogpump)
+ws error: Unexpected server response: 401
+ws error: Unexpected server response: 401
+[alpha-scout] New token from PumpPortal: BITCOIN (CDnMMmcsEzANLfSQgvB3oQGT4dKZu1sSU5NhGWqXi2zS)
+[alpha-scout] New token from PumpPortal: tst (3XK54M4SR6EKwUeBrov4xmwuYPwUsAcdwk5kjeNppump)
+ws error: Unexpected server response: 401
+[alpha-scout] Helius API error for wallet wallet1pubkey: 400
+[alpha-scout] Helius API error for wallet wallet2pubkey: 400
+[alpha-scout] Polled 2 whale wallets, found 0 token transfers
+[alpha-scout] Score breakdown: vol=20 hold=8 soc=8 whale=0 liq=8 total=44 conviction=medium
+[scanner] GYAN: SOCIAL BONUS +4 (1 KOL mention)
+[scanner] Scanned: GYAN | 67min old | MCap: $157,473 | Vol: $1,347,595.14 | Liq: $33,399.32 | 5m: -50.6% | Score: 48/100 (medium)
+ws error: Unexpected server response: 401
+[trader] State save warning: error: column "entry_mcap" of relation "positions" does not exist
+ws error: Unexpected server response: 401
+[alpha-scout] New token from PumpPortal: BITGATE (8YJShgQbRno27s4gtU2f4dnZUn2iDR5GfA9NKerPpump)
+ws error: Unexpected server response: 401
+[scanner] 8Tacds4b: RugCheck BLOCKED (score=1, critical=0). Skipping.
+ws error: Unexpected server response: 401
+ws error: Unexpected server response: 401
+[alpha-scout] New token from PumpPortal: Xi (87k4gGCxZeuSyzpj8DgQhHr3WAF2NkDj3T8WkJFTpump)
+ws error: Unexpected server response: 401
+ws error: Unexpected server response: 401
+ws error: Unexpected server response: 401
+ws error: Unexpected server response: 401
+[alpha-scout] New token from PumpPortal: dangerous (AkeK9WQFkwHuutQNPHHAx9tmEEjqtFfqvM7VMwH5pump)
+[alpha-scout] New token from PumpPortal: BTC (CrToGsjJE8B7b9PFDDKEW1P3ZVAFRQ389MUwtpWgNRQR)
+ws error: Unexpected server response: 401
+ws error: Unexpected server response: 401
+[trader] State save warning: error: column "entry_mcap" of relation "positions" does not exist
+[alpha-scout] New token from PumpPortal: House (GST491eH5iwNVfBTAAQ6wCcHapRg6uzFtzHWHbPApump)
+ws error: Unexpected server response: 401
+[convergence] No convergences found this scan
+[alpha-scout] New token from PumpPortal: BITCOIN (G6VRWiMX3DPYqFgmptpahuswS8ZU4MjCrgb7iv2L8GzQ)
+ws error: Unexpected server response: 401
+ws error: Unexpected server response: 401
+[scanner] 5VynreLh: RugCheck API timeout — proceeding without safety check
+[alpha-scout] New token from PumpPortal: LIBTRUMP (EMCdY5Y5ASt8gAeTBbhYMbmpcQPkvnrHwGu6dWzqeniw)
+ws error: Unexpected server response: 401
+[alpha-scout] New token from PumpPortal: BTC (BNhGwvfoSVNk57Tj6o5MB5odibN3Q32G317rTY6Dpump)
+[alpha-scout] New token from PumpPortal: BTC (awfDBhqQJAEVLD7SyL8GQTsmx3oGwh8Jb8UUZ21pump)
+[alpha-scout] New token from PumpPortal: BTC (HZs2GhnPfYvaXDAWRFEdivdN1Z9HL68QTNwAJDhBpump)
+[alpha-scout] New token from PumpPortal: BTC (HYd1teh2HPiycUTSy3ztrQgAR77yNuVA67ag3bpwpump)
+ws error: Unexpected server response: 401
+ws error: Unexpected server response: 401
+[alpha-scout] New token from PumpPortal: PTR (7bmiArjqnw7JYBmuxgVSqAYPqVvrxTc6GGgE1zuDpump)
+[scanner] 9YiTzXRb: RugCheck BLOCKED (score=1, critical=0). Skipping.
+[alpha-scout] New token from PumpPortal: POGO (41M3UP4NsG83W6FkCZcnxmpuK4iJdeh1ZfUVYBygpump)
+ws error: Unexpected server response: 401
+[alpha-scout] New token from PumpPortal: Ceasefire  (Et1hzXYGnUiU8SuvagDNRymL9Pk42hWPzJ9r1ehfpump)
+[trader] State save warning: error: column "entry_mcap" of relation "positions" does not exist
+ws error: Unexpected server response: 401
+ws error: Unexpected server response: 401
+[trader] State save warning: error: column "entry_mcap" of relation "positions" does not exist
+ws error: Unexpected server response: 401
+[alpha-scout] New token from PumpPortal: Bitcoin (GhWPe3jNxg36yCPQFvRNnVrchW4VqoFE6tcJ1RBqpump)
+[alpha-scout] New token from PumpPortal: Green (8YTcQG67EXuKShg2zUQrtCzwWGCGQkw3ASpTapeopump)
+ws error: Unexpected server response: 401
+[alpha-scout] New token from PumpPortal: Purge (ZMkUPLNyjYD9q4b3EEgwan9dn32qkFZbPbQ3mEFXCDn)
+ws error: Unexpected server response: 401
+[alpha-scout] New token from PumpPortal: dangerous (FFxmdRAY9PoxZbS2V3w2XNdUcprcT6kYNmgE8Secpump)
+[alpha-scout] New token from PumpPortal: Xi (8NzYZ7fK5ia7Z57dk7AYJeanZtKpJ2nmCjuTEZDQpump)
+ws error: Unexpected server response: 401
+[alpha-scout] New token from PumpPortal: YOUTUBEGATE (5VKoTSrRkNyGJN49Vc9SRn92dZZ5jZnPgQCeoaGSpump)
+[alpha-scout] New token from PumpPortal: Xi (7yUQsZ7PgxGc5Bi8phMVr9XLuRmwaXCaN2zS7e1Tpump)
+ws error: Unexpected server response: 401
+[alpha-scout] New token from PumpPortal: hungry  (39o9YcfChJGJuUNVaq9zLa1Y9H2ZkMsmaSjaG6Afpump)
+ws error: Unexpected server response: 401
+[alpha-scout] New token from PumpPortal: Toly (EQ2JEoAZxUZziQuQDdwAL8CwGbGfVonat9dhg9ibpump)
+ws error: Unexpected server response: 401
+ws error: Unexpected server response: 401
+ws error: Unexpected server response: 401
+ws error: Unexpected server response: 401
+[trader] State save warning: error: column "entry_mcap" of relation "positions" does not exist
+ws error: Unexpected server response: 401
+ws error: Unexpected server response: 401
+[scanner] n3ShrNZR: RugCheck BLOCKED (score=1, critical=0). Skipping.
+ws error: Unexpected server response: 401
+ws error: Unexpected server response: 401
+ws error: Unexpected server response: 401
+[alpha-scout] New token from PumpPortal: BNB (eoDf2GPi1RciM4EFMLWWr4v6KH4Ckn5gbZd8RbEpump)
+ws error: Unexpected server response: 401
+ws error: Unexpected server response: 401
+ws error: Unexpected server response: 401
+[trader] DCA LEG 2: PETRO | Bought 8.08 tokens for 0.0450 SOL | Entry: $0.00009550 | Total deployed: 0.1200 SOL
+ws error: Unexpected server response: 401
+ws error: Unexpected server response: 401
+[trader] State save warning: error: column "entry_mcap" of relation "positions" does not exist
+ws error: Unexpected server response: 401
+[alpha-scout] New token from PumpPortal: Human (4VqqGjJPqYh3ekk1eGLGk56ofLMwmcLBXmBKHhYkpump)
+[alpha-scout] New token from PumpPortal: DANGER (2954Ukmr2CrXPDthg47jzNbDQVqUV3nMH75U2U9HKT7e)
+[alpha-scout] New token from PumpPortal: Peyman (5o4UAm4mKuhbjxeaK6dD9HTpF4obuQimrm4DEExupump)
+ws error: Unexpected server response: 401
+ws error: Unexpected server response: 401
+ws error: Unexpected server response: 401
+[scanner] BjDQ7xvG: RugCheck BLOCKED (score=1, critical=0). Skipping.
+ws error: Unexpected server response: 401
+ws error: Unexpected server response: 401
+[alpha-scout] New token from PumpPortal: BANDS (5VWUDFpbw1PaLVsu7PvaK9qGjCMNg5V82sQfGEBspump)
+ws error: Unexpected server response: 401
+[trader] State save warning: error: column "entry_mcap" of relation "positions" does not exist
+ws error: Unexpected server response: 401
+[alpha-scout] New token from PumpPortal: test (CRa5ytGcAcjhbfE5GJd27CxoB2pE2zYvhLvM43Dgpump)
+ws error: Unexpected server response: 401
+[trader] State save warning: error: column "entry_mcap" of relation "positions" does not exist
+ws error: Unexpected server response: 401
+[scanner] 61bSahZB: RugCheck BLOCKED (score=1, critical=0). Skipping.
+ws error: Unexpected server response: 401
+ws error: Unexpected server response: 401
+ws error: Unexpected server response: 401
+ws error: Unexpected server response: 401
+ws error: Unexpected server response: 401
+[alpha-scout] New token from PumpPortal: DTC (Ghm2NEhEj6aoNJnTz9715L7qQprkdLKNpKNkF6ZUpump)
+ws error: Unexpected server response: 401
+[alpha-scout] New token from PumpPortal: Mayhemzone (7YiPhMtHqqFYPZMWLsLvW7N969B7kDp93XbvSqeQpump)
+[alpha-scout] New token from PumpPortal: Mina (GN5KQ1T5eQUjzS9MbxF3KHUHr8Yg4W5eQdaCVTgDpump)
+ws error: Unexpected server response: 401
+[alpha-scout] New token from PumpPortal: $ROO (F2RPArzHs8skvyayjZv2ZZYhcuWGaHcy21KQrTTepump)
+[alpha-scout] New token from PumpPortal: BANDS (F9TsPdX6jTcNxemQ1pgmBoR8bzJCUfqavR8FRZMapump)
+[trader] DCA LEG 2: PENEURO | Bought 17245.40 tokens for 0.0450 SOL | Entry: $0.00000005 | Total deployed: 0.1200 SOL
+ws error: Unexpected server response: 401
+ws error: Unexpected server response: 401
+[trader] State save warning: error: column "entry_mcap" of relation "positions" does not exist
+ws error: Unexpected server response: 401
+ws error: Unexpected server response: 401
+ws error: Unexpected server response: 401
+ws error: Unexpected server response: 401
+ws error: Unexpected server response: 401
+[scanner] GREEN: RugCheck BLOCKED (score=1, critical=0). Skipping.
+ws error: Unexpected server response: 401
+ws error: Unexpected server response: 401
+ws error: Unexpected server response: 401
+[alpha-scout] New token from PumpPortal: ALON (5nPyDPuG624YxPa35vW3ZrEgYoLhUMYhrGJaeAqppump)
+ws error: Unexpected server response: 401
+ws error: Unexpected server response: 401
+[trader] State save warning: error: column "entry_mcap" of relation "positions" does not exist
+ws error: Unexpected server response: 401

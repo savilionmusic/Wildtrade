@@ -118,12 +118,12 @@ let lastPollResults: WhaleTransaction[] = [];
 let lastPollTimestamp = 0;
 const CACHE_TTL_MS = 60_000;
 
-export async function getCachedWhaleActivity(): Promise<WhaleTransaction[]> {
+export async function getCachedWhaleActivity(dynamicWallets?: string[]): Promise<WhaleTransaction[]> {
   const now = Date.now();
   if (now - lastPollTimestamp < CACHE_TTL_MS && lastPollResults.length > 0) {
     return lastPollResults;
   }
-  lastPollResults = await pollWhaleActivity();
+  lastPollResults = await pollWhaleActivity(dynamicWallets);
   lastPollTimestamp = now;
   return lastPollResults;
 }

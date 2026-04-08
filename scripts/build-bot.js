@@ -18,7 +18,31 @@ if (p && a) {
     require.resolve(platformPkg);
   } catch {
     console.log(`⚡ Installing ${platformPkg}...`);
-    execSync(`npm install --no-save ${platformPkg}`, { cwd: root, stdio: 'inherit' });
+    // Try multiple package managers — npm is broken on Node v24
+    const cmds = [
+      `bun add --no-save ${platformPkg}`,
+      `yarn add --no-lockfile ${platformPkg}`,
+      `pnpm add --save-peer=false ${platformPkg}`,
+      `npm install --no-save --ignore-scripts ${platformPkg}`,
+    ];
+    let installed = false;
+    for (const cmd of cmds) {
+      const bin = cmd.split(' ')[0];
+      try {
+        execSync(`which ${bin}`, { stdio: 'ignore' });
+        console.log(`   trying: ${cmd}`);
+        execSync(cmd, { cwd: root, stdio: 'inherit', timeout: 30_000 });
+        installed = true;
+        break;
+      } catch {
+        // This package manager not available or failed — try next
+      }
+    }
+    if (!installed) {
+      console.error(`❌ Could not install ${platformPkg} with any package manager.`);
+      console.error(`   Run manually: bun add ${platformPkg}`);
+      process.exit(1);
+    }
   }
 }
 

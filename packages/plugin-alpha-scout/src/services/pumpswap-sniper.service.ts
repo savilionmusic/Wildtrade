@@ -54,6 +54,11 @@ let log: LogCb = (msg) => console.log(`[pumpswap-sniper] ${msg}`);
 // Track recently sniped mints to avoid duplicates
 const recentSnipes = new Set<string>();
 
+// Track WebSocket errors to suppress repeated spam
+let wsErrorCount = 0;
+let lastWsErrorLog = 0;
+const WS_ERROR_LOG_INTERVAL_MS = 60_000; // Only log WS errors once per minute
+
 // ── Public API ──
 
 /**
@@ -76,6 +81,18 @@ export function startPumpSwapSniper(
     || process.env.SOLANA_RPC_QUICKNODE
     || process.env.SOLANA_RPC_URL
     || 'https://api.mainnet-beta.solana.com';
+
+  // Validate that the RPC URL looks real (not a placeholder)
+  const lowerUrl = rpcUrl.toLowerCase();
+  if (
+    lowerUrl.includes('your_') || lowerUrl.includes('your-') ||
+    lowerUrl.includes('placeholder') || lowerUrl.includes('example') ||
+    rpcUrl === 'https://api.mainnet-beta.solana.com'
+  ) {
+    log(`Skipping Solana WebSocket — RPC URL is default/placeholder. Set SOLANA_RPC_HELIUS for on-chain migration detection.`);
+    log('Will rely on PumpPortal WebSocket for migration events only.');
+    return;
+  }
 
   // Convert HTTP URL to WebSocket URL
   const wsUrl = rpcUrl
@@ -233,32 +250,60 @@ async function fetchMigrationDetails(signature: string): Promise<void> {
 
     const accountKeys = tx.transaction.message.accountKeys;
 
-    // In a PumpSwap migration, the token mint is typically one of the first few accounts
-    // after the program IDs. Look for SPL token mints.
+    // Known programs and accounts to skip
+    const SKIP_PUBKEYS = new Set([
+      PUMPFUN_PROGRAM_ID,
+      PUMPSWAP_MIGRATION_PROGRAM,
+      RAYDIUM_AMM_PROGRAM,
+      'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',  // Token program
+      'Token2011111111111111111111111111111111111111', // Token-2022
+      'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL', // ATA program
+      '11111111111111111111111111111111',               // System program
+      'So11111111111111111111111111111111111111112',    // Wrapped SOL
+      'SysvarRent111111111111111111111111111111111',    // Rent sysvar
+      'SysvarC1ock11111111111111111111111111111111',    // Clock sysvar
+      'ComputeBudget111111111111111111111111111111',    // Compute budget
+    ]);
+
+    // Look for the actual SPL token mint by checking parsed account info
+    // In a parsed transaction, accounts that are token mints have `program: 'spl-token'`
+    // and `type: 'mint'` in their parsed info.
+    const candidates: string[] = [];
     for (const key of accountKeys) {
       const pubkey = typeof key === 'string' ? key : key.pubkey.toBase58();
+      if (SKIP_PUBKEYS.has(pubkey)) continue;
+      if (pubkey.length < 32 || pubkey.length > 44) continue;
+      candidates.push(pubkey);
+    }
 
-      // Skip known programs
-      if (pubkey === PUMPFUN_PROGRAM_ID || pubkey === PUMPSWAP_MIGRATION_PROGRAM || pubkey === RAYDIUM_AMM_PROGRAM) continue;
-      if (pubkey === 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA') continue; // Token program
-      if (pubkey === '11111111111111111111111111111111') continue; // System program
-      if (pubkey === 'So11111111111111111111111111111111111111112') continue; // SOL
-
-      // This is likely the token mint — validate by checking if it looks like a mint
-      // (44 char base58 string that isn't a known program)
-      if (pubkey.length >= 32 && pubkey.length <= 44) {
-        handleMigrationDetected({
-          mint: pubkey,
-          symbol: '',
-          name: '',
-          pool: '',
-          source: 'solana_logs',
-          detectedAt: Date.now(),
-          migrationTx: signature,
-        });
-        break; // Only snipe the first detected mint
+    // Try to validate candidates are actual token mints via getAccountInfo
+    for (const candidate of candidates.slice(0, 5)) { // Check at most 5
+      try {
+        const acctInfo = await connection!.getParsedAccountInfo(new PublicKey(candidate));
+        const data = acctInfo?.value?.data;
+        if (data && typeof data === 'object' && 'parsed' in data) {
+          const parsed = data.parsed as { type?: string; info?: { decimals?: number } };
+          if (parsed.type === 'mint' && parsed.info?.decimals !== undefined) {
+            // Confirmed SPL token mint
+            handleMigrationDetected({
+              mint: candidate,
+              symbol: '',
+              name: '',
+              pool: '',
+              source: 'solana_logs',
+              detectedAt: Date.now(),
+              migrationTx: signature,
+            });
+            return;
+          }
+        }
+      } catch {
+        // Skip this candidate
       }
     }
+
+    // No confirmed mint found — do NOT fire on unverified accounts
+    log(`Migration tx ${signature.slice(0, 16)}... — could not confirm token mint from accounts`);
   } catch {
     // Transaction fetch failed — not critical
   }

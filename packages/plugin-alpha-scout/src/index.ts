@@ -39,6 +39,7 @@ export type { GmgnWallet, GmgnWalletTrade, GmgnTokenInfo } from './services/gmgn
 export {
   startSmartMoneyMonitor, stopSmartMoneyMonitor,
   getMonitorStatus, getRecentSmartBuys, forceCheck,
+  getTrackedWalletAddresses,
 } from './services/smart-money-monitor.service.js';
 export type { SmartMoneySignal, SmartMoneyCallback, WalletBuy } from './services/smart-money-monitor.service.js';
 

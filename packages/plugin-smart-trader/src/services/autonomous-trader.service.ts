@@ -624,6 +624,39 @@ export async function triggerInstantSnipe(mintAddress: string, symbol: string): 
     return;
   }
 
+  // ── Safety checks for migration snipes ──
+  // Quick RugCheck — block confirmed honeypots/mintables even on snipes
+  const rugcheckBase = process.env.RUGCHECK_API_BASE ?? 'https://api.rugcheck.xyz/v1';
+  try {
+    const rugRes = await fetch(`${rugcheckBase}/tokens/${mintAddress}/report`, {
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (rugRes.ok) {
+      const rugData = await rugRes.json() as {
+        score?: number;
+        risks?: Array<{ name: string; level: string }>;
+      };
+      const risks = rugData.risks ?? [];
+      const hasCritical = risks.some(r =>
+        r.level === 'critical' ||
+        r.name?.toLowerCase().includes('honeypot') ||
+        r.name?.toLowerCase().includes('mintable')
+      );
+      if (hasCritical) {
+        log(`🚀 SNIPE REJECTED: RugCheck flagged ${symbol || mintAddress.slice(0, 8)} as dangerous (critical risk)`);
+        return;
+      }
+      const score = rugData.score ?? 50;
+      if (score < 20) {
+        log(`🚀 SNIPE REJECTED: RugCheck score ${score} too low for ${symbol || mintAddress.slice(0, 8)}`);
+        return;
+      }
+    }
+    // If API is down, fail-open (proceed with snipe)
+  } catch {
+    log(`🚀 SNIPE WARNING: RugCheck timeout for ${symbol || mintAddress.slice(0, 8)} — proceeding`);
+  }
+
   const available = totalBudgetSol - deployedSol + realizedPnlSol;
   const positionSize = Math.max(phase.positionSizeMin, Math.min(phase.positionSizeMax, available * 0.25) * learnedPositionSizeMult);
 
@@ -1121,17 +1154,26 @@ async function executeSell(position: Position, sellPct: number, reason: string):
   position.exitTiersHit++;
   deployedSol -= position.solDeployed * sellPct;
 
-  const pnlSol = position.solReturned - position.solDeployed;
-  const pnlPct = position.solDeployed > 0 ? ((position.solReturned / position.solDeployed) - 1) * 100 : 0;
-  position.pnlSol = pnlSol;
-  position.pnlPct = pnlPct;
+  // PnL for partial exits: compare proportional return vs proportional deployment
+  // For full exits: compare total returned vs total deployed
+  const proportionalDeployed = position.solDeployed * sellPct;
+  const isFullExit = position.tokenBalance <= 0.001 || sellPct >= 0.99;
+  const pnlSol = isFullExit
+    ? position.solReturned - position.solDeployed
+    : solReceived - proportionalDeployed;
+  const pnlPct = isFullExit
+    ? (position.solDeployed > 0 ? ((position.solReturned / position.solDeployed) - 1) * 100 : 0)
+    : (proportionalDeployed > 0 ? ((solReceived / proportionalDeployed) - 1) * 100 : 0);
+  // Update cumulative PnL on position
+  position.pnlSol = position.solReturned - position.solDeployed;
+  position.pnlPct = position.solDeployed > 0 ? ((position.solReturned / position.solDeployed) - 1) * 100 : 0;
 
   if (position.tokenBalance <= 0.001 || sellPct >= 0.99) {
     position.status = 'closed';
     position.closedAt = Date.now();
-    realizedPnlSol += pnlSol;
+    realizedPnlSol += position.pnlSol; // Use cumulative PnL for portfolio tracking
     tradeCount++;
-    if (pnlSol > 0) winCount++;
+    if (position.pnlSol > 0) winCount++;
 
     // Record in trade history for learning
     const entry: TradeMemoryEntry = {
@@ -1139,7 +1181,7 @@ async function executeSell(position: Position, sellPct: number, reason: string):
       symbol: position.symbol,
       entryScore: position.entryScore,
       entryMCap: position.marketCap,
-      pnlPct,
+      pnlPct: position.pnlPct, // Use cumulative PnL for learning
       holdTimeMs: Date.now() - position.openedAt,
       exitReason: reason,
       timestamp: Date.now(),
@@ -1281,6 +1323,12 @@ async function checkPricesAndExits(): Promise<void> {
         const available = totalBudgetSol - deployedSol + realizedPnlSol;
         const dcaAmount = Math.min(phase.positionSizeMin * 0.5, available * 0.10) * learnedDcaAggression;
         if (dcaAmount >= 0.01) {
+          // Cancel any remaining scheduled DCA legs for this position to prevent duplicate buys
+          const cancelledCount = pendingDcaLegs.filter(l => l.positionId === position.id).length;
+          pendingDcaLegs = pendingDcaLegs.filter(l => l.positionId !== position.id);
+          if (cancelledCount > 0) {
+            log(`RECOVERY DCA: Cancelled ${cancelledCount} pending scheduled leg(s) for ${position.symbol}`);
+          }
           log(`RECOVERY DCA: ${position.symbol} bounced to ${multiplier.toFixed(2)}x — adding ${dcaAmount.toFixed(4)} SOL`);
           alert('dca_entry', `Recovery DCA: ${position.symbol} at ${multiplier.toFixed(2)}x — adding ${dcaAmount.toFixed(4)} SOL`);
           await executeBuy(position, dcaAmount, position.dcaLegsExecuted + 1);

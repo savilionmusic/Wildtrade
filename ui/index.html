@@ -356,8 +356,14 @@
 
         <fieldset class="settings-group">
           <legend>Twitter / Social</legend>
-          <label>Twitter Bearer Token <input type="password" id="cfg-TWITTER_BEARER_TOKEN" placeholder="Bearer token for X API" autocomplete="off"></label>
-          <label>KOL User IDs (comma-separated) <input type="text" id="cfg-TWITTER_KOL_USER_IDS" placeholder="12345678,87654321"></label>
+          <label>X/Twitter Username <input type="text" id="cfg-TWITTER_USERNAME" placeholder="your_handle" autocomplete="off"></label>
+          <label>X/Twitter Password <input type="password" id="cfg-TWITTER_PASSWORD" placeholder="Account password" autocomplete="off"></label>
+          <label>X/Twitter Email (for login challenge) <input type="text" id="cfg-TWITTER_EMAIL" placeholder="you@example.com" autocomplete="off"></label>
+          <label>KOL Handles (comma-separated) <input type="text" id="cfg-TWITTER_KOL_USER_IDS" placeholder="blknoiz06,DegenSpartan"></label>
+          <label>Twitter Poll Interval (ms) <input type="number" id="cfg-TWITTER_POLL_INTERVAL_MS" value="120000" min="10000" step="1000"></label>
+          <label>Legacy Twitter Bearer Token (optional) <input type="password" id="cfg-TWITTER_BEARER_TOKEN" placeholder="Legacy API mode" autocomplete="off"></label>
+          <label>Reddit Subreddits (comma-separated) <input type="text" id="cfg-REDDIT_SUBREDDITS" placeholder="SolanaCoins,memecoins,CryptoMoonShots"></label>
+          <label>Reddit Poll Interval (ms) <input type="number" id="cfg-REDDIT_POLL_INTERVAL_MS" value="180000" min="10000" step="1000"></label>
           <label>Smart Money Wallets (comma-separated) <input type="text" id="cfg-SMART_MONEY_WALLETS" placeholder="wallet1pubkey,wallet2pubkey"></label>
         </fieldset>
 

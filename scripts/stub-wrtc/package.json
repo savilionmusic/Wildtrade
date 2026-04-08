@@ -1,0 +1,6 @@
+{
+  "name": "@roamhq/wrtc",
+  "version": "0.8.0",
+  "description": "Stub for optional WebRTC dependency in Wildtrade",
+  "main": "index.js"
+}

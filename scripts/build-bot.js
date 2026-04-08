@@ -69,6 +69,8 @@ await build({
     '@anush008/tokenizers': path.join(root, 'scripts', 'stub-tokenizers', 'index.js'),
     'onnxruntime-node': path.join(root, 'scripts', 'stub-fastembed', 'index.js'),
     'onnxruntime-web': path.join(root, 'scripts', 'stub-fastembed', 'index.js'),
+    '@roamhq/wrtc': path.join(root, 'scripts', 'stub-wrtc', 'index.js'),
+    'wrtc': path.join(root, 'scripts', 'stub-wrtc', 'index.js'),
     'sharp': path.join(root, 'scripts', 'stub-sharp', 'index.js'),
     'fastembed': path.join(root, 'scripts', 'stub-fastembed', 'index.js'),
     '@wildtrade/shared': path.join(root, 'packages', 'shared', 'src', 'index.ts'),

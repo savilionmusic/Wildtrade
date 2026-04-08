@@ -25,16 +25,22 @@ const RUGCHECK_API_BASE = process.env.RUGCHECK_API_BASE ?? 'https://api.rugcheck
 
 async function fetchRugCheckQuick(mint: string): Promise<{ passed: boolean; score: number }> {
   try {
-    const res = await fetch(`${RUGCHECK_API_BASE}/tokens/${mint}/report`);
-    if (!res.ok) return { passed: true, score: 50 }; // Conservative fallback
-    const data = (await res.json()) as { score?: number; risks?: Array<{ level: string }> };
-    const highRisks = (data.risks ?? []).filter(r => r.level === 'high' || r.level === 'critical');
+    const res = await fetch(`${RUGCHECK_API_BASE}/tokens/${mint}/report`, {
+      signal: AbortSignal.timeout(8_000),
+    });
+    if (!res.ok) return { passed: true, score: 50 }; // API error = fail-open
+    const data = (await res.json()) as { score?: number; risks?: Array<{ name: string; level: string }> };
+    const criticalRisks = (data.risks ?? []).filter(r => r.level === 'critical');
+    const hasCriticalFlag = (data.risks ?? []).some(r =>
+      r.name?.toLowerCase().includes('honeypot') || r.name?.toLowerCase().includes('mintable')
+    );
+    const score = data.score ?? 50;
     return {
-      passed: highRisks.length === 0,
-      score: data.score ?? 50,
+      passed: !hasCriticalFlag && criticalRisks.length === 0 && score >= 30,
+      score,
     };
   } catch {
-    return { passed: true, score: 50 };
+    return { passed: true, score: 50 }; // Fail-open on API errors
   }
 }
 
@@ -127,17 +133,17 @@ const smartMoneyScanAction: Action = {
       liquidityUsd: clusterData.tokenInfo?.liquidity ?? 0,
     });
 
-    // Boost score based on cluster confidence
+    // Boost score based on cluster confidence — smart money is KING
     let boostedTotal = score.total;
-    if (clusterData.confidence === 'very_high') boostedTotal = Math.min(100, boostedTotal + 20);
-    else if (clusterData.confidence === 'high') boostedTotal = Math.min(100, boostedTotal + 15);
-    else if (clusterData.confidence === 'medium') boostedTotal = Math.min(100, boostedTotal + 10);
-    else boostedTotal = Math.min(100, boostedTotal + 5);
+    if (clusterData.confidence === 'very_high') boostedTotal = Math.min(100, boostedTotal + 25);
+    else if (clusterData.confidence === 'high') boostedTotal = Math.min(100, boostedTotal + 20);
+    else if (clusterData.confidence === 'medium') boostedTotal = Math.min(100, boostedTotal + 15);
+    else boostedTotal = Math.min(100, boostedTotal + 8);
 
     const boostedScore = {
       ...score,
       total: boostedTotal,
-      conviction: boostedTotal >= 80 ? 'high' as const : boostedTotal >= 65 ? 'medium' as const : 'low' as const,
+      conviction: boostedTotal >= 75 ? 'high' as const : boostedTotal >= 55 ? 'medium' as const : 'low' as const,
     };
 
     // 4. Build signal
@@ -149,7 +155,7 @@ const smartMoneyScanAction: Action = {
       name: clusterData.tokenName || '',
       marketCapUsd: clusterData.avgMarketCap,
       liquidityUsd: clusterData.tokenInfo?.liquidity ?? 0,
-      sources: ['helius_whale' as SignalSource], // Smart money = whale category
+      sources: ['smart_money' as SignalSource],
       score: boostedScore,
       discoveredAt: now,
       expiresAt: now + SIGNAL_DEFAULT_TTL_MS,

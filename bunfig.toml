@@ -1,2 +1,7 @@
 [install]
-optional = false
+
+[install.overrides]
+sharp = "file:scripts/stub-sharp"
+better-sqlite3 = "file:scripts/stub-better-sqlite3"
+"@anush008/tokenizers" = "file:scripts/stub-tokenizers"
+fastembed = "file:scripts/stub-fastembed"

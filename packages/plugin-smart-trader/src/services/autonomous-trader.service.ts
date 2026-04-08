@@ -245,20 +245,36 @@ function getAdaptiveMinScore(): number {
   const phase = getCurrentPhase();
   let minScore = phase.minScore;
 
-  // Single adaptive adjustment — capped at +10 to prevent deadlock
-  let adjust = learnedMinScore; // from lesson engine, max ±5 now
+  // Single adaptive adjustment — capped at +3 to prevent deadlock
+  let adjust = learnedMinScore; // from lesson engine, max ±3 now
 
   if (tradeCount >= 5) {
     const wr = winCount / tradeCount;
-    if (wr < 0.25) adjust += 5;
-    else if (wr < 0.4) adjust += 3;
-    else if (wr > 0.6) adjust -= 3;
+    // Only raise score bar slightly on very bad streaks — never freeze trading
+    if (wr < 0.15) adjust += 2;
+    else if (wr < 0.25) adjust += 1;
+    else if (wr > 0.5) adjust -= 3;  // Winning more than half? Lower the bar!
+    else if (wr > 0.4) adjust -= 2;
   }
 
-  // Cap total adjustment to prevent deadlock
-  minScore += Math.max(-5, Math.min(10, adjust));
+  // After a losing streak, check recent trades (last 5) not all-time
+  // If last 5 trades lost, DON'T raise the bar — log warning and reset
+  const recentTrades = tradeHistory.slice(-5);
+  if (recentTrades.length >= 5) {
+    const recentWins = recentTrades.filter(t => t.pnlPct > 0).length;
+    if (recentWins === 0) {
+      // Full losing streak — DO NOT raise bar further, cap at +2 max
+      // The problem is that raising the bar stops the bot from trading,
+      // which prevents recovery. Better to keep trading with normal criteria.
+      adjust = Math.min(adjust, 2);
+      log(`WARNING: 5 consecutive losses detected. Keeping score bar low (+${adjust}) to allow recovery trades.`);
+    }
+  }
 
-  return Math.max(45, Math.min(75, minScore)); // Hard cap at 75, not 85
+  // Cap total adjustment to prevent deadlock — max +3, never higher
+  minScore += Math.max(-5, Math.min(3, adjust));
+
+  return Math.max(40, Math.min(65, minScore)); // Hard floor at 40, cap at 65 (was 70)
 }
 
 // ── Learning Analysis Helpers ──
@@ -381,7 +397,7 @@ function generateLessons(): void {
       // If low-score tokens are losing money, raise the bar
       if (worstScoreBucket === '<55' || worstScoreBucket === '55-65') {
         if (worstStats.avgPnl < -5) {
-          learnedMinScore = Math.min(5, Math.max(learnedMinScore, Math.abs(worstStats.avgPnl) * 0.2));
+          learnedMinScore = Math.min(3, Math.max(learnedMinScore, Math.abs(worstStats.avgPnl) * 0.1));
           lessons.push({
             dimension: 'score', insight: `Low-score tokens (${worstScoreBucket}) lose ${Math.abs(worstStats.avgPnl).toFixed(1)}% avg — raising bar by ${learnedMinScore.toFixed(0)} pts`,
             action: 'raise_min_score', value: learnedMinScore, confidence: Math.min(1, worstStats.totalTrades / 8), updatedAt: now,
@@ -478,12 +494,13 @@ function generateLessons(): void {
   const stopLossStats = exitReasonStats.get('stop_loss');
   if (stopLossStats && stopLossStats.totalTrades >= 3) {
     const stopLossRate = stopLossStats.totalTrades / tradeCount;
-    if (stopLossRate > 0.4) {
+    if (stopLossRate > 0.5) {
       lessons.push({
         dimension: 'exits', insight: `${(stopLossRate * 100).toFixed(0)}% of trades hit stop loss — entries are too aggressive or stop too tight`,
         action: 'widen_stop_or_raise_score', value: stopLossRate, confidence: 0.7, updatedAt: now,
       });
-      learnedMinScore = Math.min(5, learnedMinScore + 1);
+      // Very conservative increase — cap at 2 total from stop loss
+      learnedMinScore = Math.min(2, learnedMinScore + 0.3);
     }
   }
 
@@ -605,16 +622,16 @@ export async function startAutonomousTrader(opts: {
   dcaTimer = setInterval(processPendingDcaLegs, 10_000);
   stateTimer = setInterval(saveState, 30_000); // Persist state every 30s
 
-  // Decay learned parameters every 6 hours to prevent permanent deadlock
+  // Decay learned parameters every 1 hour to prevent permanent deadlock
   setInterval(() => {
     if (learnedMinScore > 0) {
-      learnedMinScore = Math.max(0, learnedMinScore - 1);
+      learnedMinScore = Math.max(0, learnedMinScore - 3);
       log(`DECAY: learnedMinScore decayed to ${learnedMinScore}`);
     }
     if (learnedPositionSizeMult < 1.0) {
-      learnedPositionSizeMult = Math.min(1.0, learnedPositionSizeMult + 0.05);
+      learnedPositionSizeMult = Math.min(1.0, learnedPositionSizeMult + 0.15);
     }
-  }, 6 * 3_600_000);
+  }, 3_600_000);
 
   log('Signal polling active (every 15s) | Price monitoring active (every 10s) | State save every 30s');
 }

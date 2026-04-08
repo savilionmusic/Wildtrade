@@ -1,4 +1,4 @@
-export type SignalSource = 'pumpportal' | 'helius_whale' | 'twitter_kol';
+export type SignalSource = 'pumpportal' | 'helius_whale' | 'twitter_kol' | 'smart_money' | 'migration' | 'convergence' | 'dexscreener';
 export type SignalConviction = 'low' | 'medium' | 'high';
 
 export interface CompositeScore {

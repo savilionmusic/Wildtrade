@@ -1,9 +1,28 @@
-import { build } from 'esbuild';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { createRequire } from 'module';
+import { execSync } from 'child_process';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
+
+// Ensure esbuild platform binary is installed (bun install skips it)
+const platformMap = { darwin: 'darwin', linux: 'linux', win32: 'win32' };
+const archMap = { arm64: 'arm64', x64: 'x64' };
+const p = platformMap[process.platform];
+const a = archMap[process.arch];
+if (p && a) {
+  const require = createRequire(import.meta.url);
+  const platformPkg = `@esbuild/${p}-${a}`;
+  try {
+    require.resolve(platformPkg);
+  } catch {
+    console.log(`⚡ Installing ${platformPkg}...`);
+    execSync(`npm install --no-save ${platformPkg}`, { cwd: root, stdio: 'inherit' });
+  }
+}
+
+const { build } = await import('esbuild');
 
 await build({
   entryPoints: [path.join(root, 'src', 'index.ts')],
@@ -18,6 +37,7 @@ await build({
     '@img/sharp-*',
     '@anush008/tokenizers',
     '@anush008/tokenizers-*',
+    'fastembed',
     'cpu-features',
     'ssh2',
     'onnxruntime-node',

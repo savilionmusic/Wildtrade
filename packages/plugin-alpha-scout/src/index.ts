@@ -20,8 +20,8 @@ export const pluginAlphaScout: Plugin = {
 export default pluginAlphaScout;
 
 // Re-export services for external initialization
-export { connect as connectPumpPortal, disconnect as disconnectPumpPortal } from './services/pumpportal.service.js';
-export type { PumpPortalToken, PumpPortalCallback } from './services/pumpportal.service.js';
+export { connect as connectPumpPortal, disconnect as disconnectPumpPortal, onMigration as onPumpMigration } from './services/pumpportal.service.js';
+export type { PumpPortalToken, PumpPortalCallback, PumpMigrationEvent, PumpMigrationCallback } from './services/pumpportal.service.js';
 
 export { pollWhaleActivity, getCachedWhaleActivity } from './services/helius.service.js';
 export type { WhaleTransaction } from './services/helius.service.js';
@@ -46,6 +46,13 @@ export {
   startScanner, stopScanner, getScannerStats,
 } from './services/scanner-engine.service.js';
 
+// PumpSwap Migration Sniper
+export {
+  startPumpSwapSniper, stopPumpSwapSniper,
+  onPumpPortalMigration, getSnipeStats,
+} from './services/pumpswap-sniper.service.js';
+export type { MigrationSnipeEvent, SnipeCallback } from './services/pumpswap-sniper.service.js';
+
 // DexScreener
 export { getTrendingTokens, getTokenPairs, searchTokens } from './services/dexscreener.service.js';
 export type { TrendingToken, DexPair } from './services/dexscreener.service.js';
@@ -62,6 +69,7 @@ export type { TrackedWallet, WalletBuyEvent } from './services/wallet-intelligen
 export {
   startKolIntelligence, stopKolIntelligence,
   getKolSignals, getKolStats, setTokenMentionCallback,
+  pollSocialTrending,
 } from './services/kol-intelligence.service.js';
 export type { KolSignal } from './services/kol-intelligence.service.js';
 

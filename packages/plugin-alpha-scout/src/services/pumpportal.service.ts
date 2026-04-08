@@ -8,13 +8,24 @@ export interface PumpPortalToken {
   timestamp: number;
 }
 
+export interface PumpMigrationEvent {
+  mint: string;
+  symbol: string;
+  name: string;
+  creator: string;
+  pool?: string;
+  timestamp: number;
+}
+
 export type PumpPortalCallback = (token: PumpPortalToken) => void;
+export type PumpMigrationCallback = (event: PumpMigrationEvent) => void;
 
 const WS_URL = 'wss://pumpportal.fun/api/data';
 const RECONNECT_DELAY_MS = 5_000;
 
 let ws: WebSocket | null = null;
 let callback: PumpPortalCallback | null = null;
+let migrationCallback: PumpMigrationCallback | null = null;
 let shouldReconnect = false;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -23,12 +34,34 @@ function handleOpen(): void {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ method: 'subscribeNewToken' }));
     console.log('[alpha-scout] Subscribed to new token events');
+    // Subscribe to migration events (tokens graduating from PumpFun to Raydium)
+    ws.send(JSON.stringify({ method: 'subscribeTokenMigration' }));
+    console.log('[alpha-scout] Subscribed to token migration events (PumpFun → Raydium)');
   }
 }
 
 function handleMessage(raw: WebSocket.RawData): void {
   try {
     const data = JSON.parse(raw.toString());
+
+    // Detect migration events (PumpFun → Raydium)
+    const txType = data.txType ?? data.type ?? data.event ?? '';
+    if (txType === 'migration' || txType === 'migrate' || data.pool || data.migrated) {
+      const mint: string | undefined = data.mint ?? data.tokenMint ?? data.address;
+      if (mint && migrationCallback) {
+        const migrationEvent: PumpMigrationEvent = {
+          mint,
+          symbol: data.symbol ?? data.ticker ?? '',
+          name: data.name ?? data.tokenName ?? '',
+          creator: data.traderPublicKey ?? data.creator ?? '',
+          pool: data.pool ?? data.poolAddress ?? '',
+          timestamp: Date.now(),
+        };
+        console.log(`[alpha-scout] MIGRATION from PumpPortal: ${migrationEvent.symbol} (${migrationEvent.mint}) → Raydium`);
+        migrationCallback(migrationEvent);
+      }
+      return;
+    }
 
     // PumpPortal emits token creation events with mint, symbol, name, traderPublicKey
     const mint: string | undefined = data.mint ?? data.tokenMint ?? data.address;
@@ -100,6 +133,10 @@ export function connect(onToken: PumpPortalCallback): void {
   connectInternal();
 }
 
+export function onMigration(cb: PumpMigrationCallback): void {
+  migrationCallback = cb;
+}
+
 export function disconnect(): void {
   shouldReconnect = false;
   if (reconnectTimer) {
@@ -111,5 +148,6 @@ export function disconnect(): void {
     ws = null;
   }
   callback = null;
+  migrationCallback = null;
   console.log('[alpha-scout] PumpPortal disconnected');
 }

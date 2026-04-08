@@ -27,8 +27,13 @@ import type {
 import type { AgentRuntime } from '@elizaos/core';
 import { calculateCompositeScore } from '../lib/score-calculator.js';
 import { isInDenylist } from '../lib/denylist-guard.js';
-import { connect as connectPumpPortal, disconnect as disconnectPumpPortal } from './pumpportal.service.js';
+import { connect as connectPumpPortal, disconnect as disconnectPumpPortal, onMigration as onPumpMigration } from './pumpportal.service.js';
 import type { PumpPortalToken } from './pumpportal.service.js';
+import { getKolSignals } from './kol-intelligence.service.js';
+import { getRecentSmartBuys } from './smart-money-monitor.service.js';
+import { getRecentWalletBuys } from './wallet-intelligence.service.js';
+import { startPumpSwapSniper, stopPumpSwapSniper, onPumpPortalMigration } from './pumpswap-sniper.service.js';
+import type { MigrationSnipeEvent } from './pumpswap-sniper.service.js';
 
 // ── Config ──
 const DEXSCREENER_POLL_MS = 120_000;   // 2 min — DexScreener has generous free limits
@@ -49,6 +54,7 @@ const tokenQueue: Array<{
   name: string;
   source: SignalSource;
   creator?: string;
+  isMigration?: boolean;
 }> = [];
 
 // Track recently processed tokens to avoid duplicates
@@ -80,6 +86,39 @@ export function startScanner(
     enqueueToken(token.mint, token.symbol, token.name, 'pumpportal', token.creator);
   });
 
+  // 1b. Subscribe to PumpFun migration events (tokens moving to Raydium = big pump opportunity)
+  onPumpMigration((migration) => {
+    logCb('info', `MIGRATION DETECTED: ${migration.symbol || migration.mint.slice(0, 8)} migrating from PumpFun to Raydium — fast-tracking!`);
+    // Put migration tokens at FRONT of queue (high priority)
+    tokenQueue.unshift({
+      mint: migration.mint,
+      symbol: migration.symbol || '',
+      name: migration.name || '',
+      source: 'pumpportal',
+      creator: migration.creator,
+      isMigration: true,
+    });
+    // Also feed to PumpSwap sniper for immediate on-chain monitoring
+    onPumpPortalMigration(migration);
+  });
+
+  // 1c. Start PumpSwap Migration Sniper — monitors on-chain for migrations and triggers instant buys
+  logCb('info', 'Starting PumpSwap migration sniper for instant migration catches...');
+  startPumpSwapSniper(
+    (snipeEvent: MigrationSnipeEvent) => {
+      logCb('info', `🎯 PUMPSWAP SNIPE: ${snipeEvent.symbol || snipeEvent.mint.slice(0, 8)} — migration detected via ${snipeEvent.source}!`);
+      // Fast-track into queue with migration flag
+      tokenQueue.unshift({
+        mint: snipeEvent.mint,
+        symbol: snipeEvent.symbol || '',
+        name: snipeEvent.name || '',
+        source: 'migration',
+        isMigration: true,
+      });
+    },
+    (msg) => logCb('info', msg),
+  );
+
   // 2. Start DexScreener trending poller
   logCb('info', 'Starting DexScreener trending scanner...');
   pollDexScreenerTrending();
@@ -94,6 +133,7 @@ export function startScanner(
 export function stopScanner(): void {
   scannerRunning = false;
   disconnectPumpPortal();
+  stopPumpSwapSniper();
   if (dexScreenerTimer) clearInterval(dexScreenerTimer);
   if (processTimer) clearTimeout(processTimer);
   dexScreenerTimer = null;
@@ -146,11 +186,21 @@ function enqueueToken(
 async function pollDexScreenerTrending(): Promise<void> {
   try {
     // DexScreener latest token profiles (new tokens getting traction)
-    const profilesRes = await fetch('https://api.dexscreener.com/token-profiles/latest/v1', {
-      headers: { 'Accept': 'application/json' },
-    });
+    let profilesRes: Response | null = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        profilesRes = await fetch('https://api.dexscreener.com/token-profiles/latest/v1', {
+          headers: { 'Accept': 'application/json' },
+          signal: AbortSignal.timeout(10_000),
+        });
+        if (profilesRes.ok) break;
+        profilesRes = null;
+      } catch {
+        if (attempt === 0) await new Promise(r => setTimeout(r, 3_000));
+      }
+    }
 
-    if (profilesRes.ok) {
+    if (profilesRes && profilesRes.ok) {
       const profiles = await profilesRes.json() as Array<{
         chainId?: string;
         tokenAddress?: string;
@@ -226,14 +276,31 @@ async function processNextToken(): Promise<void> {
   processTimer = setTimeout(processNextToken, TOKEN_PROCESS_DELAY_MS);
 }
 
+// Known mints to skip — stablecoins, wrapped assets, mega-caps
+const SKIP_MINTS = new Set([
+  'So11111111111111111111111111111111111111112',  // SOL
+  'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', // USDT
+  'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
+  'mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So',  // mSOL
+  '7dHbWXmci3dT8UFYWYZweBLXgycu7Y3iL6trKn1Y7ARj', // stSOL
+  'bSo13r4TkiE4KumL71LsHTPpL2euBYLFx6h9HP3piy1',  // bSOL
+  'J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn', // JitoSOL
+  '7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs', // WETH
+]);
+
 async function processToken(token: {
   mint: string;
   symbol: string;
   name: string;
   source: SignalSource;
   creator?: string;
+  isMigration?: boolean;
 }): Promise<void> {
   const { mint } = token;
+
+  // Skip known stablecoins and wrapped assets immediately
+  if (SKIP_MINTS.has(mint)) return;
+
   processedCount++;
 
   // Mark as recently processed
@@ -251,26 +318,40 @@ async function processToken(token: {
     if (creatorDenied) return;
   }
 
-  // 2. Quick rugcheck
-  let rugcheckPassed = false; // Fail-closed: if API fails, treat as unsafe
+  // 2. Quick rugcheck — fail-open on API errors, only block on confirmed risks
+  let rugcheckPassed = true; // Fail-open: assume safe unless we confirm danger
   let rugcheckScore = 50;
   try {
-    const rugRes = await fetch(`${RUGCHECK_API_BASE}/tokens/${mint}/report`);
+    const rugRes = await fetch(`${RUGCHECK_API_BASE}/tokens/${mint}/report`, {
+      signal: AbortSignal.timeout(8_000),
+    });
     if (rugRes.ok) {
       const rugData = await rugRes.json() as {
         score?: number;
         risks?: Array<{ name: string; level: string }>;
       };
       rugcheckScore = rugData.score ?? 50;
-      const highRisks = (rugData.risks ?? []).filter(r => r.level === 'high' || r.level === 'critical');
-      rugcheckPassed = highRisks.length === 0;
+      const risks = rugData.risks ?? [];
+      const criticalRisks = risks.filter(r => r.level === 'critical');
+      const highRisks = risks.filter(r => r.level === 'high');
+      const hasCriticalFlag = risks.some(r =>
+        r.name?.toLowerCase().includes('honeypot') || r.name?.toLowerCase().includes('mintable')
+      );
+      // Only fail on critical flags or score < 30; score 30-50 passes with warning
+      rugcheckPassed = !hasCriticalFlag && criticalRisks.length === 0 && rugcheckScore >= 30;
+      if (!rugcheckPassed) {
+        logCb('info', `${token.symbol || mint.slice(0, 8)}: RugCheck BLOCKED (score=${rugcheckScore}, critical=${criticalRisks.length}). Skipping.`);
+      } else if (rugcheckScore < 50 || highRisks.length > 0) {
+        logCb('info', `${token.symbol || mint.slice(0, 8)}: RugCheck CAUTION (score=${rugcheckScore}, highRisks=${highRisks.length}) — proceeding with reduced confidence`);
+      }
     }
+    // If API returns non-OK (rate limit, etc), rugcheckPassed stays true (fail-open)
   } catch {
-    // Rugcheck failed — proceed with caution
+    // Rugcheck API unreachable — proceed (fail-open), don't block tokens
+    logCb('info', `${token.symbol || mint.slice(0, 8)}: RugCheck API timeout — proceeding without safety check`);
   }
 
   if (!rugcheckPassed) {
-    logCb('info', `${token.symbol || mint.slice(0, 8)}: RugCheck FAILED (score=${rugcheckScore}). Skipping.`);
     return;
   }
 
@@ -332,6 +413,13 @@ async function processToken(token: {
     // Market data unavailable
   }
 
+  // Skip stablecoins by symbol (catches any that slipped through mint check)
+  const symUpper = (token.symbol || '').toUpperCase();
+  if (['USDT', 'USDC', 'USDD', 'DAI', 'BUSD', 'TUSD', 'FRAX', 'PYUSD', 'USDH', 'UXD'].includes(symUpper)) return;
+
+  // Skip mega-cap tokens (> $1B MCap) — not alpha
+  if (market.marketCap > 1_000_000_000) return;
+
   // Skip tokens that are too old (> 2 hours) — stale opportunities
   if (tokenAgeMinutes > 120) {
     return;  // Quietly skip old tokens — there are thousands of them
@@ -385,13 +473,50 @@ async function processToken(token: {
     return;
   }
 
-  // 4. Score with all signals
+  // 4. Score with all signals — enrich with social + whale data
+  // Look up KOL/social mentions for this mint
+  let kolMentions = 0;
+  try {
+    const kolSignals = getKolSignals();
+    const fiveMinAgo = Date.now() - 300_000;
+    kolMentions = kolSignals.filter(
+      s => s.tokenMint === mint && s.timestamp > fiveMinAgo
+    ).length;
+    // Also check twitter_kol specifically — these are high signal
+    const twitterKolCount = kolSignals.filter(
+      s => s.tokenMint === mint && s.source === 'twitter_kol'
+    ).length;
+    if (twitterKolCount > 0) {
+      kolMentions += twitterKolCount * 2; // Twitter KOL mentions count double
+    }
+  } catch { /* no KOL data available */ }
+
+  // Look up smart money buys for this mint
+  let whaleNetFlow = 0;
+  try {
+    const smartBuys = getRecentSmartBuys();
+    const mintBuys = smartBuys.filter(b => b.tokenAddress === mint);
+    if (mintBuys.length > 0) {
+      // Each smart wallet buy = strong signal
+      whaleNetFlow = mintBuys.reduce((sum, b) => sum + b.solAmount, 0);
+      if (whaleNetFlow > 0) {
+        logCb('info', `${token.symbol || mint.slice(0, 8)}: Smart money detected! ${mintBuys.length} wallets, ${whaleNetFlow.toFixed(2)} SOL`);
+      }
+    }
+    // Also check wallet intelligence buys
+    const walletBuys = getRecentWalletBuys();
+    const walletMintBuys = walletBuys.filter(b => b.tokenMint === mint);
+    if (walletMintBuys.length > 0) {
+      whaleNetFlow += walletMintBuys.reduce((sum, b) => sum + b.solSpent, 0);
+    }
+  } catch { /* no smart money data available */ }
+
   const score = calculateCompositeScore({
     volume24h: market.volume24h,
     holderCount,
     top10Concentration: topHolderPct,
-    kolMentions: 0,
-    whaleNetFlow: 0,
+    kolMentions,
+    whaleNetFlow,
     liquidityUsd: market.liquidity,
   });
 
@@ -421,6 +546,32 @@ async function processToken(token: {
   if (buySellRatio >= 2.0) {
     score.total = Math.min(100, score.total + 5);
     logCb('info', `${token.symbol || mint.slice(0, 8)}: BUY PRESSURE +5 (ratio: ${buySellRatio.toFixed(1)})`);
+  }
+
+  // PumpFun migration bonus — tokens migrating to Raydium usually pump 50%+
+  if (token.isMigration) {
+    score.total = Math.min(100, score.total + 20);
+    score.conviction = 'high';
+    logCb('info', `${token.symbol || mint.slice(0, 8)}: MIGRATION BONUS +20 — PumpFun → Raydium migration detected!`);
+  }
+
+  // Social/KOL signal bonus — reward tokens with social backing
+  if (kolMentions >= 2) {
+    score.total = Math.min(100, score.total + 8);
+    logCb('info', `${token.symbol || mint.slice(0, 8)}: SOCIAL BONUS +8 (${kolMentions} KOL mentions)`);
+  } else if (kolMentions === 1) {
+    score.total = Math.min(100, score.total + 4);
+    logCb('info', `${token.symbol || mint.slice(0, 8)}: SOCIAL BONUS +4 (1 KOL mention)`);
+  }
+
+  // Smart money convergence bonus
+  if (whaleNetFlow >= 5) {
+    score.total = Math.min(100, score.total + 10);
+    if (score.total >= 65) score.conviction = 'high';
+    logCb('info', `${token.symbol || mint.slice(0, 8)}: SMART MONEY BONUS +10 (${whaleNetFlow.toFixed(2)} SOL from smart wallets)`);
+  } else if (whaleNetFlow >= 1) {
+    score.total = Math.min(100, score.total + 5);
+    logCb('info', `${token.symbol || mint.slice(0, 8)}: SMART MONEY BONUS +5 (${whaleNetFlow.toFixed(2)} SOL from smart wallets)`);
   }
 
   signalCount++;

@@ -41,13 +41,18 @@ export async function checkToken(mint: string): Promise<RugcheckResult> {
       }
     }
 
-    // A score below 50 or the presence of critical risk factors indicates a rug
-    const isRug = score < 50 || risks.some((r) =>
-      r.toLowerCase().includes('rug') ||
+    // Critical risk flags always mark as rug regardless of score
+    const hasCriticalRisk = risks.some((r) =>
       r.toLowerCase().includes('honeypot') ||
-      r.toLowerCase().includes('mintable') ||
+      r.toLowerCase().includes('mintable')
+    );
+    // Soft risk flags only matter with a low score
+    const hasSoftRisk = risks.some((r) =>
+      r.toLowerCase().includes('rug') ||
       r.toLowerCase().includes('freeze')
     );
+    // Score < 30 = definite rug. 30-50 = only rug if risk flags present
+    const isRug = hasCriticalRisk || score < 30 || (score < 50 && hasSoftRisk);
 
     console.log(`[self-healer] rugcheck: ${mint} score=${score} isRug=${isRug} risks=[${risks.join(', ')}]`);
 

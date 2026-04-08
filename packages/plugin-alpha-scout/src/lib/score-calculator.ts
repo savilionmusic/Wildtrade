@@ -36,32 +36,43 @@ function scoreHolders(holderCount: number, top10Concentration: number): number {
 }
 
 /**
- * Social score: 0-20
- * KOL mentions: 0 = 0, 1 = 6, 2 = 12, 3+ = 16-20
+ * Social score: 0-25
+ * KOL mentions and social signals are HIGH VALUE alpha.
+ * Twitter KOL mentions count double (pre-boosted by scanner).
+ * 0 = 0, 1 = 8, 2 = 16, 3 = 21, 4+ = 25
  */
 function scoreSocial(kolMentions: number): number {
   if (kolMentions <= 0) return 0;
-  if (kolMentions === 1) return 6;
-  if (kolMentions === 2) return 12;
-  if (kolMentions === 3) return 16;
-  return 20;
+  if (kolMentions === 1) return 8;
+  if (kolMentions === 2) return 16;
+  if (kolMentions === 3) return 21;
+  return 25;
 }
 
 /**
- * Whale score: 0-20
+ * Whale score: 0-25
+ * Smart money flow is the STRONGEST signal we have.
  * When whaleNetFlow is exactly 0 (unknown/not measured), return 0 — not a midpoint.
  * Positive net flow (buys > sells) = higher score.
+ * SOL amounts: 1+ SOL = notable, 5+ SOL = very strong, 10+ SOL = max
  */
 function scoreWhale(whaleNetFlow: number, liquidityUsd: number): number {
   // If we have no whale data, don't assume neutral — return 0
   if (whaleNetFlow === 0) return 0;
 
-  const normalized = clamp((whaleNetFlow + 100) / 200, 0, 1);
-  let raw = Math.round(normalized * 20);
+  // Direct SOL flow scoring — more intuitive than normalized
+  let raw: number;
+  if (whaleNetFlow >= 10) raw = 25;
+  else if (whaleNetFlow >= 5) raw = 20;
+  else if (whaleNetFlow >= 2) raw = 15;
+  else if (whaleNetFlow >= 1) raw = 10;
+  else if (whaleNetFlow > 0) raw = Math.round((whaleNetFlow / 1) * 10);
+  else raw = 0; // Negative flow = sells dominating
+
   if (liquidityUsd < 3_000) {
-    raw = Math.min(raw, 5);
+    raw = Math.min(raw, 8); // Cap for very low liquidity
   }
-  return clamp(raw, 0, 20);
+  return clamp(raw, 0, 25);
 }
 
 /**
@@ -89,7 +100,7 @@ export function calculateCompositeScore(params: ScoreParams): CompositeScore {
   const socialScore = scoreSocial(params.kolMentions);
   const whaleScore = scoreWhale(params.whaleNetFlow, params.liquidityUsd);
   const liquidityScore = scoreLiquidity(params.liquidityUsd);
-  const total = volumeScore + holderScore + socialScore + whaleScore + liquidityScore;
+  const total = Math.min(100, volumeScore + holderScore + socialScore + whaleScore + liquidityScore);
   const conviction = deriveConviction(total);
 
   console.log(

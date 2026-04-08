@@ -47,7 +47,11 @@ export function startKolIntelligence(onLog?: KolLogCb): void {
   pollDexScreenerSocial();
   kolTimer = setInterval(pollDexScreenerSocial, 180_000);
 
-  log('KOL intelligence active — monitoring DexScreener social, CTOs, and ads');
+  // Also poll Twitter KOL timelines if configured
+  pollTwitterKolFeeds();
+  setInterval(pollTwitterKolFeeds, 120_000); // Every 2 min
+
+  log('KOL intelligence active — monitoring DexScreener social, CTOs, ads, and Twitter KOLs');
 }
 
 export function stopKolIntelligence(): void {
@@ -221,6 +225,99 @@ function addSignal(signal: KolSignal): void {
   if (onTokenMention) {
     try { onTokenMention(signal); } catch { /* ignore */ }
   }
+}
+
+// ── Twitter KOL Feed Integration ──
+// Polls Twitter timelines of configured KOLs via the twitter service
+// and generates high-confidence signals for any tokens they mention
+
+async function pollTwitterKolFeeds(): Promise<void> {
+  if (!running) return;
+
+  try {
+    // Dynamic import to avoid hard dependency
+    const { pollKolTimelines } = await import('./twitter.service.js');
+    const tweetResults = await pollKolTimelines();
+
+    if (tweetResults.length === 0) return;
+
+    for (const result of tweetResults) {
+      for (const mint of result.mints) {
+        const key = `twitter:${mint}:${result.tweetId}`;
+        if (seenTokens.has(key)) continue;
+        seenTokens.add(key);
+
+        const signal: KolSignal = {
+          tokenMint: mint,
+          tokenSymbol: '',
+          source: 'twitter_kol',
+          confidence: 'high', // Twitter KOLs directly mentioning a token = high confidence
+          context: `KOL tweet: ${result.tweetUrl}`,
+          kolName: result.userId,
+          timestamp: result.timestamp,
+        };
+        addSignal(signal);
+        log(`TWITTER KOL SIGNAL: ${mint.slice(0, 8)}... from KOL ${result.userId} — ${result.tweetUrl}`);
+      }
+    }
+
+    if (tweetResults.length > 0) {
+      log(`Twitter KOL poll: ${tweetResults.length} tweets processed, ${tweetResults.reduce((s, r) => s + r.mints.length, 0)} mint addresses found`);
+    }
+  } catch (err) {
+    // Twitter not configured or errored — that's fine, not required
+    const msg = String(err);
+    if (!msg.includes('TWITTER_BEARER_TOKEN') && !msg.includes('No KOL')) {
+      log(`Twitter KOL poll error: ${msg}`);
+    }
+  }
+}
+
+// ── Free Social Sentiment API (no keys required) ──
+// Poll Birdeye/DexScreener for trending social tokens
+
+export async function pollSocialTrending(): Promise<KolSignal[]> {
+  const results: KolSignal[] = [];
+
+  try {
+    // DexScreener orders/latest — tokens people are actively watching
+    const ordersRes = await fetch('https://api.dexscreener.com/orders/v1/solana', {
+      headers: { 'Accept': 'application/json' },
+    });
+
+    if (ordersRes.ok) {
+      const orders = await ordersRes.json() as Array<{
+        tokenAddress?: string;
+        type?: string;
+        status?: string;
+      }>;
+
+      let found = 0;
+      for (const order of (orders || []).slice(0, 20)) {
+        if (!order.tokenAddress) continue;
+        const key = `orders:${order.tokenAddress}`;
+        if (seenTokens.has(key)) continue;
+        seenTokens.add(key);
+
+        const signal: KolSignal = {
+          tokenMint: order.tokenAddress,
+          tokenSymbol: '',
+          source: 'dexscreener_social',
+          confidence: 'low',
+          context: `Active DexScreener orders (${order.type || 'unknown'})`,
+          timestamp: Date.now(),
+        };
+        addSignal(signal);
+        results.push(signal);
+        found++;
+      }
+      if (found > 0) log(`Social trending: ${found} active tokens from DexScreener orders`);
+    }
+  } catch (err) {
+    log(`Social trending error: ${String(err)}`);
+  }
+
+  return results;
 }
 
 function sleep(ms: number): Promise<void> {

@@ -171,14 +171,18 @@ const scanNewTokenAction: Action = {
       return { mintAddress, denied: true };
     }
 
-    // 2. RugCheck
+    // 2. RugCheck — fail-open on API errors
     const rugReport = await fetchRugCheckReport(mintAddress);
-    const rugcheckScore = rugReport?.score ?? 0;
-    const highRisks = rugReport?.risks?.filter((r) => r.level === 'high' || r.level === 'critical') ?? [];
-    const rugcheckPassed = highRisks.length === 0;
+    const rugcheckScore = rugReport?.score ?? 50;
+    const criticalRisks = rugReport?.risks?.filter((r) => r.level === 'critical') ?? [];
+    const hasCriticalFlag = (rugReport?.risks ?? []).some(r =>
+      r.name?.toLowerCase().includes('honeypot') || r.name?.toLowerCase().includes('mintable')
+    );
+    // Only block on critical flags or very low score; fail-open if API unavailable
+    const rugcheckPassed = !rugReport || (!hasCriticalFlag && criticalRisks.length === 0 && rugcheckScore >= 30);
 
     if (!rugcheckPassed) {
-      console.log(`[alpha-scout] RugCheck flagged ${mintAddress} with ${highRisks.length} high/critical risks`);
+      console.log(`[alpha-scout] RugCheck flagged ${mintAddress}: critical=${criticalRisks.length}, score=${rugcheckScore}`);
     }
 
     // 3. Fetch market data

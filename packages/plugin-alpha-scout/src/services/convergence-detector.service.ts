@@ -18,6 +18,19 @@ const SOL_MINT = 'So11111111111111111111111111111111111111112';
 const SCAN_INTERVAL_MS = 300_000; // 5 min
 const RPC_DELAY_MS = 1_500;       // 1.5s between RPC calls (stay under rate limit)
 
+// Known tokens to skip — stablecoins, wrapped SOL, and major tokens that aren't alpha
+const SKIP_MINTS = new Set([
+  SOL_MINT,
+  'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', // USDT
+  'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
+  'mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So',  // mSOL
+  '7dHbWXmci3dT8UFYWYZweBLXgycu7Y3iL6trKn1Y7ARj', // stSOL
+  'bSo13r4TkiE4KumL71LsHTPpL2euBYLFx6h9HP3piy1',  // bSOL
+  'J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn', // JitoSOL
+  '7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs', // WETH
+  'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263', // BONK (too large)
+]);
+
 // ── Types ──
 
 export interface ConvergenceSignal {
@@ -103,7 +116,7 @@ async function runConvergenceScan(): Promise<void> {
         walletHoldings.set(wallet, new Set(holdings.map(h => h.mint)));
 
         for (const h of holdings) {
-          if (h.mint === SOL_MINT) continue; // Skip SOL itself
+          if (SKIP_MINTS.has(h.mint)) continue; // Skip SOL, stablecoins, wrapped assets
           if (h.uiAmount < 0.001) continue;  // Skip dust
 
           const existing = tokenToWallets.get(h.mint) || [];
@@ -162,6 +175,11 @@ async function runConvergenceScan(): Promise<void> {
 
       // Skip very low liquidity tokens
       if (liquidity < 500) continue;
+
+      // Skip stablecoins and wrapped tokens that snuck through (e.g. new USDT/USDC pairs)
+      const symUpper = symbol.toUpperCase();
+      if (['USDT', 'USDC', 'USDD', 'DAI', 'BUSD', 'TUSD', 'FRAX', 'PYUSD', 'USDH', 'UXD'].includes(symUpper)) continue;
+      if (marketCap > 1_000_000_000) continue; // Skip mega-cap tokens (> $1B MCap)
 
       // Score confidence
       let confidence: ConvergenceSignal['confidence'] = 'low';

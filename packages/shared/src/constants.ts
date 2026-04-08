@@ -14,9 +14,9 @@ export const SERVICE_TYPES = {
 } as const;
 
 export const SCORE_THRESHOLDS = {
-  MIN_TO_TRADE: 65,
-  HIGH_CONVICTION: 80,
-  MEDIUM_CONVICTION: 65,
+  MIN_TO_TRADE: 55,
+  HIGH_CONVICTION: 75,
+  MEDIUM_CONVICTION: 55,
 };
 
 export const DCA_ALLOCATION = [20, 30, 50] as const;
@@ -25,6 +25,13 @@ export const EXIT_TIERS = [
   { multiple: 2, sellPct: 50 },
   { multiple: 5, sellPct: 25 },
   { multiple: 10, sellPct: 25 },
+] as const;
+
+// Faster exit tiers for migration snipes — take profit quickly
+export const MIGRATION_EXIT_TIERS = [
+  { multiple: 1.3, sellPct: 40 },
+  { multiple: 1.5, sellPct: 30 },
+  { multiple: 2, sellPct: 30 },
 ] as const;
 
 export const SOL_MINT = 'So11111111111111111111111111111111111111112';

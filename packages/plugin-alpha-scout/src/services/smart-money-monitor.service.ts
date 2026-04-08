@@ -47,20 +47,20 @@ export type SmartMoneyCallback = (signal: SmartMoneySignal) => void;
 const CONFIG = {
   // How often to refresh the wallet list (1 hour)
   WALLET_REFRESH_INTERVAL_MS: 3_600_000,
-  // How often to poll wallet activity (3 min — easy on APIs)
-  ACTIVITY_POLL_INTERVAL_MS: 180_000,
-  // Time window for cluster detection (45 minutes)
-  CLUSTER_WINDOW_MS: 2_700_000,
+  // How often to poll wallet activity (2 min — faster for better alpha)
+  ACTIVITY_POLL_INTERVAL_MS: 120_000,
+  // Time window for cluster detection (60 minutes — wider window catches more)
+  CLUSTER_WINDOW_MS: 3_600_000,
   // Minimum smart wallets buying same token to trigger signal
   MIN_CLUSTER_SIZE: 2,
   // Minimum wallet quality score to track
-  MIN_WALLET_QUALITY: 35,
-  // Maximum wallets to track (keep API calls low)
-  MAX_TRACKED_WALLETS: 20,
+  MIN_WALLET_QUALITY: 30,
+  // Maximum wallets to track (more wallets = more coverage)
+  MAX_TRACKED_WALLETS: 30,
   // Buys per wallet to check
-  BUYS_PER_WALLET: 5,
+  BUYS_PER_WALLET: 10,
   // How many wallets to poll per cycle (spread load)
-  WALLETS_PER_CYCLE: 5,
+  WALLETS_PER_CYCLE: 8,
 };
 
 // ── State ──
@@ -354,12 +354,13 @@ function detectClusters(): void {
     const signalKey = `${tokenAddress}:${hourKey}`;
     if (emittedSignals.has(signalKey)) continue;
 
-    // Calculate confidence
+    // Calculate confidence — enhanced with SOL invested weighting
     let confidence: SmartMoneySignal['confidence'];
     if (walletCount >= 5) confidence = 'very_high';
     else if (walletCount >= 4) confidence = 'high';
-    else if (walletCount >= 3) confidence = 'medium';
-    else confidence = 'low';
+    else if (walletCount >= 3) confidence = 'high';
+    else if (walletCount >= 2 && totalSol >= 3) confidence = 'medium';
+    else if (walletCount >= 2) confidence = 'low';
 
     const walletBuys: WalletBuy[] = Array.from(uniqueWallets.values()).map(b => ({
       wallet: b.wallet,

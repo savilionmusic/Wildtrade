@@ -79,6 +79,8 @@
   },
   "overrides": {
     "better-sqlite3": "./scripts/stub-better-sqlite3",
-    "sharp": "./scripts/stub-sharp"
+    "sharp": "./scripts/stub-sharp",
+    "@anush008/tokenizers": "./scripts/stub-tokenizers",
+    "fastembed": "./scripts/stub-fastembed"
   }
 }

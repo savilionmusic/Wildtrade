@@ -70,7 +70,6 @@ export type { TrackedWallet, WalletBuyEvent } from './services/wallet-intelligen
 export {
   startKolIntelligence, stopKolIntelligence,
   getKolSignals, getKolStats, setTokenMentionCallback,
-  pollSocialTrending,
 } from './services/kol-intelligence.service.js';
 export type { KolSignal } from './services/kol-intelligence.service.js';
 

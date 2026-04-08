@@ -85,5 +85,8 @@
     "electron-builder": "^25.0.0",
     "esbuild": "^0.28.0",
     "typescript": "^5.7.3"
+  },
+  "overrides": {
+    "better-sqlite3": "./scripts/stub-better-sqlite3"
   }
 }

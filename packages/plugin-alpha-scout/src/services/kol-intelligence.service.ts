@@ -22,7 +22,7 @@ let running = false;
 let dexscreenerTimer: ReturnType<typeof setInterval> | null = null;
 let twitterTimer: ReturnType<typeof setInterval> | null = null;
 let redditTimer: ReturnType<typeof setInterval> | null = null;
-let log: KolLogCb = (msg) => console.log(`[kol-intel] ${msg}`);
+let log: KolLogCb = (msg) => console.log(`[social-scout] ${msg}`);
 let onTokenMention: TokenMentionCallback | null = null;
 
 export function startKolIntelligence(onLog?: KolLogCb): void {

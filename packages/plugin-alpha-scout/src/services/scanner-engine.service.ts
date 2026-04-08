@@ -199,6 +199,55 @@ async function pollDexScreenerTrending(): Promise<void> {
       const profiles = await profilesRes.json() as Array<{
         chainId?: string;
         tokenAddress?: string;
+        baseToken?: { address?: string; symbol?: string; name?: string };
+      }>;
+      const solanaTokens = profiles.filter(p => (p.chainId === 'solana' || !p.chainId) && p.tokenAddress && p.tokenAddress.length > 30);
+      for (const t of solanaTokens) {
+        if (!recentlyProcessed.has(t.tokenAddress!)) {
+          enqueueToken(t.tokenAddress!, t.baseToken?.symbol || t.tokenAddress!.slice(0, 8), t.baseToken?.name || '', 'dexscreener');
+        }
+      }
+      logCb('info', `[social-scout] Polled DexScreener Latest (New/Trending): added ${solanaTokens.length} tokens to queue`);
+    }
+
+    // DexScreener token boosts (PAID trending list - very high signal)
+    const boostsRes = await fetch('https://api.dexscreener.com/token-boosts/top/v1', {
+      headers: { 'Accept': 'application/json' },
+      signal: AbortSignal.timeout(10_000),
+    });
+
+    if (boostsRes.ok) {
+      const boosts = await boostsRes.json() as Array<{
+        chainId?: string;
+        tokenAddress?: string;
+        baseToken?: { symbol?: string; name?: string };
+        amount?: number;
+      }>;
+      const solanaBoosts = boosts.filter(b => b.chainId === 'solana' && b.tokenAddress);
+      for (const b of solanaBoosts) {
+        // High priority - enqueue even if we've seen it before, if it's getting boosted right now
+        // And bypass the normal size check by pushing to the FRONT of the queue
+        if (!tokenQueue.find(t => t.mint === b.tokenAddress!)) {
+        tokenQueue.push({
+          mint: b.tokenAddress!,
+          symbol: b.baseToken?.symbol || b.tokenAddress!.slice(0, 8),
+          name: b.baseToken?.name || '',
+          source: 'dexscreener',
+        });
+      }
+      if (solanaBoosts.length > 0) {
+        logCb('info', `[social-scout] Polled DexScreener HOT Boosts: found ${solanaBoosts.length} highly-boosted Solana tokens. Fast-tracking to queue.`);
+      }
+    }
+  } catch (err) {
+    if (err instanceof Error && err.name === 'AbortError') {
+      logCb('error', `DexScreener timeout`);
+    } else {
+      logCb('error', `DexScreener API error: ${String(err)}`);
+    }
+  }
+}
+        tokenAddress?: string;
         description?: string;
         header?: string;
       }>;

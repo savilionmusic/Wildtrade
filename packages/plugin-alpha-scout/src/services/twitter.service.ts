@@ -399,7 +399,9 @@ async function pollViaScraper(handles: string[], api: Scraper): Promise<KolTweet
   }
 
   if (results.length > 0) {
-    console.log(`[alpha-scout] X poll: found ${results.length} tweets with mint addresses from ${handles.length} handles`);
+    console.log(`[social-scout] X poll: found ${results.length} tweets with mint addresses from ${handles.length} handles`);
+  } else {
+    // console.log(`[social-scout] Polled ${handles.length} KOL handles directly. Found 0 new tokens.`);
   }
   return results;
 }
@@ -407,6 +409,8 @@ async function pollViaScraper(handles: string[], api: Scraper): Promise<KolTweet
 async function pollViaOpenTwitter(handles: string[], token: string): Promise<KolTweetResult[]> {
   const results: KolTweetResult[] = [];
   const baseUrl = getOpenTwitterApiBase().replace(/\/$/, '');
+
+  console.log(`[social-scout] Tracking ${handles.length} active KOLs via OpenTwitter API...`);
 
   for (const handle of handles) {
     try {

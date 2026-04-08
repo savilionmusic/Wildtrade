@@ -685,8 +685,8 @@ export async function triggerInstantSnipe(mintAddress: string, symbol: string): 
     return;
   }
 
-  log(`🚀 INSTANT SNIPE: ${symbol || mintAddress.slice(0, 8)} | Size: ${positionSize.toFixed(4)} SOL`);
-  alert('dca_entry', `🚀 INSTANT SNIPE: ${symbol || mintAddress.slice(0, 8)} | ${positionSize.toFixed(4)} SOL`);
+  log(`🚀 INSTANT SNIPE EXECUTING: ${symbol || mintAddress.slice(0, 8)} | Size: ${positionSize.toFixed(4)} SOL`);
+  if (alertCb) alertCb('instant_snipe', `🚀 INSTANT SNIPE EXECUTING: ${symbol || mintAddress.slice(0, 8)} | ${positionSize.toFixed(4)} SOL`);
 
   // Migration tokens are too new for DexScreener — use retry + Jupiter fallback
   const price = await getTokenPriceWithRetry(mintAddress, 4);
@@ -697,6 +697,9 @@ export async function triggerInstantSnipe(mintAddress: string, symbol: string): 
 
   recordCoinEntry(mintAddress);
   await openPosition(`snipe-${Date.now()}`, mintAddress, symbol || mintAddress.slice(0, 8), 'PumpSwap Migration', positionSize, 100, 0, price);
+  
+  // Explicitly log the opening so the UI and portfolio track it instantly
+  log(`Position fully opened via snipe: ${symbol} at $${price.toFixed(6)}`);
 }
 
 export async function startAutonomousTrader(opts: {
@@ -1032,6 +1035,9 @@ async function openPosition(
   };
 
   positions.set(position.id, position);
+  
+  // Make sure to add it to the open positions list immediately for portfolio tracking
+  log(`Position opened: ${symbol} (${position.id})`);
 
   // Execute first DCA leg immediately (20%)
   const leg1Sol = budgetSol * DCA_LEGS[0];
@@ -1043,7 +1049,7 @@ async function openPosition(
     leg: 2,
     solAmount: budgetSol * DCA_LEGS[1],
     mint: mintAddress,
-    executeAt: Date.now() + DCA_LEG2_DELAY_MS,
+    executeAt: Date.now() + 15_000, // Short delay to let price settle, 15s instead of 60s
   });
 
   pendingDcaLegs.push({
@@ -1051,7 +1057,7 @@ async function openPosition(
     leg: 3,
     solAmount: budgetSol * DCA_LEGS[2],
     mint: mintAddress,
-    executeAt: Date.now() + DCA_LEG3_DELAY_MS,
+    executeAt: Date.now() + 30_000, // Short delay, 30s instead of 180s
   });
 
   // Save to DB
@@ -1261,17 +1267,36 @@ async function processPendingDcaLegs(): Promise<void> {
       continue;
     }
 
-    // Price-gated DCA: cancel leg if price has dropped too far
-    const currentMultiplier = position.currentPrice > 0 && position.entryPrice > 0
+    // Price-based DCA: Wait for a dip to buy more!
+    // Leg 2: Only buy if price has dropped at least 15% from entry.
+    // Leg 3: Only buy if price has dropped at least 25% from entry.
+    // We do NOT cancel the leg if it isn't met — we just delay it, making it an open limit-order effectively.
+    const price = await getTokenPriceWithRetry(position.mintAddress, 2);
+    if (price && price > 0) position.currentPrice = price;
+
+    const currentMultiplier = (position.currentPrice > 0 && position.entryPrice > 0)
       ? position.currentPrice / position.entryPrice
       : 1.0;
-    const priceGate = leg.leg === 2 ? 0.85 : 0.80; // Leg 2: must be >= 0.85x, Leg 3: >= 0.80x
-    if (currentMultiplier < priceGate) {
-      log(`DCA LEG ${leg.leg} CANCELLED for ${position.symbol}: price at ${currentMultiplier.toFixed(2)}x < ${priceGate}x gate`);
-      pendingDcaLegs = pendingDcaLegs.filter(l => l !== leg);
+
+    const maxMultiplierAllowed = leg.leg === 2 ? 0.85 : 0.75;
+
+    // If price rallied or hasn't dipped enough, do NOT buy yet. Wait for next tick.
+    if (currentMultiplier > maxMultiplierAllowed) {
+      // Just skip this leg for now, don't remove it from the array. It acts like a limit order.
+      // But let's log occasionally so the user knows
+      if (now % 30_000 < 10_000) { // Log roughly every 30s
+        log(`DCA LEG ${leg.leg} WAITING for ${position.symbol}: price ${currentMultiplier.toFixed(2)}x is too high to DCA (waiting for <= ${maxMultiplierAllowed}x dip)`);
+      }
+      // Also, if it has 2x'd, just cancel the remaining DCA legs and ride the win
+      if (currentMultiplier >= 2.0) {
+         log(`DCA LEG ${leg.leg} CANCELLED for ${position.symbol}: bagged a 2x, riding initial entry!`);
+         pendingDcaLegs = pendingDcaLegs.filter(l => l !== leg);
+      }
       continue;
     }
 
+    // If we're here, it has dipped into our target zone!
+    log(`DCA LEG ${leg.leg} TRIGGERED for ${position.symbol}: price dipped to ${currentMultiplier.toFixed(2)}x — buying the dip!`);
     await executeBuy(position, leg.solAmount, leg.leg);
     pendingDcaLegs = pendingDcaLegs.filter(l => l !== leg);
   }

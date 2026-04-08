@@ -924,16 +924,17 @@ async function pollForSignals(): Promise<void> {
        AND (score_json::jsonb->>'total')::integer >= ${minScore}
        AND market_cap_usd >= $1
        AND market_cap_usd <= $2
-       AND liquidity_usd >= 8000
+       AND liquidity_usd >= 3000
        AND (
-         COALESCE((score_json::jsonb->>'socialScore')::integer, 0) >= 8
-         OR COALESCE((score_json::jsonb->>'whaleScore')::integer, 0) >= 10
-         OR COALESCE((score_json::jsonb->>'liquidityScore')::integer, 0) >= 15
+         COALESCE((score_json::jsonb->>'socialScore')::integer, 0) >= 4
+         OR COALESCE((score_json::jsonb->>'whaleScore')::integer, 0) >= 6
+         OR COALESCE((score_json::jsonb->>'liquidityScore')::integer, 0) >= 8
+         OR (score_json::jsonb->>'total')::integer >= ${Math.max(55, minScore + 8)}
        )
        AND discovered_at > $3
        ORDER BY (score_json::jsonb->>'total')::integer DESC
        LIMIT 3`,
-      [phase.targetMCapMin, phase.targetMCapMax, Date.now() - 600_000],
+      [phase.targetMCapMin, phase.targetMCapMax, Date.now() - 1_800_000],
     );
 
     const signals = (result?.rows ?? []) as Array<Record<string, unknown>>;

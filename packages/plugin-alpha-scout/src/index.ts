@@ -54,6 +54,14 @@ export {
 } from './services/pumpswap-sniper.service.js';
 export type { MigrationSnipeEvent, SnipeCallback } from './services/pumpswap-sniper.service.js';
 
+// Pump Launch Sniper
+export {
+  startPumpLaunchSniper,
+  stopPumpLaunchSniper,
+  onPumpLaunchToken,
+} from './services/pump-launch-sniper.service.js';
+export type { PumpLaunchSnipeEvent, PumpLaunchSnipeCallback } from './services/pump-launch-sniper.service.js';
+
 // DexScreener
 export { getTrendingTokens, getTokenPairs, searchTokens } from './services/dexscreener.service.js';
 export type { TrendingToken, DexPair } from './services/dexscreener.service.js';

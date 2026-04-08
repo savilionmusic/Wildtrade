@@ -38,6 +38,11 @@ import { getTrackedWalletAddresses } from './smart-money-monitor.service.js';
 import { triggerInstantSnipe } from '@wildtrade/plugin-smart-trader';
 import { startPumpSwapSniper, stopPumpSwapSniper, onPumpPortalMigration } from './pumpswap-sniper.service.js';
 import type { MigrationSnipeEvent } from './pumpswap-sniper.service.js';
+import {
+  startPumpLaunchSniper,
+  stopPumpLaunchSniper,
+  onPumpLaunchToken,
+} from './pump-launch-sniper.service.js';
 
 // ── Config ──
 const DEXSCREENER_POLL_MS = 120_000;   // 2 min — DexScreener has generous free limits
@@ -84,13 +89,31 @@ export function startScanner(
 
   logCb('info', 'Starting token scanner...');
 
+  // 0. Start Pump launch sniper lane (separate from the regular scoring queue)
+  // This keeps normal scanner behavior while allowing fast launch entries.
+  startPumpLaunchSniper(
+    (launch) => {
+      logCb(
+        'info',
+        `🚀 PUMP LAUNCH SNIPE: ${launch.symbol || launch.mint.slice(0, 8)} | ` +
+        `liq=$${Math.round(launch.liquidityUsd).toLocaleString()} | ` +
+        `vol1h=$${Math.round(launch.volumeH1Usd).toLocaleString()} | ` +
+        `b/s=${launch.buySellRatio.toFixed(2)}`,
+      );
+
+      triggerInstantSnipe(launch.mint, launch.symbol || launch.mint.slice(0, 8)).catch((err) => {
+        logCb('error', `Launch snipe trigger failed for ${launch.mint}: ${String(err)}`);
+      });
+    },
+    (msg) => logCb('info', msg),
+  );
+
   // 1. Connect PumpPortal for real-time new launches
-  logCb('info', 'Connecting to PumpPortal for new token launches (tracking only, unfiltered drops will bypass APIs)...');
+  logCb('info', 'Connecting to PumpPortal for new token launches (launch sniper + migration sniper enabled)...');
   connectPumpPortal((token: PumpPortalToken) => {
-    // We NO LONGER enqueue every single PumpPortal token. It spams 10/sec and rate-limits RugCheck/DexScreener.
-    // Instead, we only track them quietly, relying on KOL Mentions, Smart Money, or DexScreener trending
-    // to actually trigger the expensive scoring pipeline.
-    // enqueueToken(token.mint, token.symbol, token.name, 'pumpportal', token.creator);
+    // We still avoid queueing the full firehose into the normal scanner pipeline,
+    // but we feed launch candidates into a dedicated, throttled pump-sniper lane.
+    onPumpLaunchToken(token);
   });
 
   // 1b. Subscribe to PumpFun migration events (tokens moving to Raydium = big pump opportunity)
@@ -132,6 +155,7 @@ export function startScanner(
 export function stopScanner(): void {
   scannerRunning = false;
   disconnectPumpPortal();
+  stopPumpLaunchSniper();
   stopPumpSwapSniper();
   if (dexScreenerTimer) clearInterval(dexScreenerTimer);
   if (processTimer) clearTimeout(processTimer);

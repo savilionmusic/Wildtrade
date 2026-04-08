@@ -17,16 +17,17 @@ function clamp(value: number, min: number, max: number): number {
  * Volume score: 0-20 (Dynamic V/L Ratio)
  * Rather than a flat $50k hurdle, we score based on Volume-to-Liquidity ratio (V/L).
  * If a token has $10k liquidity and $30k volume (3.0x ratio), it is churning fast = healthy hype.
- * If a token has $10k liquidity and $800 volume (0.08x ratio), it is dead = penalty.
+ * For very new launches, low early volume is treated as neutral (0), not punitive.
  */
 function scoreVolume(volume24h: number, liquidityUsd: number): number {
-  // Prevent division by zero and kill absolute dead tokens mapping to early snipes
-  if (liquidityUsd < 100 || volume24h < 500) return -30;
+  // Prevent division by zero; keep fresh launches neutral instead of auto-penalizing.
+  if (liquidityUsd < 100 || volume24h < 500) return 0;
 
   const vlRatio = volume24h / liquidityUsd;
 
-  // Stagnant dead coins (high risk of trapping your money)
-  if (vlRatio < 0.2) return -30;
+  // Stagnant coins are neutral here; other safeguards (rugcheck, holder concentration, liquidity gates)
+  // still decide whether a token is tradable.
+  if (vlRatio < 0.2) return 0;
 
   // Slow moving coins
   if (vlRatio < 0.5) return 0;

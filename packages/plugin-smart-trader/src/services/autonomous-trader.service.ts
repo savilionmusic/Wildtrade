@@ -598,22 +598,31 @@ function canTrade(): { allowed: boolean; reason?: string } {
 // ── Public API ──
 
 export async function triggerInstantSnipe(mintAddress: string, symbol: string): Promise<void> {
-  if (!running) return;
+  if (!running) {
+    log(`🚀 SNIPE REJECTED: Trader not running`);
+    return;
+  }
   const limitCheck = canTrade();
   if (!limitCheck.allowed) {
-    log(`Snipe skipped: ${limitCheck.reason}`);
+    log(`🚀 SNIPE REJECTED: ${limitCheck.reason}`);
     return;
   }
 
   const phase = getCurrentPhase();
   const openCount = Array.from(positions.values()).filter(p => p.status === 'open' || p.status === 'partial_exit').length;
   const maxPos = userMaxPositions ?? phase.maxPositions;
-  if (openCount >= maxPos) return;
+  if (openCount >= maxPos) {
+    log(`🚀 SNIPE REJECTED: Max positions (${maxPos}) reached`);
+    return;
+  }
 
   const existing = Array.from(positions.values()).find(
     p => p.mintAddress === mintAddress && p.status !== 'closed' && p.status !== 'stopped_out'
   );
-  if (existing) return;
+  if (existing) {
+    log(`🚀 SNIPE REJECTED: Already in ${symbol || mintAddress.slice(0, 8)}`);
+    return;
+  }
 
   const available = totalBudgetSol - deployedSol + realizedPnlSol;
   const positionSize = Math.max(phase.positionSizeMin, Math.min(phase.positionSizeMax, available * 0.25) * learnedPositionSizeMult);
@@ -626,8 +635,15 @@ export async function triggerInstantSnipe(mintAddress: string, symbol: string): 
   log(`🚀 INSTANT SNIPE: ${symbol || mintAddress.slice(0, 8)} | Size: ${positionSize.toFixed(4)} SOL`);
   alert('dca_entry', `🚀 INSTANT SNIPE: ${symbol || mintAddress.slice(0, 8)} | ${positionSize.toFixed(4)} SOL`);
 
+  // Migration tokens are too new for DexScreener — use retry + Jupiter fallback
+  const price = await getTokenPriceWithRetry(mintAddress, 4);
+  if (!price || price <= 0) {
+    log(`🚀 SNIPE FAILED: Cannot get price for ${symbol || mintAddress.slice(0, 8)} after retries — skipping`);
+    return;
+  }
+
   recordCoinEntry(mintAddress);
-  await openPosition(`snipe-${Date.now()}`, mintAddress, symbol || mintAddress.slice(0, 8), 'PumpSwap Migration', positionSize, 100, 0);
+  await openPosition(`snipe-${Date.now()}`, mintAddress, symbol || mintAddress.slice(0, 8), 'PumpSwap Migration', positionSize, 100, 0, price);
 }
 
 export async function startAutonomousTrader(opts: {
@@ -921,9 +937,12 @@ async function openPosition(
   budgetSol: number,
   score: number,
   marketCap: number = 0,
+  prefetchedPrice?: number,
 ): Promise<void> {
-  // Get current price from DexScreener
-  const price = await getTokenPrice(mintAddress);
+  // Get current price from DexScreener (or use pre-fetched price for snipes)
+  const price = prefetchedPrice && prefetchedPrice > 0
+    ? prefetchedPrice
+    : await getTokenPrice(mintAddress);
   if (!price || price <= 0) {
     log(`Cannot get price for ${symbol} — skipping`);
     return;
@@ -1327,11 +1346,46 @@ async function getTokenPrice(mintAddress: string): Promise<number> {
 
     if (!res.ok) return 0;
 
-    const data = await res.json() as { pairs?: Array<{ priceUsd?: string }> };
+    const data = await res.json() as { pairs?: Array<{ priceUsd?: string; liquidity?: { usd?: number } }> };
     return parseFloat(data.pairs?.[0]?.priceUsd ?? '0');
   } catch {
     return 0;
   }
+}
+
+/**
+ * Retry getTokenPrice with delays — migration tokens take a bit to appear on DexScreener.
+ * Falls back to Jupiter price quote if DexScreener has no data yet.
+ */
+async function getTokenPriceWithRetry(mintAddress: string, maxRetries: number = 4): Promise<number> {
+  for (let i = 0; i < maxRetries; i++) {
+    const price = await getTokenPrice(mintAddress);
+    if (price > 0) return price;
+    if (i < maxRetries - 1) {
+      log(`Price not available yet for ${mintAddress.slice(0, 8)}... retry ${i + 1}/${maxRetries} in ${(i + 1) * 5}s`);
+      await sleep((i + 1) * 5_000); // 5s, 10s, 15s backoff
+    }
+  }
+
+  // Fallback: try Jupiter quote API for price
+  try {
+    const solPrice = await getSolPrice();
+    const quoteRes = await fetch(
+      `https://quote-api.jup.ag/v6/quote?inputMint=${SOL_MINT}&outputMint=${mintAddress}&amount=100000000&slippageBps=500`,
+      { signal: AbortSignal.timeout(10_000) },
+    );
+    if (quoteRes.ok) {
+      const quote = await quoteRes.json() as { outAmount?: string };
+      const tokensPerSol = Number(quote.outAmount ?? 0) / 1_000_000; // assume 6 decimals
+      if (tokensPerSol > 0) {
+        const priceUsd = solPrice / tokensPerSol;
+        log(`Jupiter fallback price for ${mintAddress.slice(0, 8)}: $${priceUsd.toFixed(10)} (${tokensPerSol.toFixed(0)} tokens/SOL)`);
+        return priceUsd;
+      }
+    }
+  } catch { /* Jupiter quote failed */ }
+
+  return 0;
 }
 
 function alert(type: string, message: string): void {

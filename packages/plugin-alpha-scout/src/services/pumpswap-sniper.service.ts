@@ -21,9 +21,9 @@ const PUMPFUN_PROGRAM_ID = '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P';
 const PUMPSWAP_MIGRATION_PROGRAM = '39azUYFWPz3VHgKCf3VChUwbpURdCHRxjWVowf5jUJjg';
 const RAYDIUM_AMM_PROGRAM = '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8';
 
-// Rate limit: max 1 snipe per 30 seconds to avoid getting rekt
-const MIN_SNIPE_INTERVAL_MS = 30_000;
-const MAX_SNIPES_PER_HOUR = 10;
+// Rate limit: max 1 snipe per 10 seconds (was 30s — too slow for burst migrations)
+const MIN_SNIPE_INTERVAL_MS = 10_000;
+const MAX_SNIPES_PER_HOUR = 15;
 
 // ── Types ──
 

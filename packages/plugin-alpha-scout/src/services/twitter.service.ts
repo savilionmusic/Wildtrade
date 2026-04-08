@@ -10,12 +10,19 @@ export interface KolTweetResult {
 
 // Solana addresses are base58-encoded, typically 32-44 characters
 const SOLANA_MINT_REGEX = /[1-9A-HJ-NP-Za-km-z]{43,44}/g;
+const DEFAULT_DISCOVERY_KEYWORDS = [
+  'pump.fun solana',
+  'solana ca',
+  'solana gem',
+  'raydium migration',
+  'new solana pair',
+];
+const HANDLE_DISCOVERY_CACHE_MS = 10 * 60_000;
 
 function getKolUserIds(): string[] {
   const raw = process.env.TWITTER_KOL_USER_IDS ?? '';
   if (!raw) return [];
-  // We need usernames/handles (without @)
-  return raw.split(',').map((id) => id.trim()).filter(Boolean);
+  return dedupeHandles(raw.split(',').map((id) => normalizeHandle(id)).filter(Boolean));
 }
 
 function getOpenTwitterToken(): string {
@@ -41,12 +48,94 @@ function extractMints(text: string): string[] {
   return [...new Set(matches)]; // Deduplicate
 }
 
+function normalizeHandle(raw: string): string {
+  const cleaned = raw.trim().replace(/^@/, '').replace(/[^A-Za-z0-9_]/g, '');
+  if (!cleaned || cleaned.length > 15) return '';
+  return cleaned;
+}
+
+function dedupeHandles(handles: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const handle of handles) {
+    const key = handle.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(handle);
+  }
+  return out;
+}
+
+function getAutoDiscoveryEnabled(): boolean {
+  const raw = (process.env.TWITTER_AUTO_KOL_DISCOVERY ?? 'true').toLowerCase();
+  return raw !== 'false' && raw !== '0' && raw !== 'no';
+}
+
+function getDiscoveryKeywords(): string[] {
+  const raw = process.env.TWITTER_DISCOVERY_KEYWORDS ?? '';
+  if (!raw) return DEFAULT_DISCOVERY_KEYWORDS;
+  const parsed = raw.split(',').map((x) => x.trim()).filter(Boolean);
+  return parsed.length > 0 ? parsed : DEFAULT_DISCOVERY_KEYWORDS;
+}
+
+function getMinFollowersForDiscovery(): number {
+  const raw = process.env.TWITTER_MIN_FOLLOWERS;
+  const parsed = raw ? parseInt(raw, 10) : NaN;
+  if (!isNaN(parsed) && parsed > 0) return parsed;
+  return 8_000;
+}
+
+function getMaxDiscoveredHandles(): number {
+  const raw = process.env.TWITTER_MAX_DISCOVERED_HANDLES;
+  const parsed = raw ? parseInt(raw, 10) : NaN;
+  if (!isNaN(parsed) && parsed > 0) return Math.min(parsed, 60);
+  return 20;
+}
+
+function asObject(value: unknown): Record<string, unknown> | null {
+  if (typeof value === 'object' && value !== null) return value as Record<string, unknown>;
+  return null;
+}
+
+function toNumber(value: unknown): number {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return 0;
+}
+
+function extractHandleFromTweetRecord(item: Record<string, unknown>): string {
+  const user = asObject(item.user);
+  const candidates: unknown[] = [
+    item.userScreenName,
+    item.screenName,
+    item.username,
+    item.handle,
+    user?.screenName,
+    user?.username,
+    user?.handle,
+    user?.userName,
+  ];
+
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'string') continue;
+    const normalized = normalizeHandle(candidate);
+    if (normalized) return normalized;
+  }
+
+  return '';
+}
+
 let scraper: Scraper | null = null;
 let isLoggingIn = false;
 let isLoggedIn = false;
 let warnedMissingScraperCreds = false;
 let warnedNoHandles = false;
 let loggedBackend: 'none' | 'opentwitter' | 'scraper' = 'none';
+let cachedDiscoveredHandles: string[] = [];
+let discoveredHandlesCachedAt = 0;
 
 async function getClient(): Promise<Scraper | null> {
   if (isLoggedIn && scraper) return scraper;
@@ -88,10 +177,10 @@ async function getClient(): Promise<Scraper | null> {
 const lastSeenTweetIds = new Map<string, string>();
 
 export async function pollKolTimelines(): Promise<KolTweetResult[]> {
-  const handles = getKolUserIds();
+  const handles = await getHandlesForPolling();
   if (handles.length === 0) {
     if (!warnedNoHandles) {
-      console.log('[alpha-scout] No KOL handles configured in TWITTER_KOL_USER_IDS');
+      console.log('[alpha-scout] No KOL handles found. Set TWITTER_KOL_USER_IDS or configure TWITTER_TOKEN for auto discovery.');
       warnedNoHandles = true;
     }
     return [];
@@ -117,6 +206,147 @@ export async function pollKolTimelines(): Promise<KolTweetResult[]> {
   }
 
   return pollViaScraper(handles, api);
+}
+
+async function getHandlesForPolling(): Promise<string[]> {
+  const manual = getKolUserIds();
+  if (manual.length > 0) return manual;
+
+  const token = getOpenTwitterToken();
+  if (!token) return [];
+
+  const watch = await fetchWatchHandles(token);
+  if (!getAutoDiscoveryEnabled()) {
+    return watch.slice(0, getMaxDiscoveredHandles());
+  }
+
+  const discovered = await discoverHandlesViaSearch(token);
+  const merged = dedupeHandles([...watch, ...discovered]);
+
+  if (merged.length > 0) {
+    console.log(`[alpha-scout] Auto-discovered ${merged.length} KOL handles for polling`);
+  }
+
+  return merged.slice(0, getMaxDiscoveredHandles());
+}
+
+async function fetchWatchHandles(token: string): Promise<string[]> {
+  const baseUrl = getOpenTwitterApiBase().replace(/\/$/, '');
+  try {
+    const res = await fetch(`${baseUrl}/open/twitter_watch`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify({}),
+      signal: AbortSignal.timeout(8_000),
+    });
+
+    if (!res.ok) return [];
+
+    const payload = await res.json() as { data?: unknown };
+    const rows = Array.isArray(payload.data) ? payload.data : [];
+    const handles = rows
+      .map((row) => asObject(row))
+      .filter((row): row is Record<string, unknown> => row !== null)
+      .map((row) => extractHandleFromTweetRecord(row))
+      .filter(Boolean);
+
+    return dedupeHandles(handles);
+  } catch {
+    return [];
+  }
+}
+
+async function discoverHandlesViaSearch(token: string): Promise<string[]> {
+  const now = Date.now();
+  if (now - discoveredHandlesCachedAt < HANDLE_DISCOVERY_CACHE_MS && cachedDiscoveredHandles.length > 0) {
+    return cachedDiscoveredHandles;
+  }
+
+  const minFollowers = getMinFollowersForDiscovery();
+  const maxHandles = getMaxDiscoveredHandles();
+  const keywords = getDiscoveryKeywords();
+  const baseUrl = getOpenTwitterApiBase().replace(/\/$/, '');
+  const handleScores = new Map<string, number>();
+
+  for (const keyword of keywords) {
+    try {
+      const res = await fetch(`${baseUrl}/open/twitter_search`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body: JSON.stringify({
+          keywords: keyword,
+          product: 'Latest',
+          maxResults: 40,
+          minLikes: 10,
+          excludeReplies: true,
+          excludeRetweets: true,
+          lang: 'en',
+        }),
+        signal: AbortSignal.timeout(10_000),
+      });
+
+      if (!res.ok) {
+        if (res.status === 401 || res.status === 403) {
+          console.log('[alpha-scout] OpenTwitter token rejected (401/403) during discovery.');
+        }
+        continue;
+      }
+
+      const payload = await res.json() as { data?: unknown };
+      const rows = Array.isArray(payload.data) ? payload.data : [];
+
+      for (const row of rows) {
+        const item = asObject(row);
+        if (!item) continue;
+
+        const handle = extractHandleFromTweetRecord(item);
+        if (!handle) continue;
+
+        const user = asObject(item.user);
+        const followers =
+          toNumber(item.userFollowers) ||
+          toNumber(user?.followersCount) ||
+          toNumber(user?.followers) ||
+          toNumber(user?.userFollowers);
+        if (followers < minFollowers) continue;
+
+        const likes = toNumber(item.favoriteCount) || toNumber(item.likes) || toNumber(item.likeCount);
+        const retweets = toNumber(item.retweetCount) || toNumber(item.retweets);
+        const replies = toNumber(item.replyCount) || toNumber(item.replies);
+        const views = toNumber(item.viewCount) || toNumber(item.views);
+
+        const signalScore =
+          Math.log10(Math.max(10, followers)) * 4 +
+          likes * 0.02 +
+          retweets * 0.08 +
+          replies * 0.03 +
+          Math.min(5, views / 20_000);
+
+        handleScores.set(handle, (handleScores.get(handle) ?? 0) + signalScore);
+      }
+    } catch {
+      // Skip failed keyword query; discovery is best-effort.
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  }
+
+  const discovered = Array.from(handleScores.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, maxHandles)
+    .map(([handle]) => handle);
+
+  cachedDiscoveredHandles = dedupeHandles(discovered);
+  discoveredHandlesCachedAt = now;
+  return cachedDiscoveredHandles;
 }
 
 async function pollViaScraper(handles: string[], api: Scraper): Promise<KolTweetResult[]> {
@@ -169,7 +399,7 @@ async function pollViaScraper(handles: string[], api: Scraper): Promise<KolTweet
   }
 
   if (results.length > 0) {
-    console.log(`[alpha-scout] X poll: found ${results.length} tweets with mint addresses`);
+    console.log(`[alpha-scout] X poll: found ${results.length} tweets with mint addresses from ${handles.length} handles`);
   }
   return results;
 }
@@ -256,7 +486,7 @@ async function pollViaOpenTwitter(handles: string[], token: string): Promise<Kol
   }
 
   if (results.length > 0) {
-    console.log(`[alpha-scout] OpenTwitter poll: found ${results.length} tweets with mint addresses`);
+    console.log(`[alpha-scout] OpenTwitter poll: found ${results.length} tweets with mint addresses from ${handles.length} handles`);
   }
 
   return results;

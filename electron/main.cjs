@@ -429,6 +429,18 @@ function handleBotMessage(msg) {
       message: msg.message,
     });
   }
+
+  if (msg.type === 'bot:restart-request') {
+    // Auditor detected catastrophic loss — graceful restart
+    const reason = msg.reason || 'auditor_request';
+    addLog('info', `[auditor] Restart requested (reason: ${reason}) — restarting bot in 5s...`);
+    sendToRenderer('bot:trade-update', { type: 'audit_restart', message: `Auditor requested restart (${reason}) — restarting...` });
+    stopBot();
+    setTimeout(() => {
+      addLog('info', '[auditor] Restarting bot after auditor-triggered stop...');
+      startBot();
+    }, 8000);
+  }
 }
 
 // ── Fallback: Direct OpenRouter chat (when bot is stopped) ──

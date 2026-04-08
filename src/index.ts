@@ -41,6 +41,18 @@ import {
   resetPaperPortfolio,
   getLessons,
 } from '@wildtrade/plugin-smart-trader';
+import {
+  seedEndpoints,
+  startHealthChecks,
+  stopHealthChecks,
+  startInterval as startReconciler,
+  stopInterval as stopReconciler,
+  startPerformanceAuditor,
+  stopPerformanceAuditor,
+  onAuditReport,
+  startLogWatcher,
+  stopLogWatcher,
+} from '@wildtrade/plugin-self-healer';
 
 const requiredEnvVars = [
   'OPENROUTER_API_KEY',
@@ -144,6 +156,34 @@ async function main(): Promise<void> {
   await trader.initialize();
 
   console.log('[boot] All agents initialized.');
+
+  // Phase 4b: Auditor services — wire up the self-healer so it actually runs
+  console.log('[boot] Starting auditor services...');
+  await seedEndpoints();                // Populate rpc_endpoints table from env vars
+  startHealthChecks();                   // Periodic RPC health pings + auto-rotation
+  startReconciler();                     // Reconcile on-chain balances vs DB every 5 min
+  startLogWatcher(auditor);             // Feed error log lines into auditor evaluator
+  startPerformanceAuditor();            // Generate trade performance reports every 20 min
+  onAuditReport((report) => {
+    const msg = report.summary;
+    sendToParent({ type: 'proactive-alert', alertType: 'audit_report', message: msg });
+    addProactiveAlert('audit_report', msg);
+    sendTelegramAlert('audit_report', msg);
+    broadcast('auditor:report', 'auditor', {
+      winRate: report.winRate,
+      avgPnlPct: report.avgPnlPct,
+      totalTrades: report.totalTrades,
+      catastrophicLoss: report.catastrophicLoss,
+      summary: report.summary,
+      timestamp: report.timestamp,
+    });
+    // If catastrophic loss, request graceful restart via Electron IPC
+    if (report.catastrophicLoss) {
+      console.log('[auditor] Catastrophic loss detected — requesting bot restart via IPC.');
+      sendToParent({ type: 'bot:restart-request', reason: 'catastrophic_loss' });
+    }
+  });
+  console.log('[boot] Auditor services active.');
 
   // Phase 4b: Telegram Notifications
   if (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID) {
@@ -440,6 +480,10 @@ async function main(): Promise<void> {
   const shutdown = async () => {
     console.log('\n[shutdown] Graceful shutdown initiated...');
     clearInterval(heartbeatInterval);
+    stopLogWatcher();
+    stopPerformanceAuditor();
+    stopReconciler();
+    stopHealthChecks();
     stopScanner();
     stopWalletIntelligence();
     stopKolIntelligence();

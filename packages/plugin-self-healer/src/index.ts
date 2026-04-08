@@ -10,6 +10,9 @@ import errorDetectorEvaluator from './evaluators/error-detector.evaluator.js';
 
 export { seedEndpoints, getHealthyEndpoint, reportFailure, forceRotate, getAllEndpoints, startHealthChecks, stopHealthChecks } from './services/rpc-rotator.service.js';
 export { runReconciliation, getLastReconcileAt, startInterval, stopInterval } from './services/reconciler.service.js';
+export { runAudit, startPerformanceAuditor, stopPerformanceAuditor, onAuditReport } from './services/performance-auditor.service.js';
+export type { AuditReport } from './services/performance-auditor.service.js';
+export { startLogWatcher, stopLogWatcher } from './services/log-watcher.service.js';
 export { exponentialBackoff, sleep } from './lib/backoff.js';
 export { checkToken } from './lib/rugcheck-client.js';
 export { isInDenylist, addToDenylist, getDenylist } from './lib/denylist-manager.js';

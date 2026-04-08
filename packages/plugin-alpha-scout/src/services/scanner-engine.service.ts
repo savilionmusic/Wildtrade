@@ -248,56 +248,6 @@ async function pollDexScreenerTrending(): Promise<void> {
     }
   }
 }
-        tokenAddress?: string;
-        description?: string;
-        header?: string;
-      }>;
-
-      let added = 0;
-      for (const p of profiles) {
-        if (p.chainId === 'solana' && p.tokenAddress) {
-          enqueueToken(p.tokenAddress, '', '', 'pumpportal');
-          added++;
-        }
-      }
-
-      if (added > 0) {
-        logCb('info', `DexScreener profiles: found ${added} new Solana tokens`);
-      }
-    }
-  } catch (err) {
-    logCb('error', `DexScreener profiles error: ${String(err)}`);
-  }
-
-  try {
-    // DexScreener boosted tokens (tokens that are hot right now)
-    const boostRes = await fetch('https://api.dexscreener.com/token-boosts/latest/v1', {
-      headers: { 'Accept': 'application/json' },
-    });
-
-    if (boostRes.ok) {
-      const boosts = await boostRes.json() as Array<{
-        chainId?: string;
-        tokenAddress?: string;
-        amount?: number;
-      }>;
-
-      let added = 0;
-      for (const b of boosts) {
-        if (b.chainId === 'solana' && b.tokenAddress) {
-          enqueueToken(b.tokenAddress, '', '', 'pumpportal');
-          added++;
-        }
-      }
-
-      if (added > 0) {
-        logCb('info', `DexScreener boosts: found ${added} boosted Solana tokens`);
-      }
-    }
-  } catch (err) {
-    logCb('error', `DexScreener boosts error: ${String(err)}`);
-  }
-}
 
 // ── Token Processing Pipeline ──
 

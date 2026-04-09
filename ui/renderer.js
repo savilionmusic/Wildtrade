@@ -587,7 +587,11 @@ window.wildtrade.onBotLog(entry => {
   }
   if (msg.includes('[alpha-scout] X/Twitter guest scraper ready') || msg.includes('Using X guest scraper') || msg.includes('twikit Python bridge') || msg.includes('Python Twitter bridge')) {
     const heatmapBox = document.getElementById('intel-heatmap');
-    if (heatmapBox) heatmapBox.textContent = 'twikit scraper active! Polling 20 KOL timelines every 2 min...';
+    if (heatmapBox) heatmapBox.textContent = 'Python Twitter bridge active. Polling 20 KOL timelines every 2 min...';
+  }
+  if (msg.includes('Falling back to Nitter RSS') || msg.includes('Nitter RSS fallback active')) {
+    const heatmapBox = document.getElementById('intel-heatmap');
+    if (heatmapBox) heatmapBox.textContent = 'Twitter auth failed; using no-login Nitter RSS fallback for KOL signals.';
   }
   if (msg.includes('twikit not installed')) {
     const heatmapBox = document.getElementById('intel-heatmap');
@@ -604,7 +608,9 @@ window.wildtrade.onBotLog(entry => {
   if ((msg.includes('[twikit] Login failed') || msg.includes('Login failed:')) && !msg.includes('No Twitter credentials')) {
     const detail = msg.split('Login failed:')[1]?.trim().split('\n')[0] || '';
     const heatmapBox = document.getElementById('intel-heatmap');
-    if (heatmapBox) heatmapBox.textContent = `Twitter login failed — retrying in 30 min.${detail ? '\nError: ' + detail.slice(0, 120) : '\nCheck credentials in Settings.'}`;
+    if (heatmapBox && !heatmapBox.textContent.includes('Nitter RSS fallback')) {
+      heatmapBox.textContent = `Twitter login failed — retrying in 30 min.${detail ? '\nError: ' + detail.slice(0, 120) : '\nCheck credentials in Settings.'}`;
+    }
   }
   if (msg.includes('[twikit] Login failed — pausing')) {
     const heatmapBox = document.getElementById('intel-heatmap');

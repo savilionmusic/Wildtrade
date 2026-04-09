@@ -192,7 +192,7 @@ export async function fetchTwikitTweets(handles: string[]): Promise<TwikitTweet[
           const msg: string = data.error as string;
           console.log(`[twikit] ${msg}${data.hint ? ' — ' + data.hint : ''}`);
           // Detect login failures and start cooldown
-          if (msg.toLowerCase().includes('login failed') || msg.toLowerCase().includes('no twitter credentials')) {
+          if (msg.toLowerCase().includes('login failed')) {
             reportTwikitLoginFailure();
           }
           resolve([]);

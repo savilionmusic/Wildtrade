@@ -217,9 +217,9 @@ export async function pollKolTimelines(): Promise<KolTweetResult[]> {
     return pollViaOpenTwitter(handles, openTwitterToken);
   }
 
-  // Fallback: twikit Python bridge (uses TWITTER_USERNAME/PASSWORD)
+  // Fallback: Python Twitter bridge (twscrape + no-login RSS fallback)
   if (loggedBackend !== 'scraper') {
-    console.log('[alpha-scout] Using twikit Python bridge for KOL polling');
+    console.log('[alpha-scout] Using Python Twitter bridge for KOL polling');
     loggedBackend = 'scraper';
   }
   return pollViaTwikit(handles);

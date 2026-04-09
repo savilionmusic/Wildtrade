@@ -217,32 +217,23 @@ async function getAuthenticatedScraper(): Promise<Scraper | null> {
       const value: string = c.value ?? '';
       if (!name) continue;
 
-      // Build cookie string helper
-      const buildCookie = (domain: string) => {
-        let s = `${name}=${value}`;
-        s += `; Domain=${domain}`;
-        s += `; Path=${c.path ?? '/'}`;
-        if (c.secure) s += '; Secure';
-        if (c.httpOnly) s += '; HttpOnly';
-        if (c.sameSite && c.sameSite !== 'unspecified') {
-          const sameSite = c.sameSite === 'no_restriction' ? 'None' : c.sameSite.charAt(0).toUpperCase() + c.sameSite.slice(1);
-          s += `; SameSite=${sameSite}`;
-        }
-        if (c.expirationDate) {
-          s += `; Expires=${new Date(c.expirationDate * 1000).toUTCString()}`;
-        }
-        return s;
-      };
+      // agent-twitter-client uses twitter.com internally — convert all x.com domains
+      const rawDomain: string = c.domain ?? '.twitter.com';
+      const domain = rawDomain.replace('x.com', 'twitter.com');
 
-      const originalDomain: string = c.domain ?? '.x.com';
-      cookieStrings.push(buildCookie(originalDomain));
-
-      // Duplicate auth cookies for both .x.com and .twitter.com so the library
-      // works regardless of which domain its internal HTTP client targets
-      if (['auth_token', 'ct0', 'kdt', 'att', 'twid'].includes(name)) {
-        const altDomain = originalDomain.includes('twitter.com') ? '.x.com' : '.twitter.com';
-        cookieStrings.push(buildCookie(altDomain));
+      let cookieStr = `${name}=${value}`;
+      cookieStr += `; Domain=${domain}`;
+      cookieStr += `; Path=${c.path ?? '/'}`;
+      if (c.secure) cookieStr += '; Secure';
+      if (c.httpOnly) cookieStr += '; HttpOnly';
+      if (c.sameSite && c.sameSite !== 'unspecified') {
+        const sameSite = c.sameSite === 'no_restriction' ? 'None' : c.sameSite.charAt(0).toUpperCase() + c.sameSite.slice(1);
+        cookieStr += `; SameSite=${sameSite}`;
       }
+      if (c.expirationDate) {
+        cookieStr += `; Expires=${new Date(c.expirationDate * 1000).toUTCString()}`;
+      }
+      cookieStrings.push(cookieStr);
     }
 
     scraper = new Scraper();

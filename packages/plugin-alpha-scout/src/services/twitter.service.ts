@@ -254,7 +254,6 @@ async function pollViaTwikit(handles: string[]): Promise<KolTweetResult[]> {
 
   return results;
 }
-}
 
 async function getHandlesForPolling(): Promise<string[]> {
   const manual = getKolUserIds();

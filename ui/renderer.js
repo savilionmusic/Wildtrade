@@ -564,6 +564,76 @@ window.wildtrade.onBotLog(entry => {
   if (lower.includes('[convergence]') && lower.includes('convergence:')) {
     if (!isDuplicateAlert(msg)) addAlert('smart_money_cluster', msg);
   }
+
+  // --- Alpha Intel Tab Parsers ---
+  if (msg.includes('[META] Current Top Narratives:')) {
+    const narrativesBox = document.getElementById('intel-narratives');
+    if (narrativesBox) {
+      narrativesBox.textContent = msg.split('[META] Current Top Narratives:')[1].trim();
+    }
+  }
+  if (msg.includes('[HEATMAP]')) {
+    const heatmapBox = document.getElementById('intel-heatmap');
+    if (heatmapBox) {
+      const hit = msg.split('[HEATMAP]')[1].trim();
+      let existing = heatmapBox.textContent.replace('Awaiting Intel...', '').trim();
+      // keep last 5 trending tokens in heatmap box
+      let lines = existing.split('\n').filter(Boolean);
+      // if same token hits again, remove old entry so it jumps to top
+      const tokenSymbol = hit.split('velocity')[0]; 
+      lines = lines.filter(l => !l.includes(tokenSymbol));
+      lines.unshift(hit);
+      if (lines.length > 5) lines.pop();
+      heatmapBox.textContent = lines.join('\n');
+    }
+  }
+  if (msg.includes('Tracking top 20 wallets') || msg.includes('[social-scout] Tracking')) {
+    const smartMoneyBox = document.getElementById('intel-smartmoney');
+    if (smartMoneyBox && smartMoneyBox.textContent.includes('Tracking Wallets...')) {
+      smartMoneyBox.textContent = "Monitoring 20 wallets & KOLs for early entries.";
+    }
+  }
+  if (msg.includes('[smart-money] CLUSTER DETECTED:')) {
+    const smartMoneyBox = document.getElementById('intel-smartmoney');
+    if (smartMoneyBox) {
+      const hit = msg.split('DETECTED:')[1].trim();
+      let existing = smartMoneyBox.textContent.replace('Monitoring 20 wallets & KOLs for early entries.', '').replace('Tracking Wallets...', '').trim();
+      let lines = existing.split('\n').filter(Boolean);
+      // prevent exact duplicates
+      lines = lines.filter(l => l !== hit);
+      lines.unshift(hit);
+      if (lines.length > 5) lines.pop();
+      smartMoneyBox.textContent = lines.join('\n');
+    }
+  }
+
+  // Add all intel signals to the Intel specific log viewer
+  if (msg.includes('[HEATMAP]') || msg.includes('[AI NARRATIVE]') || msg.includes('[META]') || msg.includes('[smart-money]') || msg.includes('CLUSTER DETECTED')) {
+    const intelSignals = document.getElementById('intel-signals');
+    if (intelSignals) {
+      // remove the waiting message if it exists
+      if (intelSignals.innerHTML.includes('Waiting for intel data...')) {
+        intelSignals.innerHTML = '';
+      }
+      const entryDiv = document.createElement('div');
+      entryDiv.style.marginBottom = '6px';
+      entryDiv.style.borderBottom = '1px solid #333';
+      entryDiv.style.paddingBottom = '4px';
+      
+      let color = '#ccc';
+      if (msg.includes('[HEATMAP]')) color = '#ff9800';
+      if (msg.includes('[AI NARRATIVE]') || msg.includes('[META]')) color = '#00e5ff';
+      if (msg.includes('[smart-money]') || msg.includes('CLUSTER DETECTED')) color = '#00ff00';
+      
+      entryDiv.innerHTML = `<span style="color: #666">[${new Date().toLocaleTimeString()}]</span> <span style="color: ${color}">${msg}</span>`;
+      intelSignals.prepend(entryDiv);
+      
+      // Cleanup old
+      if (intelSignals.children.length > 200) {
+        intelSignals.removeChild(intelSignals.lastChild);
+      }
+    }
+  }
 });
 
 // ── Portfolio Tab ──

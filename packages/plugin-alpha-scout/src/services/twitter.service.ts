@@ -203,7 +203,7 @@ async function getAuthenticatedScraper(): Promise<Scraper | null> {
   try {
     const cookiesRaw = JSON.parse(cookiesStr);
     const cookies = Array.isArray(cookiesRaw) 
-      ? cookiesRaw.map(c => typeof c === 'string' ? c : `${c.key}=${c.value}`)
+      ? cookiesRaw.map(c => typeof c === 'string' ? c : `${c.key}=${c.value}; Domain=.twitter.com; Path=/`)
       : [];
     scraper = new Scraper();
     await scraper.setCookies(cookies);
@@ -312,7 +312,7 @@ async function getHandlesForPolling(): Promise<string[]> {
   const handles = combined.slice(0, getMaxDiscoveredHandles());
 
   if (handles.length > 0) {
-    console.log(`[alpha-scout] Using Python Twitter bridge with ${handles.length} seeded KOL handles...`);
+    console.log(`[alpha-scout] Loaded ${handles.length} default KOL handles from list...`);
   }
 
   return handles;

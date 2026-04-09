@@ -618,12 +618,12 @@ window.wildtrade.onBotLog(entry => {
       heatmapBox.textContent = 'Twitter login failed — KOL polling paused 30 min. Check credentials in Settings.';
     }
   }
-  if (msg.includes('No TWITTER_TOKEN set – X/Twitter KOL polling disabled')) {
+  if (msg.includes('[alpha-scout] Using Python Twitter bridge with')) {
     const heatmapBox = document.getElementById('intel-heatmap');
-    if (heatmapBox) heatmapBox.textContent = 'No TWITTER_TOKEN set. Add one in Settings to enable KOL heatmap.\nDexScreener social signals are active as fallback.';
-    const narrativesBox = document.getElementById('intel-narratives');
-    if (narrativesBox && narrativesBox.textContent.includes('Awaiting Scan...')) {
-      narrativesBox.textContent = 'DexScreener social signals active. Add TWITTER_TOKEN for full KOL narrative AI.';
+    if (heatmapBox) {
+      if (heatmapBox.textContent.includes('Awaiting Intel...')) {
+        heatmapBox.textContent = 'Python Twitter bridge active. Polling 20 KOL timelines every 2 min...';
+      }
     }
   }
   if (msg.includes('[alpha-scout] WARNING: TWITTER_USERNAME')) {

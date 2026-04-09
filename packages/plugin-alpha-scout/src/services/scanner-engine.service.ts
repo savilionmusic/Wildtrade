@@ -28,6 +28,7 @@ import type { AgentRuntime } from '@elizaos/core';
 import { calculateCompositeScore } from '../lib/score-calculator.js';
 import { isInDenylist } from '../lib/denylist-guard.js';
 import { connect as connectPumpPortal, disconnect as disconnectPumpPortal, onMigration as onPumpMigration } from './pumpportal.service.js';
+import { getMentionVelocity } from './twitter.service.js';
 import type { PumpPortalToken } from './pumpportal.service.js';
 import { getKolSignals } from './kol-intelligence.service.js';
 import { isGoldKol } from './kol-scraper.service.js';
@@ -190,11 +191,13 @@ export function enqueueToken(
   source: SignalSource,
   creator?: string,
 ): void {
-  // Skip if recently processed (within last 30 min)
-  if (recentlyProcessed.has(mint)) return;
+  const isHighVelocity = getMentionVelocity(mint) >= 3;
 
-  // Skip if already in queue
-  if (tokenQueue.find(t => t.mint === mint)) return;
+  // Skip if recently processed (within last 30 min) unless high velocity
+  if (!isHighVelocity && recentlyProcessed.has(mint)) return;
+
+  // Skip if already in queue unless high velocity
+  if (!isHighVelocity && tokenQueue.find(t => t.mint === mint)) return;
 
   // Trim queue if too large
   if (tokenQueue.length >= MAX_QUEUE_SIZE) {
@@ -499,6 +502,7 @@ async function processToken(token: {
   // 4. Score with all signals — enrich with social + whale data
   // Look up KOL/social mentions for this mint
   let kolMentions = 0;
+  let hasGoldKol = false;
   try {
     const kolSignals = getKolSignals();
     const fiveMinAgo = Date.now() - 300_000;
@@ -512,6 +516,11 @@ async function processToken(token: {
     if (twitterKolCount > 0) {
       kolMentions += twitterKolCount * 2; // Twitter KOL mentions count double
     }
+    
+    // Check for Gold Tier KOL mentions
+    hasGoldKol = kolSignals.some(
+      s => s.tokenMint === mint && s.kolName && isGoldKol(s.kolName) && s.source === 'twitter_kol'
+    );
   } catch { /* no KOL data available */ }
 
   // Look up smart money buys for this mint (GMGN + Wallet Intel + Helius)
@@ -582,7 +591,11 @@ async function processToken(token: {
   }
 
   // Social/KOL signal bonus — reward tokens with social backing
-  if (kolMentions >= 2) {
+  if (hasGoldKol) {
+    score.total = Math.min(100, score.total + 20);
+    if (score.total >= 65) score.conviction = 'high';
+    logCb('info', `${token.symbol || mint.slice(0, 8)}: GOLD KOL MENTION — +20 bonus`);
+  } else if (kolMentions >= 2) {
     score.total = Math.min(100, score.total + 8);
     logCb('info', `${token.symbol || mint.slice(0, 8)}: SOCIAL BONUS +8 (${kolMentions} KOL mentions)`);
   } else if (kolMentions === 1) {

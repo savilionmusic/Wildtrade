@@ -7,6 +7,35 @@ export interface KolTweetResult {
   tweetUrl: string;
   mints: string[];
   timestamp: number;
+  mentionVelocity?: number;
+}
+
+const mentionFrequency = new Map<string, { count: number; timestamps: number[] }>();
+
+export function trackMentionVelocity(mint: string): number {
+  const freq = mentionFrequency.get(mint) ?? { count: 0, timestamps: [] };
+  freq.timestamps.push(Date.now());
+  // Keep only last 1 hour of mentions
+  freq.timestamps = freq.timestamps.filter(t => Date.now() - t < 3_600_000);
+  freq.count = freq.timestamps.length;
+  mentionFrequency.set(mint, freq);
+  
+  // Heatmap intensity: total mentions in last hour
+  const durationMin = 60; 
+  const mentionsPerMin = freq.count / durationMin;
+  
+  if (freq.count > 1) {
+     console.log(`[HEATMAP] Token ${mint} velocity: ${mentionsPerMin.toFixed(2)} mentions/min (total: ${freq.count}) - Heating up!`);
+  }
+  
+  return freq.count;
+}
+
+export function getMentionVelocity(mint: string): number {
+  const freq = mentionFrequency.get(mint);
+  if (!freq) return 0;
+  freq.timestamps = freq.timestamps.filter(t => Date.now() - t < 3_600_000);
+  return freq.timestamps.length;
 }
 
 // Solana addresses are base58-encoded, typically 32-44 characters
@@ -380,6 +409,12 @@ async function pollViaScraper(handles: string[], api: Scraper): Promise<KolTweet
 
         const mints = extractMints(tweet.text);
         if (mints.length === 0) continue;
+        
+        let maxVelocity = 0;
+        for (const mint of mints) {
+          const vel = trackMentionVelocity(mint);
+          if (vel > maxVelocity) maxVelocity = vel;
+        }
 
         const tweetUrl = `https://x.com/${handle}/status/${tweet.id}`;
         const timestamp = tweet.timestamp
@@ -392,17 +427,18 @@ async function pollViaScraper(handles: string[], api: Scraper): Promise<KolTweet
           tweetUrl,
           mints,
           timestamp,
+          mentionVelocity: maxVelocity,
         });
       }
     } catch (err) {
-      console.log(`[alpha-scout] X poll error for @${handle}: ${String(err)}`);
+      console.log(`[SCRAPER] X poll error for @${handle}: ${String(err)}`);
     }
   }
 
   if (results.length > 0) {
-    console.log(`[social-scout] X poll: found ${results.length} tweets with mint addresses from ${handles.length} handles`);
+    console.log(`[SCRAPER] X poll: found ${results.length} tweets with mint addresses from ${handles.length} handles`);
   } else {
-    // console.log(`[social-scout] Polled ${handles.length} KOL handles directly. Found 0 new tokens.`);
+    // console.log(`[SCRAPER] Polled ${handles.length} KOL handles directly. Found 0 new tokens.`);
   }
   return results;
 }
@@ -470,6 +506,12 @@ async function pollViaOpenTwitter(handles: string[], token: string): Promise<Kol
         const mints = extractMints(text);
         if (mints.length === 0) continue;
 
+        let maxVelocity = 0;
+        for (const mint of mints) {
+          const vel = trackMentionVelocity(mint);
+          if (vel > maxVelocity) maxVelocity = vel;
+        }
+
         const tweetUrl = tweet.url || `https://x.com/${handle}/status/${tweetId}`;
         const timestampRaw = tweet.createdAt ?? tweet.created_at;
         const timestamp = timestampRaw ? new Date(timestampRaw).getTime() : Date.now();
@@ -480,6 +522,7 @@ async function pollViaOpenTwitter(handles: string[], token: string): Promise<Kol
           tweetUrl,
           mints,
           timestamp: Number.isFinite(timestamp) ? timestamp : Date.now(),
+          mentionVelocity: maxVelocity,
         });
       }
     } catch (err) {

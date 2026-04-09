@@ -16,6 +16,7 @@ import {
   type GmgnWalletTrade,
   type GmgnTokenInfo,
 } from './gmgn.service.js';
+import { getMentionVelocity } from './twitter.service.js';
 
 // ── Types ──
 
@@ -359,10 +360,13 @@ function detectClusters(): void {
     const walletCount = uniqueWallets.size;
     if (walletCount < CONFIG.MIN_CLUSTER_SIZE) continue;
 
+    // Heatmap Velocity bypass
+    const isHighVelocity = getMentionVelocity(tokenAddress) >= 3;
+
     // Generate signal key (token + hour window to avoid spam)
     const hourKey = Math.floor(Date.now() / 3_600_000);
     const signalKey = `${tokenAddress}:${hourKey}`;
-    if (emittedSignals.has(signalKey)) continue;
+    if (!isHighVelocity && emittedSignals.has(signalKey)) continue;
 
     // Calculate confidence — enhanced with SOL invested weighting
     let confidence: SmartMoneySignal['confidence'];

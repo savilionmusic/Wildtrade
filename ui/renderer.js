@@ -512,6 +512,7 @@ const ACTIONABLE_TYPES = new Set([
   'signal_forwarded',
   'dca_entry', 'exit', 'position_opened', 'position_closed',
   'safety_alert', 'smart_money_cluster',
+  'kol_signal', 'smart_money_alert', 'wallet_intel', 'kol_intel',
 ]);
 
 // Deduplicate alerts — same message within 10s = skip

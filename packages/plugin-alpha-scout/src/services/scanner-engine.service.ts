@@ -29,6 +29,7 @@ import { calculateCompositeScore } from '../lib/score-calculator.js';
 import { isInDenylist } from '../lib/denylist-guard.js';
 import { connect as connectPumpPortal, disconnect as disconnectPumpPortal, onMigration as onPumpMigration } from './pumpportal.service.js';
 import { getMentionVelocity } from './twitter.service.js';
+import { getCachedNarrative, getTopNarratives } from './narrative-detector.service.js';
 import type { PumpPortalToken } from './pumpportal.service.js';
 import { getKolSignals } from './kol-intelligence.service.js';
 import { isGoldKol } from './kol-scraper.service.js';
@@ -563,6 +564,18 @@ async function processToken(token: {
   });
 
   // ── Token age bonus (reduced — prevent FOMO inflation) ──
+  
+  // AI Narrative Hype Bonus
+  const aiState = getCachedNarrative(mint);
+  if (aiState && !aiState.isSpam && aiState.hypeScore >= 7) {
+      const isTopMeta = getTopNarratives().includes(aiState.narrative.toLowerCase());
+      if (isTopMeta) {
+         score.total = Math.min(100, score.total + 15);
+         if (score.total >= 65) score.conviction = 'high';
+         logCb('info', `${token.symbol || mint.slice(0, 8)}: AI NARRATIVE BONUS +15 (Meta: '${aiState.narrative}', Hype: ${aiState.hypeScore})`);
+      }
+  }
+
   if (tokenAgeMinutes >= 0 && tokenAgeMinutes <= 5 && market.liquidity > 3000) {
     // Very early (< 5 min) — moderate bonus only
     score.total = Math.min(100, score.total + 5);

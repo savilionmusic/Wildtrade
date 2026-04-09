@@ -1340,15 +1340,34 @@ async function checkPricesAndExits(): Promise<void> {
         trailingStop = 0.95;  // Lock in max 5% loss
       }
 
-      // ── Stop loss (or trailing stop) ──
+      // Context-Aware Stop-Loss Overhaul
+      // If we are at the edge of getting stopped out (or below), check momentum to survive dips
       if (multiplier <= trailingStop) {
-        const reason = trailingStop > STOP_LOSS_MULTIPLIER
-          ? `trailing_stop (${multiplier.toFixed(2)}x, trail from ${hwm.toFixed(2)}x peak)`
-          : `stop_loss (${multiplier.toFixed(2)}x)`;
-        log(`${reason.toUpperCase()} triggered for ${position.symbol}`);
-        await executeSell(position, 1.0, reason);
-        position.status = 'stopped_out';
-        continue;
+        // Fetch fresh volume data
+        const market = await getMarketData(position.mint);
+        
+        const isHighVolumeDump = market.volume1h > 50000 && multiplier < 0.6; // Heavy dumping
+        const isHealthyDip = market.volume1h > 100000 && multiplier > 0.55 && hwm < 1.5; // Big volume + price holding around -40%
+        
+        let dynamicStop = trailingStop;
+
+        if (isHealthyDip && trailingStop === STOP_LOSS_MULTIPLIER) {
+          dynamicStop = 0.55; // Widen stop to -45% to survive healthy dip
+          log(`[SMART EXIT] ${position.symbol} hit -30% but volume is surging ($${market.volume1h}/hr). Widening stop to -45% to survive dip.`);
+        } else if (isHighVolumeDump && hwm > 1.2) {
+          dynamicStop = Math.max(trailingStop, multiplier + 0.1); // tighten stop instantly
+          log(`[SMART EXIT] ${position.symbol} momentum dying rapidly. Tightening exit.`);
+        }
+
+        if (multiplier <= dynamicStop) {
+          const reason = dynamicStop > STOP_LOSS_MULTIPLIER
+            ? `trailing_stop (${multiplier.toFixed(2)}x, trail from ${hwm.toFixed(2)}x peak)`
+            : `smart_stop_loss (${multiplier.toFixed(2)}x)`;
+          log(`${reason.toUpperCase()} triggered for ${position.symbol}`);
+          await executeSell(position, 1.0, reason);
+          position.status = 'stopped_out';
+          continue;
+        }
       }
 
       // ── Momentum exit: cut losers at -25% after 30 min (not 60) ──
@@ -1435,20 +1454,31 @@ async function getSolPrice(): Promise<number> {
   return cachedSolPrice || 150; // Fallback estimate
 }
 
-async function getTokenPrice(mintAddress: string): Promise<number> {
+async function getMarketData(mintAddress: string): Promise<{ price: number, volume1h: number, liquidity: number }> {
   try {
     const res = await fetch(
       `https://api.dexscreener.com/latest/dex/tokens/${mintAddress}`,
       { headers: { 'Accept': 'application/json' } },
     );
 
-    if (!res.ok) return 0;
+    if (!res.ok) return { price: 0, volume1h: 0, liquidity: 0 };
 
-    const data = await res.json() as { pairs?: Array<{ priceUsd?: string; liquidity?: { usd?: number } }> };
-    return parseFloat(data.pairs?.[0]?.priceUsd ?? '0');
+    const data = await res.json() as any;
+    const pair = data.pairs?.[0];
+    if (!pair) return { price: 0, volume1h: 0, liquidity: 0 };
+    return {
+      price: parseFloat(pair.priceUsd ?? '0'),
+      volume1h: parseFloat(pair.volume?.h1 ?? '0'),
+      liquidity: parseFloat(pair.liquidity?.usd ?? '0')
+    };
   } catch {
-    return 0;
+    return { price: 0, volume1h: 0, liquidity: 0 };
   }
+}
+
+async function getTokenPrice(mintAddress: string): Promise<number> {
+  const d = await getMarketData(mintAddress);
+  return d.price;
 }
 
 /**

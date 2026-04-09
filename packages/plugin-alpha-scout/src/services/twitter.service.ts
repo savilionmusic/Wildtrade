@@ -1,5 +1,6 @@
 import { Scraper } from 'agent-twitter-client';
 import { isGoldKol } from './kol-scraper.service.js';
+import { detectNarrative, cacheNarrativeResult } from './narrative-detector.service.js';
 
 export interface KolTweetResult {
   userId: string;
@@ -7,16 +8,21 @@ export interface KolTweetResult {
   tweetUrl: string;
   mints: string[];
   timestamp: number;
-  mentionVelocity?: number;
+  text?: string;
 }
 
-const mentionFrequency = new Map<string, { count: number; timestamps: number[] }>();
+const mentionFrequency = new Map<string, { count: number; timestamps: number[]; texts: string[] }>();
 
-export function trackMentionVelocity(mint: string): number {
-  const freq = mentionFrequency.get(mint) ?? { count: 0, timestamps: [] };
+export function trackMentionVelocity(mint: string, text: string): number {
+  const freq = mentionFrequency.get(mint) ?? { count: 0, timestamps: [], texts: [] };
   freq.timestamps.push(Date.now());
+  freq.texts.push(text);
+  
   // Keep only last 1 hour of mentions
-  freq.timestamps = freq.timestamps.filter(t => Date.now() - t < 3_600_000);
+  const cutoff = Date.now() - 3_600_000;
+  const keep = freq.timestamps.map((t, idx) => ({ t, idx })).filter(x => x.t > cutoff);
+  freq.timestamps = keep.map(x => x.t);
+  freq.texts = keep.map(x => freq.texts[x.idx]);
   freq.count = freq.timestamps.length;
   mentionFrequency.set(mint, freq);
   
@@ -26,6 +32,10 @@ export function trackMentionVelocity(mint: string): number {
   
   if (freq.count > 1) {
      console.log(`[HEATMAP] Token ${mint} velocity: ${mentionsPerMin.toFixed(2)} mentions/min (total: ${freq.count}) - Heating up!`);
+     // Trigger Narrative Detector if >= 2
+     detectNarrative(mint, freq.texts).then(res => {
+         if (res) cacheNarrativeResult(mint, res);
+     }).catch(() => {});
   }
   
   return freq.count;
@@ -412,7 +422,7 @@ async function pollViaScraper(handles: string[], api: Scraper): Promise<KolTweet
         
         let maxVelocity = 0;
         for (const mint of mints) {
-          const vel = trackMentionVelocity(mint);
+          const vel = trackMentionVelocity(mint, tweet.text);
           if (vel > maxVelocity) maxVelocity = vel;
         }
 
@@ -427,7 +437,7 @@ async function pollViaScraper(handles: string[], api: Scraper): Promise<KolTweet
           tweetUrl,
           mints,
           timestamp,
-          mentionVelocity: maxVelocity,
+          text: tweet.text,
         });
       }
     } catch (err) {
@@ -508,7 +518,7 @@ async function pollViaOpenTwitter(handles: string[], token: string): Promise<Kol
 
         let maxVelocity = 0;
         for (const mint of mints) {
-          const vel = trackMentionVelocity(mint);
+          const vel = trackMentionVelocity(mint, text);
           if (vel > maxVelocity) maxVelocity = vel;
         }
 
@@ -522,7 +532,7 @@ async function pollViaOpenTwitter(handles: string[], token: string): Promise<Kol
           tweetUrl,
           mints,
           timestamp: Number.isFinite(timestamp) ? timestamp : Date.now(),
-          mentionVelocity: maxVelocity,
+          text,
         });
       }
     } catch (err) {

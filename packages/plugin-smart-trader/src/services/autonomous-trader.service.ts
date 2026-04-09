@@ -1688,7 +1688,7 @@ async function restoreState(): Promise<void> {
         tokenBalance: Number(row.token_balance ?? 0),
         solDeployed: Number(row.sol_deployed ?? 0),
         solReturned: Number(row.sol_returned ?? 0),
-        dcaLegsExecuted: 3, // Assume completed on restore
+        dcaLegsExecuted: 0, // Fallback to 0 if not tracked natively
         exitTiersHit: 0,
         openedAt: Number(row.opened_at ?? Date.now()),
         closedAt: row.closed_at ? Number(row.closed_at) : null,
@@ -1696,7 +1696,8 @@ async function restoreState(): Promise<void> {
         pnlPct: Number(row.pnl_pct ?? 0),
         paper: Number(row.paper ?? 1) === 1,
         marketCap: Number(row.entry_mcap ?? 0),
-        entryScore: 0,
+        entryScore: Number(row.entry_score ?? 0),
+        highWaterMark: 1.0, // Default for graduated trailing stop tracking
       };
       positions.set(p.id, p);
     }

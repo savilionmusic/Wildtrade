@@ -375,6 +375,9 @@ function addLogEntry(entry) {
   logs.push(logObj);
   if (logs.length > 500) logs.shift();
 
+  // Update Twitter status badge based on log content
+  checkLogForTwitterStatus(msg);
+
   const line = createLogLine(logObj);
 
   const container = document.getElementById('log-container');
@@ -415,6 +418,71 @@ function linkifyAlertText(text) {
     return match;
   });
   return html;
+}
+
+// ── Twitter status indicator ──
+const TWITTER_STATUS = {
+  dot: null,
+  text: null,
+  lastActivity: 0,
+};
+
+function initTwitterStatus() {
+  TWITTER_STATUS.dot = document.getElementById('twitter-status-dot');
+  TWITTER_STATUS.text = document.getElementById('twitter-status-text');
+}
+
+function setTwitterStatus(color, label) {
+  if (!TWITTER_STATUS.dot) initTwitterStatus();
+  if (!TWITTER_STATUS.dot) return;
+  TWITTER_STATUS.dot.style.background = color;
+  TWITTER_STATUS.text.textContent = label;
+}
+
+function checkLogForTwitterStatus(msg) {
+  if (!msg) return;
+  const m = msg.toLowerCase();
+  // Authenticated cookie / twscrape success
+  if (m.includes('x/twitter scraper initialized') || m.includes('cookie auth') || m.includes('twscrape')) {
+    setTwitterStatus('#22c55e', 'Cookie Auth Active');
+    TWITTER_STATUS.lastActivity = Date.now();
+    return;
+  }
+  // ntscraper / Nitter fallback active and got data
+  if (m.includes('nitter fallback active') || m.includes('nitter rss fallback active')) {
+    setTwitterStatus('#f59e0b', 'Nitter Fallback Active');
+    TWITTER_STATUS.lastActivity = Date.now();
+    return;
+  }
+  // Got tweets via twikit
+  if (m.includes('[twikit] fetched') && m.includes('tweets')) {
+    setTwitterStatus('#22c55e', 'Fetching KOL Tweets');
+    TWITTER_STATUS.lastActivity = Date.now();
+    return;
+  }
+  // Python bridge running — found Nitter data
+  if (m.includes('kol-intel') && m.includes('token mention')) {
+    if (Date.now() - TWITTER_STATUS.lastActivity > 10_000) {
+      setTwitterStatus('#22c55e', 'KOL Signal Received');
+      TWITTER_STATUS.lastActivity = Date.now();
+    }
+    return;
+  }
+  // All Nitter instances failed
+  if (m.includes('all twitter paths failed') || m.includes('all nitter instances failed')) {
+    setTwitterStatus('#ef4444', 'No Source Available');
+    return;
+  }
+  // Cookie rejected
+  if (m.includes('cookie session rejected') || m.includes('401') || m.includes('403')) {
+    setTwitterStatus('#ef4444', 'Cookie Rejected (401)');
+    return;
+  }
+  // Python bridge fell back, nitter attempting
+  if (m.includes('nitter rss') || m.includes('nitter fallback')) {
+    setTwitterStatus('#f59e0b', 'Trying Nitter...');
+    return;
+  }
 }
 
 // ── Bot status indicator ──

@@ -50,10 +50,10 @@ async function ensureVenvWithTwikit(): Promise<string | null> {
   const venvPython = getVenvPython();
   const venvDir = getVenvDir();
 
-  // If venv python exists and twikit is already installed, we're done
+  // If venv python exists and twscrape is already installed, we're done
   if (fs.existsSync(venvPython)) {
     const installed = await new Promise<boolean>((resolve) => {
-      const proc = spawn(venvPython, ['-c', 'import twikit'], { stdio: 'ignore' });
+      const proc = spawn(venvPython, ['-c', 'import twscrape'], { stdio: 'ignore' });
       proc.on('error', () => resolve(false));
       proc.on('close', (code) => resolve(code === 0));
     });
@@ -83,12 +83,12 @@ async function ensureVenvWithTwikit(): Promise<string | null> {
     return null;
   }
 
-  console.log('[twikit] Installing twikit into virtual environment (one-time, ~10 seconds)...');
+  console.log('[twikit] Installing twscrape into virtual environment (one-time, ~10 seconds)...');
 
-  // Install twikit into venv
+  // Install twscrape — more reliable than twikit on Python 3.14
   const venvPip = path.join(venvDir, 'bin', 'pip3');
   const installed = await new Promise<boolean>((resolve) => {
-    const proc = spawn(venvPip, ['install', 'twikit', '--quiet'], { stdio: 'pipe' });
+    const proc = spawn(venvPip, ['install', 'twscrape', '--quiet'], { stdio: 'pipe' });
     let stderr = '';
     proc.stderr?.on('data', (d: Buffer) => { stderr += d.toString(); });
     proc.on('error', () => resolve(false));
@@ -99,11 +99,11 @@ async function ensureVenvWithTwikit(): Promise<string | null> {
   });
 
   if (!installed) {
-    console.log('[twikit] Failed to install twikit. KOL Twitter polling disabled.');
+    console.log('[twikit] Failed to install twscrape. KOL Twitter polling disabled.');
     return null;
   }
 
-  console.log('[twikit] twikit installed successfully in .twikit-venv!');
+  console.log('[twikit] twscrape installed successfully in .twikit-venv!');
   return venvPython;
 }
 
@@ -117,13 +117,13 @@ async function getPythonWithTwikit(): Promise<string | null> {
     return venvPython;
   }
 
-  // Fallback: system python with twikit already installed
+  // Fallback: system python with twscrape already installed
   if (!twikitChecked) {
     twikitChecked = true;
     const systemPython = await findSystemPython();
     if (systemPython) {
       twikitAvailable = await new Promise<boolean>((resolve) => {
-        const proc = spawn(systemPython, ['-c', 'import twikit'], { stdio: 'ignore' });
+        const proc = spawn(systemPython, ['-c', 'import twscrape'], { stdio: 'ignore' });
         proc.on('error', () => resolve(false));
         proc.on('close', (code) => resolve(code === 0));
       });

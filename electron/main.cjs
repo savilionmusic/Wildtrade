@@ -51,7 +51,7 @@ function withTwitterEnvOverrides(config) {
 
   // Prefer project .env credentials to avoid stale/blank Settings cache issues.
   const merged = { ...config };
-  for (const key of ['TWITTER_USERNAME', 'TWITTER_PASSWORD', 'TWITTER_EMAIL', 'TWITTER_TOKEN']) {
+  for (const key of ['TWITTER_USERNAME', 'TWITTER_PASSWORD', 'TWITTER_EMAIL', 'TWITTER_TOKEN', 'TWITTER_COOKIES']) {
     if (typeof envFromFile[key] === 'string' && envFromFile[key].trim() !== '') {
       merged[key] = envFromFile[key];
     }
@@ -102,6 +102,7 @@ function writeEnvFile(config) {
     `TWITTER_PASSWORD=${config.TWITTER_PASSWORD || ''}`,
     `TWITTER_EMAIL=${config.TWITTER_EMAIL || ''}`,
     `TWITTER_TOKEN=${config.TWITTER_TOKEN || ''}`,
+    `TWITTER_COOKIES=${config.TWITTER_COOKIES || ''}`,
     `TWITTER_API_BASE=${config.TWITTER_API_BASE || 'https://ai.6551.io'}`,
     `TWITTER_AUTO_KOL_DISCOVERY=${config.TWITTER_AUTO_KOL_DISCOVERY || 'true'}`,
     `TWITTER_DISCOVERY_KEYWORDS=${config.TWITTER_DISCOVERY_KEYWORDS || 'pump.fun solana,solana ca,solana gem,raydium migration,new solana pair'}`,

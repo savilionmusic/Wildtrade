@@ -193,6 +193,25 @@ function getGuestScraper(): Scraper {
   return scraper;
 }
 
+// Returns an authenticated scraper using TWITTER_COOKIES
+async function getAuthenticatedScraper(): Promise<Scraper | null> {
+  if (scraper) return scraper;
+  
+  const cookiesStr = process.env.TWITTER_COOKIES;
+  if (!cookiesStr) return null;
+  
+  try {
+    const cookies = JSON.parse(cookiesStr);
+    scraper = new Scraper();
+    await scraper.setCookies(cookies);
+    console.log('[alpha-scout] X/Twitter scraper initialized with cookies.');
+    return scraper;
+  } catch (err) {
+    console.log('[alpha-scout] Failed to parse TWITTER_COOKIES JSON:', String(err));
+    return null;
+  }
+}
+
 // Track the last seen tweet ID per user to avoid duplicates
 const lastSeenTweetIds = new Map<string, string>();
 
@@ -217,10 +236,19 @@ export async function pollKolTimelines(): Promise<KolTweetResult[]> {
     return pollViaOpenTwitter(handles, openTwitterToken);
   }
 
+  const authenticatedScraper = await getAuthenticatedScraper();
+  if (authenticatedScraper) {
+    if (loggedBackend !== 'scraper') {
+      console.log('[alpha-scout] Using agent-twitter-client with Cookies for KOL polling');
+      loggedBackend = 'scraper';
+    }
+    return pollViaScraper(handles, authenticatedScraper);
+  }
+
   // Fallback: Python Twitter bridge (twscrape + no-login RSS fallback)
-  if (loggedBackend !== 'scraper') {
+  if (loggedBackend !== 'none') {
     console.log('[alpha-scout] Using Python Twitter bridge for KOL polling');
-    loggedBackend = 'scraper';
+    loggedBackend = 'none';
   }
   return pollViaTwikit(handles);
 }

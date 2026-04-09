@@ -217,22 +217,32 @@ async function getAuthenticatedScraper(): Promise<Scraper | null> {
       const value: string = c.value ?? '';
       if (!name) continue;
 
-      // Build a proper cookie string with all metadata
-      let cookieStr = `${name}=${value}`;
-      // Use both .twitter.com and .x.com to ensure agent-twitter-client accepts it
-      const domain = (c.domain ?? '.twitter.com').replace(/^\.x\.com$/, '.twitter.com');
-      cookieStr += `; Domain=${domain}`;
-      cookieStr += `; Path=${c.path ?? '/'}`;
-      if (c.secure) cookieStr += '; Secure';
-      if (c.httpOnly) cookieStr += '; HttpOnly';
-      if (c.sameSite && c.sameSite !== 'unspecified') {
-        const sameSite = c.sameSite === 'no_restriction' ? 'None' : c.sameSite.charAt(0).toUpperCase() + c.sameSite.slice(1);
-        cookieStr += `; SameSite=${sameSite}`;
+      // Build cookie string helper
+      const buildCookie = (domain: string) => {
+        let s = `${name}=${value}`;
+        s += `; Domain=${domain}`;
+        s += `; Path=${c.path ?? '/'}`;
+        if (c.secure) s += '; Secure';
+        if (c.httpOnly) s += '; HttpOnly';
+        if (c.sameSite && c.sameSite !== 'unspecified') {
+          const sameSite = c.sameSite === 'no_restriction' ? 'None' : c.sameSite.charAt(0).toUpperCase() + c.sameSite.slice(1);
+          s += `; SameSite=${sameSite}`;
+        }
+        if (c.expirationDate) {
+          s += `; Expires=${new Date(c.expirationDate * 1000).toUTCString()}`;
+        }
+        return s;
+      };
+
+      const originalDomain: string = c.domain ?? '.x.com';
+      cookieStrings.push(buildCookie(originalDomain));
+
+      // Duplicate auth cookies for both .x.com and .twitter.com so the library
+      // works regardless of which domain its internal HTTP client targets
+      if (['auth_token', 'ct0', 'kdt', 'att', 'twid'].includes(name)) {
+        const altDomain = originalDomain.includes('twitter.com') ? '.x.com' : '.twitter.com';
+        cookieStrings.push(buildCookie(altDomain));
       }
-      if (c.expirationDate) {
-        cookieStr += `; Expires=${new Date(c.expirationDate * 1000).toUTCString()}`;
-      }
-      cookieStrings.push(cookieStr);
     }
 
     scraper = new Scraper();
@@ -521,9 +531,15 @@ async function pollViaScraper(handles: string[], api: Scraper): Promise<KolTweet
       }
     } catch (err) {
       const errStr = String(err);
-      if (errStr.includes('401') || errStr.includes('403')) {
-        console.log(`[SCRAPER] Cookie session rejected by X (${errStr.includes('401') ? '401' : '403'}) — cookies may be expired. Re-enter them in Settings.`);
-        scraper = null; // reset so next poll re-initialises with any updated cookies
+      const statusMatch = errStr.match(/\b(401|403|404)\b/);
+      if (statusMatch) {
+        const code = statusMatch[1];
+        if (code === '404') {
+          console.log(`[SCRAPER] X API endpoint not found (404) — agent-twitter-client may be outdated. Falling back to Python bridge.`);
+        } else {
+          console.log(`[SCRAPER] Cookie session rejected by X (${code}) — cookies may be expired. Re-enter them in Settings.`);
+        }
+        scraper = null; // reset so next poll re-initialises
         break;
       }
       console.log(`[SCRAPER] X poll error for @${handle}: ${errStr}`);

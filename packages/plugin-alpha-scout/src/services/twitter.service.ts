@@ -189,7 +189,9 @@ async function getClient(): Promise<Scraper | null> {
   if (isLoggedIn && scraper) return scraper;
   if (isLoggingIn) return null; // Wait for next tick if already trying
 
-  const username = process.env.TWITTER_USERNAME;
+  // Strip any leading @ the user may have accidentally typed in Settings
+  const rawUsername = process.env.TWITTER_USERNAME ?? '';
+  const username = rawUsername.replace(/^@+/, '');
   const password = process.env.TWITTER_PASSWORD;
   const email = process.env.TWITTER_EMAIL;
 

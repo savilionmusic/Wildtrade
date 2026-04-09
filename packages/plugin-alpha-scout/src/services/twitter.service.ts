@@ -201,7 +201,10 @@ async function getAuthenticatedScraper(): Promise<Scraper | null> {
   if (!cookiesStr) return null;
   
   try {
-    const cookies = JSON.parse(cookiesStr);
+    const cookiesRaw = JSON.parse(cookiesStr);
+    const cookies = Array.isArray(cookiesRaw) 
+      ? cookiesRaw.map(c => typeof c === 'string' ? c : `${c.key}=${c.value}`)
+      : [];
     scraper = new Scraper();
     await scraper.setCookies(cookies);
     console.log('[alpha-scout] X/Twitter scraper initialized with cookies.');

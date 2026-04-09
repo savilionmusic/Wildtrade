@@ -177,50 +177,19 @@ function extractHandleFromTweetRecord(item: Record<string, unknown>): string {
 }
 
 let scraper: Scraper | null = null;
-let isLoggingIn = false;
-let isLoggedIn = false;
 let warnedMissingScraperCreds = false;
 let warnedNoHandles = false;
 let loggedBackend: 'none' | 'opentwitter' | 'scraper' = 'none';
 let cachedDiscoveredHandles: string[] = [];
 let discoveredHandlesCachedAt = 0;
 
-async function getClient(): Promise<Scraper | null> {
-  if (isLoggedIn && scraper) return scraper;
-  if (isLoggingIn) return null; // Wait for next tick if already trying
-
-  // Strip any leading @ the user may have accidentally typed in Settings
-  const rawUsername = process.env.TWITTER_USERNAME ?? '';
-  const username = rawUsername.replace(/^@+/, '');
-  const password = process.env.TWITTER_PASSWORD;
-  const email = process.env.TWITTER_EMAIL;
-
-  if (!username || !password) {
-    if (!warnedMissingScraperCreds) {
-      console.log('[alpha-scout] WARNING: TWITTER_USERNAME or TWITTER_PASSWORD not set. X/Twitter scraping disabled.');
-      warnedMissingScraperCreds = true;
-    }
-    return null;
-  }
-
-  isLoggingIn = true;
-  console.log(`[alpha-scout] Logging into X (Twitter) as @${username}...`);
-  try {
+// Returns a guest scraper instance — no login required for public timelines
+function getGuestScraper(): Scraper {
+  if (!scraper) {
     scraper = new Scraper();
-    await scraper.login(username, password, email);
-    isLoggedIn = await scraper.isLoggedIn();
-    if (isLoggedIn) {
-      console.log(`[alpha-scout] Successfully logged into X!`);
-    } else {
-      console.log(`[alpha-scout] Failed to confirm X login status.`);
-    }
-  } catch (err) {
-    console.log(`[alpha-scout] X Login Error: ${String(err)}`);
-  } finally {
-    isLoggingIn = false;
+    console.log('[alpha-scout] X/Twitter guest scraper ready (reading public timelines, no auth required).');
   }
-
-  return isLoggedIn ? scraper : null;
+  return scraper;
 }
 
 // Track the last seen tweet ID per user to avoid duplicates
@@ -247,14 +216,12 @@ export async function pollKolTimelines(): Promise<KolTweetResult[]> {
     return pollViaOpenTwitter(handles, openTwitterToken);
   }
 
-  // Fallback: direct X scraper login
-  const api = await getClient();
-  if (!api) return [];
+  // Fallback: direct X scraper (guest mode — no login needed for public timelines)
+  const api = getGuestScraper();
   if (loggedBackend !== 'scraper') {
-    console.log('[alpha-scout] Using direct X scraper backend for KOL polling');
+    console.log('[alpha-scout] Using X guest scraper for KOL polling (public timelines)');
     loggedBackend = 'scraper';
   }
-
   return pollViaScraper(handles, api);
 }
 

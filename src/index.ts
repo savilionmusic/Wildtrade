@@ -521,3 +521,13 @@ main().catch((err) => {
   console.error('[fatal]', err);
   process.exit(1);
 });
+
+// Prevent unhandled promise rejections from crashing the bot process
+// (e.g. from third-party scrapers like agent-twitter-client)
+process.on('unhandledRejection', (reason) => {
+  console.error('[unhandledRejection] Caught to prevent crash:', String(reason));
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('[uncaughtException] Caught to prevent crash:', String(err));
+});

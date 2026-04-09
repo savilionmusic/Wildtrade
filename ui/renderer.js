@@ -585,13 +585,9 @@ window.wildtrade.onBotLog(entry => {
       narrativesBox.textContent = 'Polling KOL tweets... No hot CA yet (need 2+ mentions to surface)';
     }
   }
-  if (msg.includes('[alpha-scout] Successfully logged into X')) {
+  if (msg.includes('[alpha-scout] X/Twitter guest scraper ready')) {
     const heatmapBox = document.getElementById('intel-heatmap');
-    if (heatmapBox) heatmapBox.textContent = 'Twitter logged in! Polling KOL timelines every 2 min...';
-  }
-  if (msg.includes('[alpha-scout] X Login Error') || msg.includes('[alpha-scout] Failed to confirm X login')) {
-    const heatmapBox = document.getElementById('intel-heatmap');
-    if (heatmapBox) heatmapBox.textContent = 'Twitter login failed. Check username/password in Settings.';
+    if (heatmapBox) heatmapBox.textContent = 'X guest scraper active! Polling KOL timelines every 2 min...';
   }
   if (msg.includes('[alpha-scout] WARNING: TWITTER_USERNAME')) {
     const heatmapBox = document.getElementById('intel-heatmap');

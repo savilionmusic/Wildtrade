@@ -30,9 +30,13 @@ from email.utils import parsedate_to_datetime
 
 DB_PATH = os.path.expanduser('~/.wildtrade_twscrape.db')
 NITTER_INSTANCES = [
-    'https://nitter.net',
-    'https://nitter.privacydev.net',
     'https://nitter.poast.org',
+    'https://nitter.privacydev.net',
+    'https://nitter.space',
+    'https://nitter.1d4.us',
+    'https://nitter.kavin.rocks',
+    'https://nitter.unixfox.eu',
+    'https://nitter.net',
 ]
 USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36'
 
@@ -257,14 +261,13 @@ async def main() -> None:
     fallback_results: list[dict] = [t for sublist in results_list for t in sublist]
 
     if fallback_results:
-        sys.stderr.write(f'[twikit] Nitter RSS fallback active ({len(fallback_results)} tweets).\n')
+        sys.stderr.write(f'[twikit] Nitter RSS fallback active — fetched {len(fallback_results)} tweets from {len(handles)} handles.\n')
         print(json.dumps(fallback_results), flush=True)
         return
 
+    sys.stderr.write(f'[twikit] All Nitter instances failed for {len(handles)} handles. No Twitter data available.\n')
     if login_error:
-        print(json.dumps({'error': f'Login failed: {login_error}', 'hint': 'Nitter RSS fallback returned no data'}), flush=True)
-        sys.exit(1)
-
+        sys.stderr.write(f'[twikit] Login error was: {login_error}\n')
     print(json.dumps([]), flush=True)
 
 

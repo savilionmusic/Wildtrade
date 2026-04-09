@@ -1,6 +1,14 @@
 import { Scraper } from 'agent-twitter-client';
-import { isGoldKol } from './kol-scraper.service.js';
+import { isGoldKol, getGoldKols } from './kol-scraper.service.js';
 import { detectNarrative, cacheNarrativeResult } from './narrative-detector.service.js';
+
+// Well-known Solana/crypto KOLs used as seed handles when no TWITTER_TOKEN is configured
+const SOLANA_KOL_SEEDS = [
+  'blknoiz06', 'ansem', 'hsaka', 'degenspartan', 'trader1sz',
+  'cryptokaleo', 'pentosh1', 'inversebrah', 'cobie', 'tree_of_alpha',
+  'notthreadguy', '0xMert_', 'czsun10', 'sierraxsolana', 'weremeow',
+  'himgajria', 'zhusu', 'galaxybrain_x', 'CryptoHayes', 'libelon',
+];
 
 export interface KolTweetResult {
   userId: string;
@@ -220,7 +228,7 @@ export async function pollKolTimelines(): Promise<KolTweetResult[]> {
   const handles = await getHandlesForPolling();
   if (handles.length === 0) {
     if (!warnedNoHandles) {
-      console.log('[alpha-scout] No KOL handles found. Set TWITTER_KOL_USER_IDS or configure TWITTER_TOKEN for auto discovery.');
+      console.log('[alpha-scout] No KOL handles found. Add TWITTER_USERNAME + TWITTER_PASSWORD in Settings to enable scraping.');
       warnedNoHandles = true;
     }
     return [];
@@ -253,21 +261,34 @@ async function getHandlesForPolling(): Promise<string[]> {
   if (manual.length > 0) return manual;
 
   const token = getOpenTwitterToken();
-  if (!token) return [];
 
-  const watch = await fetchWatchHandles(token);
-  if (!getAutoDiscoveryEnabled()) {
-    return watch.slice(0, getMaxDiscoveredHandles());
+  // If we have an OpenTwitter token, use full discovery pipeline
+  if (token) {
+    const watch = await fetchWatchHandles(token);
+    if (!getAutoDiscoveryEnabled()) {
+      return watch.slice(0, getMaxDiscoveredHandles());
+    }
+    const discovered = await discoverHandlesViaSearch(token);
+    const merged = dedupeHandles([...watch, ...discovered]);
+    if (merged.length > 0) {
+      console.log(`[alpha-scout] Auto-discovered ${merged.length} KOL handles for polling`);
+    }
+    return merged.slice(0, getMaxDiscoveredHandles());
   }
 
-  const discovered = await discoverHandlesViaSearch(token);
-  const merged = dedupeHandles([...watch, ...discovered]);
+  // No token – fall back to KOL scraper gold list + hardcoded seeds
+  // This allows username/password scraper to function without a paid API token
+  const goldHandles = getGoldKols();
+  const combined = dedupeHandles([...goldHandles, ...SOLANA_KOL_SEEDS]);
+  const handles = combined.slice(0, getMaxDiscoveredHandles());
 
-  if (merged.length > 0) {
-    console.log(`[alpha-scout] Auto-discovered ${merged.length} KOL handles for polling`);
+  if (handles.length > 0) {
+    console.log(`[alpha-scout] No TWITTER_TOKEN set – using ${handles.length} seeded KOL handles for scraper polling`);
+  } else {
+    console.log('[alpha-scout] WARNING: No KOL handles available. Set TWITTER_TOKEN or TWITTER_KOL_USER_IDS to enable Alpha Intel.');
   }
 
-  return merged.slice(0, getMaxDiscoveredHandles());
+  return handles;
 }
 
 async function fetchWatchHandles(token: string): Promise<string[]> {

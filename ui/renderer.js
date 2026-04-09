@@ -572,6 +572,31 @@ window.wildtrade.onBotLog(entry => {
       narrativesBox.textContent = msg.split('[META] Current Top Narratives:')[1].trim();
     }
   }
+  // Show KOL discovery progress in the narratives box as a fallback until real narratives arrive
+  if (msg.includes('seeded KOL handles') || msg.includes('Auto-discovered') || msg.includes('KOL intelligence active')) {
+    const narrativesBox = document.getElementById('intel-narratives');
+    if (narrativesBox && narrativesBox.textContent.includes('Awaiting Scan...')) {
+      narrativesBox.textContent = 'Scanning KOL timelines for trending Solana tokens...';
+    }
+  }
+  if (msg.includes('[SCRAPER] X poll:') || msg.includes('OpenTwitter poll:')) {
+    const narrativesBox = document.getElementById('intel-narratives');
+    if (narrativesBox && narrativesBox.textContent === 'Scanning KOL timelines for trending Solana tokens...') {
+      narrativesBox.textContent = 'Polling KOL tweets... No hot CA yet (need 2+ mentions to surface)';
+    }
+  }
+  if (msg.includes('[alpha-scout] Successfully logged into X')) {
+    const heatmapBox = document.getElementById('intel-heatmap');
+    if (heatmapBox) heatmapBox.textContent = 'Twitter logged in! Polling KOL timelines every 2 min...';
+  }
+  if (msg.includes('[alpha-scout] X Login Error') || msg.includes('[alpha-scout] Failed to confirm X login')) {
+    const heatmapBox = document.getElementById('intel-heatmap');
+    if (heatmapBox) heatmapBox.textContent = 'Twitter login failed. Check username/password in Settings.';
+  }
+  if (msg.includes('[alpha-scout] WARNING: TWITTER_USERNAME')) {
+    const heatmapBox = document.getElementById('intel-heatmap');
+    if (heatmapBox) heatmapBox.textContent = 'No Twitter credentials found. Add them in Settings.';
+  }
   if (msg.includes('[HEATMAP]')) {
     const heatmapBox = document.getElementById('intel-heatmap');
     if (heatmapBox) {
@@ -608,7 +633,10 @@ window.wildtrade.onBotLog(entry => {
   }
 
   // Add all intel signals to the Intel specific log viewer
-  if (msg.includes('[HEATMAP]') || msg.includes('[AI NARRATIVE]') || msg.includes('[META]') || msg.includes('[smart-money]') || msg.includes('CLUSTER DETECTED')) {
+  if (msg.includes('[HEATMAP]') || msg.includes('[AI NARRATIVE]') || msg.includes('[META]') ||
+      msg.includes('[smart-money]') || msg.includes('CLUSTER DETECTED') ||
+      msg.includes('[social-scout]') || msg.includes('[alpha-scout]') || msg.includes('[SCRAPER]') ||
+      msg.includes('[kol-scraper]')) {
     const intelSignals = document.getElementById('intel-signals');
     if (intelSignals) {
       // remove the waiting message if it exists
@@ -624,6 +652,7 @@ window.wildtrade.onBotLog(entry => {
       if (msg.includes('[HEATMAP]')) color = '#ff9800';
       if (msg.includes('[AI NARRATIVE]') || msg.includes('[META]')) color = '#00e5ff';
       if (msg.includes('[smart-money]') || msg.includes('CLUSTER DETECTED')) color = '#00ff00';
+      if (msg.includes('[social-scout]') || msg.includes('[alpha-scout]') || msg.includes('[SCRAPER]') || msg.includes('[kol-scraper]')) color = '#aaa';
       
       entryDiv.innerHTML = `<span style="color: #666">[${new Date().toLocaleTimeString()}]</span> <span style="color: ${color}">${msg}</span>`;
       intelSignals.prepend(entryDiv);

@@ -112,10 +112,78 @@ async def main() -> None:
     username = os.environ.get('TWITTER_USERNAME', '').lstrip('@').strip()
     password = os.environ.get('TWITTER_PASSWORD', '').strip()
     email = os.environ.get('TWITTER_EMAIL', '').strip()
+    cookies_raw = os.environ.get('TWITTER_COOKIES', '').strip()
 
     login_error: str | None = None
 
-    # Primary path: authenticated twscrape session.
+    # Primary path: cookie-based twscrape session (no login attempt needed).
+    if cookies_raw:
+        try:
+            cookies_list = json.loads(cookies_raw)
+            # Build a cookie jar dict — accept both {key,value} and {name,value} formats
+            cookie_dict: dict[str, str] = {}
+            if isinstance(cookies_list, list):
+                for c in cookies_list:
+                    name = c.get('name') or c.get('key') or ''
+                    value = c.get('value', '')
+                    if name and value:
+                        cookie_dict[name] = value
+            elif isinstance(cookies_list, dict):
+                cookie_dict = cookies_list
+
+            if 'auth_token' in cookie_dict and 'ct0' in cookie_dict:
+                api = API(DB_PATH)
+
+                # Inject cookie-based account into twscrape pool
+                # twscrape add_account accepts cookies dict via cookies kwarg
+                acct_username = username or 'cookie_session'
+                try:
+                    await api.pool.add_account(
+                        acct_username,
+                        password or 'unused',
+                        email or f'{acct_username}@example.com',
+                        password or 'unused',
+                        cookies=cookie_dict,
+                    )
+                except Exception as add_err:
+                    if 'UNIQUE constraint failed' not in str(add_err):
+                        raise
+
+                results: list[dict] = []
+                for handle in handles:
+                    try:
+                        user = await api.user_by_login(handle)
+                        if not user:
+                            continue
+                        tweets = await gather(api.user_tweets(user.id, limit=20))
+                        for tweet in tweets:
+                            text = getattr(tweet, 'rawContent', None) or ''
+                            if not text:
+                                continue
+                            ts = 0
+                            try:
+                                ts = int(tweet.date.timestamp() * 1000)
+                            except Exception:
+                                pass
+                            results.append({
+                                'handle': handle,
+                                'id': str(tweet.id),
+                                'text': text,
+                                'timestamp': ts,
+                            })
+                    except Exception as e:
+                        sys.stderr.write(f'[twikit] Error for @{handle}: {str(e)}\n')
+
+                if results:
+                    print(json.dumps(results), flush=True)
+                    return
+                # If we got no results but no hard crash, fall through to RSS
+            else:
+                sys.stderr.write('[twikit] TWITTER_COOKIES missing auth_token or ct0 — skipping cookie auth.\n')
+        except Exception as e:
+            tb = traceback.format_exc()
+            sys.stderr.write(f'[twikit] Cookie auth exception:\n{tb}\n')
+            login_error = f'{type(e).__name__}: {str(e)}'
     if username and password:
         try:
             api = API(DB_PATH)

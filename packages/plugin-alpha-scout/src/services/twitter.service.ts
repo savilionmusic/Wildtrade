@@ -271,19 +271,14 @@ export async function pollKolTimelines(): Promise<KolTweetResult[]> {
     return pollViaOpenTwitter(handles, openTwitterToken);
   }
 
-  const authenticatedScraper = await getAuthenticatedScraper();
-  if (authenticatedScraper) {
-    if (loggedBackend !== 'scraper') {
-      console.log('[alpha-scout] Using agent-twitter-client with Cookies for KOL polling');
-      loggedBackend = 'scraper';
-    }
-    return pollViaScraper(handles, authenticatedScraper);
-  }
-
-  // Fallback: Python Twitter bridge (twscrape + no-login RSS fallback)
-  if (loggedBackend !== 'none') {
-    console.log('[alpha-scout] Using Python Twitter bridge for KOL polling');
-    loggedBackend = 'none';
+  // All other paths (cookies, username/password, guest) go through the Python bridge.
+  // The bridge handles cookie auth, username/password auth, and Nitter RSS fallback natively.
+  if (loggedBackend !== 'scraper') {
+    const hasCookies = !!process.env.TWITTER_COOKIES;
+    const hasCredentials = !!process.env.TWITTER_USERNAME;
+    const mode = hasCookies ? 'cookie auth' : hasCredentials ? 'username/password' : 'Nitter RSS fallback';
+    console.log(`[alpha-scout] Using Python Twitter bridge (${mode}) for KOL polling`);
+    loggedBackend = 'scraper';
   }
   return pollViaTwikit(handles);
 }

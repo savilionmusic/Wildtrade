@@ -1,8 +1,9 @@
 import { Scraper } from 'agent-twitter-client';
 import { isGoldKol, getGoldKols } from './kol-scraper.service.js';
 import { detectNarrative, cacheNarrativeResult } from './narrative-detector.service.js';
+import { fetchTwikitTweets } from './twikit-bridge.service.js';
 
-// Well-known Solana/crypto KOLs used as seed handles when no TWITTER_TOKEN is configured
+// Well-known Solana/crypto KOLs used as seed handles
 const SOLANA_KOL_SEEDS = [
   'blknoiz06', 'ansem', 'hsaka', 'degenspartan', 'trader1sz',
   'cryptokaleo', 'pentosh1', 'inversebrah', 'cobie', 'tree_of_alpha',
@@ -216,13 +217,43 @@ export async function pollKolTimelines(): Promise<KolTweetResult[]> {
     return pollViaOpenTwitter(handles, openTwitterToken);
   }
 
-  // Fallback: direct X scraper (guest mode — no login needed for public timelines)
-  const api = getGuestScraper();
+  // Fallback: twikit Python bridge (uses TWITTER_USERNAME/PASSWORD)
   if (loggedBackend !== 'scraper') {
-    console.log('[alpha-scout] Using X guest scraper for KOL polling (public timelines)');
+    console.log('[alpha-scout] Using twikit Python bridge for KOL polling');
     loggedBackend = 'scraper';
   }
-  return pollViaScraper(handles, api);
+  return pollViaTwikit(handles);
+}
+
+async function pollViaTwikit(handles: string[]): Promise<KolTweetResult[]> {
+  const raw = await fetchTwikitTweets(handles);
+  const results: KolTweetResult[] = [];
+
+  for (const tweet of raw) {
+    if (!tweet.text || !tweet.id) continue;
+    const mints = extractMints(tweet.text);
+    if (mints.length === 0) continue;
+
+    for (const mint of mints) {
+      trackMentionVelocity(mint, tweet.text);
+    }
+
+    results.push({
+      userId: tweet.handle,
+      tweetId: tweet.id,
+      tweetUrl: `https://x.com/${tweet.handle}/status/${tweet.id}`,
+      mints,
+      timestamp: tweet.timestamp || Date.now(),
+      text: tweet.text,
+    });
+  }
+
+  if (results.length > 0) {
+    console.log(`[twikit] Found ${results.length} tweets containing Solana CAs`);
+  }
+
+  return results;
+}
 }
 
 async function getHandlesForPolling(): Promise<string[]> {
@@ -245,16 +276,13 @@ async function getHandlesForPolling(): Promise<string[]> {
     return merged.slice(0, getMaxDiscoveredHandles());
   }
 
-  // No token – fall back to KOL scraper gold list + hardcoded seeds
-  // This allows username/password scraper to function without a paid API token
+  // No token – use twikit Python bridge with seeded KOL handles
   const goldHandles = getGoldKols();
   const combined = dedupeHandles([...goldHandles, ...SOLANA_KOL_SEEDS]);
   const handles = combined.slice(0, getMaxDiscoveredHandles());
 
   if (handles.length > 0) {
-    console.log(`[alpha-scout] No TWITTER_TOKEN set – using ${handles.length} seeded KOL handles for scraper polling`);
-  } else {
-    console.log('[alpha-scout] WARNING: No KOL handles available. Set TWITTER_TOKEN or TWITTER_KOL_USER_IDS to enable Alpha Intel.');
+    console.log(`[alpha-scout] No TWITTER_TOKEN – using twikit Python bridge with ${handles.length} seeded KOL handles`);
   }
 
   return handles;

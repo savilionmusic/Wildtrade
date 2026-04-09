@@ -1,4 +1,7 @@
 node_modules/
+.twikit-venv/
+__pycache__/
+*.pyc
 dist/
 release/
 .wildtrade-db/

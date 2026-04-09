@@ -585,9 +585,29 @@ window.wildtrade.onBotLog(entry => {
       narrativesBox.textContent = 'Polling KOL tweets... No hot CA yet (need 2+ mentions to surface)';
     }
   }
-  if (msg.includes('[alpha-scout] X/Twitter guest scraper ready')) {
+  if (msg.includes('[alpha-scout] X/Twitter guest scraper ready') || msg.includes('Using X guest scraper') || msg.includes('twikit Python bridge')) {
     const heatmapBox = document.getElementById('intel-heatmap');
-    if (heatmapBox) heatmapBox.textContent = 'X guest scraper active! Polling KOL timelines every 2 min...';
+    if (heatmapBox) heatmapBox.textContent = 'twikit scraper active! Polling 20 KOL timelines every 2 min...';
+  }
+  if (msg.includes('twikit not installed')) {
+    const heatmapBox = document.getElementById('intel-heatmap');
+    if (heatmapBox) heatmapBox.textContent = 'twikit not installed. Run in terminal: pip3 install twikit';
+  }
+  if (msg.includes('[twikit] Login successful')) {
+    const heatmapBox = document.getElementById('intel-heatmap');
+    if (heatmapBox) heatmapBox.textContent = 'Twitter logged in via twikit! Polling KOL timelines...';
+  }
+  if (msg.includes('[twikit] Login failed') || msg.includes('Login failed:')) {
+    const heatmapBox = document.getElementById('intel-heatmap');
+    if (heatmapBox) heatmapBox.textContent = 'twikit login failed. Check Twitter credentials in Settings.';
+  }
+  if (msg.includes('No TWITTER_TOKEN set – X/Twitter KOL polling disabled')) {
+    const heatmapBox = document.getElementById('intel-heatmap');
+    if (heatmapBox) heatmapBox.textContent = 'No TWITTER_TOKEN set. Add one in Settings to enable KOL heatmap.\nDexScreener social signals are active as fallback.';
+    const narrativesBox = document.getElementById('intel-narratives');
+    if (narrativesBox && narrativesBox.textContent.includes('Awaiting Scan...')) {
+      narrativesBox.textContent = 'DexScreener social signals active. Add TWITTER_TOKEN for full KOL narrative AI.';
+    }
   }
   if (msg.includes('[alpha-scout] WARNING: TWITTER_USERNAME')) {
     const heatmapBox = document.getElementById('intel-heatmap');

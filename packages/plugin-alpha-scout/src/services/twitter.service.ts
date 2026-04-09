@@ -202,15 +202,52 @@ async function getAuthenticatedScraper(): Promise<Scraper | null> {
   
   try {
     const cookiesRaw = JSON.parse(cookiesStr);
-    const cookies = Array.isArray(cookiesRaw) 
-      ? cookiesRaw.map(c => typeof c === 'string' ? c : `${c.key}=${c.value}; Domain=.twitter.com; Path=/`)
-      : [];
+    if (!Array.isArray(cookiesRaw) || cookiesRaw.length === 0) return null;
+
+    // Build Set-Cookie strings. Handles two export formats:
+    //   1. Full Cookie-Editor export: { name, value, domain, path, secure, httpOnly, sameSite, expirationDate }
+    //   2. Simple format: { key, value }
+    const cookieStrings: string[] = [];
+    for (const c of cookiesRaw) {
+      if (typeof c === 'string') {
+        cookieStrings.push(c);
+        continue;
+      }
+      const name: string = c.name ?? c.key ?? '';
+      const value: string = c.value ?? '';
+      if (!name) continue;
+
+      // Build a proper cookie string with all metadata
+      let cookieStr = `${name}=${value}`;
+      // Use both .twitter.com and .x.com to ensure agent-twitter-client accepts it
+      const domain = (c.domain ?? '.twitter.com').replace(/^\.x\.com$/, '.twitter.com');
+      cookieStr += `; Domain=${domain}`;
+      cookieStr += `; Path=${c.path ?? '/'}`;
+      if (c.secure) cookieStr += '; Secure';
+      if (c.httpOnly) cookieStr += '; HttpOnly';
+      if (c.sameSite && c.sameSite !== 'unspecified') {
+        const sameSite = c.sameSite === 'no_restriction' ? 'None' : c.sameSite.charAt(0).toUpperCase() + c.sameSite.slice(1);
+        cookieStr += `; SameSite=${sameSite}`;
+      }
+      if (c.expirationDate) {
+        cookieStr += `; Expires=${new Date(c.expirationDate * 1000).toUTCString()}`;
+      }
+      cookieStrings.push(cookieStr);
+    }
+
     scraper = new Scraper();
-    await scraper.setCookies(cookies);
-    console.log('[alpha-scout] X/Twitter scraper initialized with cookies.');
+    await scraper.setCookies(cookieStrings);
+    const isLoggedIn = await scraper.isLoggedIn();
+    if (!isLoggedIn) {
+      console.log('[alpha-scout] Cookie auth failed (session invalid or expired). Falling back to Python bridge.');
+      scraper = null;
+      return null;
+    }
+    console.log('[alpha-scout] X/Twitter scraper authenticated successfully via cookies.');
     return scraper;
   } catch (err) {
-    console.log('[alpha-scout] Failed to parse TWITTER_COOKIES JSON:', String(err));
+    console.log('[alpha-scout] Failed to initialize cookie scraper:', String(err));
+    scraper = null;
     return null;
   }
 }

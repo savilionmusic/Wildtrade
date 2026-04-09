@@ -6,7 +6,7 @@ import { reportFailure, getHealthyEndpoint } from '../services/rpc-rotator.servi
 
 interface ErrorPattern {
   pattern: RegExp;
-  category: ErrorCategory;
+  category: ErrorCategory | string;
   isRpcError: boolean;
 }
 
@@ -15,6 +15,8 @@ const ERROR_PATTERNS: ErrorPattern[] = [
   { pattern: /504|gateway timeout/i, category: 'rpc_504', isRpcError: true },
   { pattern: /timeout/i, category: 'tx_timeout', isRpcError: false },
   { pattern: /simulation failed/i, category: 'tx_simulation', isRpcError: false },
+  { pattern: /X poll error|Twitter rate limited|X Login Error/i, category: 'social_api_error', isRpcError: false },
+  { pattern: /WebSocket connection closed|PumpPortal Error/i, category: 'websocket_drop', isRpcError: false },
 ];
 
 const DEGRADED_WINDOW_MS = 5 * 60 * 1000; // 5 minutes

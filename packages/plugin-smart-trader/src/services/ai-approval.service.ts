@@ -22,12 +22,12 @@ export async function runAiPreTradeConvictionCheck(
     const prompt = `
 You are a highly experienced crypto hedge fund AI risk manager. 
 Your trading bot requested approval to execute the following trade on Solana:
-- Token Symbol: \${symbol}
-- Contract Address: \${mint}
-- Proposed Trade Size: \${budgetSol} SOL
-- Bot's Algorithmic Score: \${score}/100
-- Est. Market Cap: $\${marketCap}
-- Bot Reason / Context: \${reason}
+  - Token Symbol: ${symbol}
+  - Contract Address: ${mint}
+  - Proposed Trade Size: ${budgetSol} SOL
+  - Bot's Algorithmic Score: ${score}/100
+  - Est. Market Cap: $${marketCap}
+  - Bot Reason / Context: ${reason}
 
 Does this trade make sense? If you spot massive red flags (e.g., buying into obviously fake metrics or a bot spam score), reject it.
 Respond with a JSON object containing exactly one key "approval" which is a boolean (true to allow the trade, false to block it).
@@ -36,7 +36,7 @@ Respond with a JSON object containing exactly one key "approval" which is a bool
     const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer \${apiKey}`,
+        'Authorization': `Bearer ${apiKey}`,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
@@ -59,11 +59,11 @@ Respond with a JSON object containing exactly one key "approval" which is a bool
 
     const result = JSON.parse(content);
     if (result.approval === false) {
-      console.log(\`[AI Gatekeeper] DeepSeek REJECTED trade for \${symbol}!\`);
+      console.log(`[AI Gatekeeper] DeepSeek REJECTED trade for ${symbol}!`);
       return false;
     }
     
-    console.log(\`[AI Gatekeeper] DeepSeek APPROVED trade for \${symbol}!\`);
+    console.log(`[AI Gatekeeper] DeepSeek APPROVED trade for ${symbol}!`);
     return true;
   } catch (err) {
     console.error('[AI Gatekeeper] Error checking trade conviction:', err);

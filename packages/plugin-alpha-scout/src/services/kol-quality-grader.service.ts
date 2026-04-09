@@ -20,7 +20,7 @@ export async function analyzeKolTweetQuality(tweetText?: string): Promise<KolStr
         response_format: { type: 'json_object' },
         messages: [{
           role: 'system',
-          content: 'You analyze cryptocurrency tweets and determine the author\\'s conviction. Output JSON with exactly one key: "strategy" (must be strictly the string "flip" or "conviction"). "flip" means it looks like a low-effort pump-and-dump (e.g. "Ape this now", rocket emojis, no deep research). "conviction" means there is detailed research, utility discussion, tokenomics breakdown, or developer team analysis.'
+          content: "You analyze cryptocurrency tweets and determine the author's conviction. Output JSON with exactly one key: 'strategy' (must be strictly the string 'flip' or 'conviction'). 'flip' means it looks like a low-effort pump-and-dump (e.g. 'Ape this now', rocket emojis, no deep research). 'conviction' means there is detailed research, utility discussion, tokenomics breakdown, or developer team analysis."
         }, {
           role: 'user',
           content: `Analyze this tweet:\n\n"${tweetText}"`

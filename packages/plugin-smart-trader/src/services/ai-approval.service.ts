@@ -31,7 +31,7 @@ Your trading bot requested approval to execute the following trade on Solana:
 
 Does this trade make sense? If you spot massive red flags (e.g., buying into obviously fake metrics or a bot spam score), reject it.
 Respond with a JSON object containing exactly one key "approval" which is a boolean (true to allow the trade, false to block it).
-    \`.trim();
+    `.trim();
 
     const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',

@@ -237,13 +237,7 @@ async function getAuthenticatedScraper(): Promise<Scraper | null> {
 
     scraper = new Scraper();
     await scraper.setCookies(cookieStrings);
-    const isLoggedIn = await scraper.isLoggedIn();
-    if (!isLoggedIn) {
-      console.log('[alpha-scout] Cookie auth failed (session invalid or expired). Falling back to Python bridge.');
-      scraper = null;
-      return null;
-    }
-    console.log('[alpha-scout] X/Twitter scraper authenticated successfully via cookies.');
+    console.log('[alpha-scout] X/Twitter scraper initialized with cookies — polling will confirm auth.');
     return scraper;
   } catch (err) {
     console.log('[alpha-scout] Failed to initialize cookie scraper:', String(err));
@@ -526,7 +520,13 @@ async function pollViaScraper(handles: string[], api: Scraper): Promise<KolTweet
         });
       }
     } catch (err) {
-      console.log(`[SCRAPER] X poll error for @${handle}: ${String(err)}`);
+      const errStr = String(err);
+      if (errStr.includes('401') || errStr.includes('403')) {
+        console.log(`[SCRAPER] Cookie session rejected by X (${errStr.includes('401') ? '401' : '403'}) — cookies may be expired. Re-enter them in Settings.`);
+        scraper = null; // reset so next poll re-initialises with any updated cookies
+        break;
+      }
+      console.log(`[SCRAPER] X poll error for @${handle}: ${errStr}`);
     }
   }
 

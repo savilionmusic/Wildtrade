@@ -36,7 +36,7 @@ Respond with a JSON object containing exactly one key "approval" which is a bool
     const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
       headers: {
-        'Authorization': \`Bearer \${apiKey}\`,
+        'Authorization': `Bearer \${apiKey}`,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({

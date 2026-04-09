@@ -281,7 +281,7 @@ async function getHandlesForPolling(): Promise<string[]> {
   const handles = combined.slice(0, getMaxDiscoveredHandles());
 
   if (handles.length > 0) {
-    console.log(`[alpha-scout] No TWITTER_TOKEN – using twikit Python bridge with ${handles.length} seeded KOL handles`);
+    console.log(`[alpha-scout] No TWITTER_TOKEN – using Python Twitter bridge with ${handles.length} seeded KOL handles`);
   }
 
   return handles;

@@ -585,7 +585,7 @@ window.wildtrade.onBotLog(entry => {
       narrativesBox.textContent = 'Polling KOL tweets... No hot CA yet (need 2+ mentions to surface)';
     }
   }
-  if (msg.includes('[alpha-scout] X/Twitter guest scraper ready') || msg.includes('Using X guest scraper') || msg.includes('twikit Python bridge')) {
+  if (msg.includes('[alpha-scout] X/Twitter guest scraper ready') || msg.includes('Using X guest scraper') || msg.includes('twikit Python bridge') || msg.includes('Python Twitter bridge')) {
     const heatmapBox = document.getElementById('intel-heatmap');
     if (heatmapBox) heatmapBox.textContent = 'twikit scraper active! Polling 20 KOL timelines every 2 min...';
   }

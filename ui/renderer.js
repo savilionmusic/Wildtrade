@@ -597,9 +597,20 @@ window.wildtrade.onBotLog(entry => {
     const heatmapBox = document.getElementById('intel-heatmap');
     if (heatmapBox) heatmapBox.textContent = 'Twitter logged in via twikit! Polling KOL timelines...';
   }
-  if (msg.includes('[twikit] Login failed') || msg.includes('Login failed:')) {
+  if (msg.includes('[twikit] No Twitter credentials')) {
     const heatmapBox = document.getElementById('intel-heatmap');
-    if (heatmapBox) heatmapBox.textContent = 'twikit login failed. Check Twitter credentials in Settings.';
+    if (heatmapBox) heatmapBox.textContent = 'No Twitter credentials set. Add TWITTER_USERNAME + TWITTER_PASSWORD in Settings to enable KOL heatmap.';
+  }
+  if ((msg.includes('[twikit] Login failed') || msg.includes('Login failed:')) && !msg.includes('No Twitter credentials')) {
+    const detail = msg.split('Login failed:')[1]?.trim().split('\n')[0] || '';
+    const heatmapBox = document.getElementById('intel-heatmap');
+    if (heatmapBox) heatmapBox.textContent = `Twitter login failed — retrying in 30 min.${detail ? '\nError: ' + detail.slice(0, 120) : '\nCheck credentials in Settings.'}`;
+  }
+  if (msg.includes('[twikit] Login failed — pausing')) {
+    const heatmapBox = document.getElementById('intel-heatmap');
+    if (heatmapBox && !heatmapBox.textContent.includes('retrying in 30 min')) {
+      heatmapBox.textContent = 'Twitter login failed — KOL polling paused 30 min. Check credentials in Settings.';
+    }
   }
   if (msg.includes('No TWITTER_TOKEN set – X/Twitter KOL polling disabled')) {
     const heatmapBox = document.getElementById('intel-heatmap');

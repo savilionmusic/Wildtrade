@@ -23,6 +23,7 @@ import asyncio
 import json
 import os
 import sys
+import traceback
 from datetime import datetime, timezone
 
 COOKIE_PATH = os.path.expanduser('~/.wildtrade_twitter_cookies.json')
@@ -80,6 +81,8 @@ async def main() -> None:
             logged_in = True
             sys.stderr.write('[twikit] Login successful. Cookies saved.\n')
         except Exception as e:
+            tb = traceback.format_exc()
+            sys.stderr.write(f'[twikit] Login exception:\n{tb}\n')
             print(json.dumps({'error': f'Login failed: {str(e)}'}), flush=True)
             sys.exit(1)
 

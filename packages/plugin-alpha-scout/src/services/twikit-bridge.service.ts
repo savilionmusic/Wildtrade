@@ -14,6 +14,16 @@ let twikitChecked = false;
 let twikitAvailable = false;
 let venvSetupAttempted = false;
 
+// Login failure cooldown — don't retry for 30 minutes after a failure
+let loginFailedUntil = 0;
+const LOGIN_COOLDOWN_MS = 30 * 60 * 1000;
+
+export function reportTwikitLoginFailure(): void {
+  loginFailedUntil = Date.now() + LOGIN_COOLDOWN_MS;
+  const mins = LOGIN_COOLDOWN_MS / 60_000;
+  console.log(`[twikit] Login failed — pausing Twitter KOL polling for ${mins} minutes.`);
+}
+
 function getVenvDir(): string {
   return path.join(process.cwd(), '.twikit-venv');
 }
@@ -135,6 +145,11 @@ function getScriptPath(): string {
 export async function fetchTwikitTweets(handles: string[]): Promise<TwikitTweet[]> {
   if (handles.length === 0) return [];
 
+  // Respect login failure cooldown
+  if (Date.now() < loginFailedUntil) {
+    return [];
+  }
+
   const pythonCmd = await getPythonWithTwikit();
   if (!pythonCmd) {
     return [];
@@ -174,7 +189,12 @@ export async function fetchTwikitTweets(handles: string[]): Promise<TwikitTweet[
       try {
         const data = JSON.parse(raw);
         if (data && typeof data === 'object' && !Array.isArray(data) && data.error) {
-          console.log(`[twikit] ${data.error}${data.hint ? ' — ' + data.hint : ''}`);
+          const msg: string = data.error as string;
+          console.log(`[twikit] ${msg}${data.hint ? ' — ' + data.hint : ''}`);
+          // Detect login failures and start cooldown
+          if (msg.toLowerCase().includes('login failed') || msg.toLowerCase().includes('no twitter credentials')) {
+            reportTwikitLoginFailure();
+          }
           resolve([]);
           return;
         }

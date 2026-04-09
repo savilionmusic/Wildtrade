@@ -19,7 +19,7 @@ export async function runAiPreTradeConvictionCheck(
     console.log(`[AI Gatekeeper] Requesting DeepSeek approval for ${symbol} (${budgetSol.toFixed(2)} SOL)...`);
     
     // Give the AI the context needed
-    const prompt = \`
+    const prompt = `
 You are a highly experienced crypto hedge fund AI risk manager. 
 Your trading bot requested approval to execute the following trade on Solana:
 - Token Symbol: \${symbol}

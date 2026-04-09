@@ -33,6 +33,7 @@ import { getCachedNarrative, getTopNarratives } from './narrative-detector.servi
 import type { PumpPortalToken } from './pumpportal.service.js';
 import { getKolSignals } from './kol-intelligence.service.js';
 import { isGoldKol } from './kol-scraper.service.js';
+import { analyzeKolTweetQuality } from './kol-quality-grader.service.js';
 import { getRecentSmartBuys } from './smart-money-monitor.service.js';
 import { getRecentWalletBuys } from './wallet-intelligence.service.js';
 import { getCachedWhaleActivity } from './helius.service.js';
@@ -529,9 +530,22 @@ async function processToken(token: {
       detectedKolStrategy = 'conviction';
       detectedKolName = goldKolSignal.kolName;
     } else if (twitterKolSignals.length > 0) {
-      // Regular KOL (not Gold Tier) — treat as a flip: quick pump, quick exit
-      detectedKolStrategy = 'flip';
-      detectedKolName = twitterKolSignals[0].kolName;
+      // Unknown KOL (not Gold Tier) — use AI content grading to determine flip vs conviction
+      const mainSignal = twitterKolSignals[0];
+      detectedKolName = mainSignal.kolName;
+      
+      if (mainSignal.tweetText && process.env.OPENROUTER_API_KEY) {
+         const aiStrategy = await analyzeKolTweetQuality(mainSignal.tweetText);
+         detectedKolStrategy = aiStrategy === 'unknown' ? 'flip' : aiStrategy;
+         if (detectedKolStrategy === 'conviction') {
+             logCb('info', `[DeepSeek] Graded unknown KOL @${detectedKolName} post as HIGH CONVICTION. Upgrading exit strategy.`);
+             hasGoldKol = true; // Give them the conviction score bonus as well
+         } else {
+             logCb('info', `[DeepSeek] Graded unknown KOL @${detectedKolName} post as PUMP-AND-DUMP (FLIP).`);
+         }
+      } else {
+         detectedKolStrategy = 'flip';
+      }
     }
   } catch { /* no KOL data available */ }
 

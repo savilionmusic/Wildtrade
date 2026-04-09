@@ -9,6 +9,7 @@ export interface KolSignal {
   context: string;
   kolName?: string;
   timestamp: number;
+  tweetText?: string;
 }
 
 type KolLogCb = (msg: string) => void;
@@ -231,6 +232,7 @@ async function pollTwitterKolFeeds(): Promise<void> {
           context: `X mention by @${tweet.userId}: ${tweet.tweetUrl}`,
           kolName: tweet.userId,
           timestamp: tweet.timestamp,
+          tweetText: tweet.text,
         });
       }
     }

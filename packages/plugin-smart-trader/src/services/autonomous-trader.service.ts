@@ -19,6 +19,7 @@ import { getDb } from '@wildtrade/shared';
 import type { AlphaSignal, InterAgentMessage } from '@wildtrade/shared';
 import { v4 as uuidv4 } from 'uuid';
 import { executeFullSwap } from './jupiter.service.js';
+import { runAiPreTradeConvictionCheck } from './ai-approval.service.js';
 import { Keypair } from '@solana/web3.js';
 import bs58 from 'bs58';
 
@@ -29,11 +30,19 @@ const DCA_LEG2_DELAY_MS = 60_000;
 const DCA_LEG3_DELAY_MS = 180_000;
 const DCA_LEGS = [0.5, 0.3, 0.2];
 
-const EXIT_TIERS = [
-  { multiplier: 1.3, sellPct: 0.25 },
-  { multiplier: 2.0, sellPct: 0.25 },
-  { multiplier: 5.0, sellPct: 0.25 },
-  { multiplier: 10.0, sellPct: 0.25 },
+// Strategy: Default (Normal momentum trades) — Take profit aggressively
+const DEFAULT_EXIT_TIERS = [
+  { multiplier: 1.5, sellPct: 0.50 },  // Take 50% out at +50% profit (de-risk)
+  { multiplier: 2.0, sellPct: 0.50 },  // Take 50% of remainder at +100%
+  { multiplier: 3.0, sellPct: 1.00 },  // Dump the rest at +200%
+];
+
+// Strategy: Conviction (AI-approved/Gold KOL) — Diamond hands the moonbag
+const CONVICTION_EXIT_TIERS = [
+  { multiplier: 2.0, sellPct: 0.30 },  // Lock in initial at +100%
+  { multiplier: 3.5, sellPct: 0.30 },  // Lock in more at +250%
+  { multiplier: 5.0, sellPct: 0.50 },  // 5x moonbag partial
+  { multiplier: 10.0, sellPct: 1.00 }, // 10x exit
 ];
 
 const STOP_LOSS_MULTIPLIER = 0.70;
@@ -1027,6 +1036,19 @@ async function openPosition(
   reason?: string,
   kolStrategy?: 'flip' | 'conviction',
 ): Promise<void> {
+
+  // ── PRE-TRADE DEEPSEEK CONVICTION CHECK ──
+  if (budgetSol >= 0.1) {
+    const aiApproved = await runAiPreTradeConvictionCheck(
+      mintAddress, symbol, budgetSol, score, marketCap, reason || 'Scanner signal'
+    );
+    if (!aiApproved) {
+      log(`[🚫 DEEPSEEK REJECTED] AI Gatekeeper blocked entry into ${symbol}. Cancelling trade.`);
+      alert('trade_rejected', `DeepSeek AI vetoed entering ${symbol} — too high risk.`);
+      return;
+    }
+  }
+
   // Get current price from DexScreener (or use pre-fetched price for snipes)
   const price = prefetchedPrice && prefetchedPrice > 0
     ? prefetchedPrice
@@ -1099,6 +1121,7 @@ async function openPosition(
   // Save to DB
   try {
     const db = await getDb();
+    const strategyTiers = kolStrategy === 'conviction' ? CONVICTION_EXIT_TIERS : DEFAULT_EXIT_TIERS;
     await db.query(
       `INSERT INTO positions (id, signal_id, mint, symbol, name, status, budget_sol, entry_price_usd,
         token_balance, sol_deployed, sol_returned, pnl_sol, pnl_pct, dca_legs, exit_tiers, paper, opened_at, total_budget_lamports)
@@ -1106,7 +1129,7 @@ async function openPosition(
       [
         position.id, signalId, mintAddress, symbol, name, 'open',
         budgetSol, price, 0, 0, 0, 0, 0,
-        JSON.stringify(DCA_LEGS), JSON.stringify(EXIT_TIERS),
+        JSON.stringify(DCA_LEGS), JSON.stringify(strategyTiers),
         position.paper ? 1 : 0, position.openedAt,
         Math.floor(totalBudgetSol * 1_000_000_000).toString(),
       ],
@@ -1479,8 +1502,9 @@ async function checkPricesAndExits(): Promise<void> {
       }
 
       // ── Exit tiers (take profit) ──
-      for (let i = position.exitTiersHit; i < EXIT_TIERS.length; i++) {
-        const tier = EXIT_TIERS[i];
+      const strategyTiers = position.kolStrategy === 'conviction' ? CONVICTION_EXIT_TIERS : DEFAULT_EXIT_TIERS;
+      for (let i = position.exitTiersHit; i < strategyTiers.length; i++) {
+        const tier = strategyTiers[i];
         if (multiplier >= tier.multiplier) {
           log(`EXIT TIER ${i + 1} hit for ${position.symbol}: ${multiplier.toFixed(2)}x (target: ${tier.multiplier}x)`);
           await executeSell(position, tier.sellPct, `${tier.multiplier}x take-profit`);
@@ -1660,7 +1684,7 @@ async function saveState(): Promise<void> {
           p.id, p.signalId || '', p.mintAddress, p.symbol, p.name || '',
           p.status, p.budgetSol, p.entryPrice,
           p.tokenBalance, p.solDeployed, p.solReturned, p.pnlSol, p.pnlPct,
-          JSON.stringify(DCA_LEGS), JSON.stringify(EXIT_TIERS),
+          JSON.stringify(DCA_LEGS), JSON.stringify(p.kolStrategy === 'conviction' ? CONVICTION_EXIT_TIERS : DEFAULT_EXIT_TIERS),
           p.paper ? 1 : 0, p.openedAt, p.closedAt, p.currentPrice, p.marketCap,
           Math.floor(totalBudgetSol * 1_000_000_000).toString(),
         ],

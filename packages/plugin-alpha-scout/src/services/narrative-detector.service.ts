@@ -32,7 +32,7 @@ export async function detectNarrative(mint: string, tweets: string[]): Promise<N
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        model: 'openai/gpt-4o-mini',
+        model: 'deepseek/deepseek-chat',
         response_format: { type: 'json_object' },
         messages: [{
           role: 'system',

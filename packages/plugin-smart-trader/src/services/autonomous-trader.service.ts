@@ -116,6 +116,7 @@ interface Position {
   marketCap: number;        // MCap at time of entry
   entryScore: number;       // Score at time of entry
   highWaterMark: number;    // Highest multiplier seen (for graduated trailing stop)
+  reason?: string;          // Why it was bought
 }
 
 // ── Deep Trade Memory ──
@@ -696,7 +697,7 @@ export async function triggerInstantSnipe(mintAddress: string, symbol: string): 
   }
 
   recordCoinEntry(mintAddress);
-  await openPosition(`snipe-${Date.now()}`, mintAddress, symbol || mintAddress.slice(0, 8), 'PumpSwap Migration', positionSize, 100, 0, price);
+  await openPosition(`snipe-${Date.now()}`, mintAddress, symbol || mintAddress.slice(0, 8), 'PumpSwap Migration', positionSize, 100, 0, price, 'Snipe: Raydium Migration');
   
   // Explicitly log the opening so the UI and portfolio track it instantly
   log(`Position fully opened via snipe: ${symbol} at $${price.toFixed(6)}`);
@@ -787,7 +788,7 @@ export async function manualBuy(mintAddress: string, symbol: string, solAmount: 
 
   log(`MANUAL BUY: ${symbol || mintAddress.slice(0, 8)} — ${buyAmount.toFixed(4)} SOL (from chat command)`);
   recordCoinEntry(mintAddress);
-  await openPosition(`manual-${Date.now()}`, mintAddress, symbol || mintAddress.slice(0, 8), '', buyAmount, 70, 0);
+  await openPosition(`manual-${Date.now()}`, mintAddress, symbol || mintAddress.slice(0, 8), '', buyAmount, 70, 0, undefined, 'Manual buy');
 
   const pos = Array.from(positions.values()).find(p => p.mintAddress === mintAddress && p.status !== 'closed');
   if (pos) {
@@ -968,6 +969,24 @@ async function pollForSignals(): Promise<void> {
         continue;
       }
 
+      let reason = 'Signal score threshold met';
+      try {
+        const sources = JSON.parse(String(row.sources || '[]'));
+        const srcStr = sources.length > 0 ? sources.join(' + ') : 'scanner';
+        
+        // Build clear explanation from score breakdown and sources
+        reason = `[${srcStr}] `;
+        const breakdown = [];
+        if (score.vol > 0) breakdown.push(`Volume: +${score.vol}`);
+        if (score.soc > 0) breakdown.push(`Social/KOL: +${score.soc}`);
+        if (score.whale > 0) breakdown.push(`Whale Activity: +${score.whale}`);
+        if (breakdown.length > 0) {
+           reason += breakdown.join(' | ');
+        } else {
+           reason += `Base Score: ${Math.floor(score.total)}`;
+        }
+      } catch (e) {}
+
       log(`ENTERING POSITION: ${symbol} | Score: ${score.total} | MCap: $${mcap.toLocaleString()} | Size: ${positionSize.toFixed(4)} SOL (x${learnedPositionSizeMult.toFixed(2)}) | ${phase.name}`);
       alert('dca_entry', `Entering ${symbol} — Score: ${score.total}/100, MCap: $${mcap.toLocaleString()}, DCA ${positionSize.toFixed(4)} SOL [${phase.name}]`);
 
@@ -976,7 +995,7 @@ async function pollForSignals(): Promise<void> {
         String(row.id ?? uuidv4()),
         mintAddress, symbol,
         String(row.name ?? ''),
-        positionSize, score.total ?? 0, mcap,
+        positionSize, score.total ?? 0, mcap, undefined, reason
       );
 
       // Mark signal as traded
@@ -1000,6 +1019,7 @@ async function openPosition(
   score: number,
   marketCap: number = 0,
   prefetchedPrice?: number,
+  reason?: string
 ): Promise<void> {
   // Get current price from DexScreener (or use pre-fetched price for snipes)
   const price = prefetchedPrice && prefetchedPrice > 0
@@ -1033,6 +1053,7 @@ async function openPosition(
     marketCap,
     entryScore: score,
     highWaterMark: 1.0,
+    reason: reason || 'Scanner signal',
   };
 
   positions.set(position.id, position);

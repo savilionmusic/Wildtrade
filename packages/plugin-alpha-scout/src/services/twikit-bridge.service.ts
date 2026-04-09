@@ -38,8 +38,10 @@ async function findSystemPython(): Promise<string | null> {
   for (const cmd of ['python3', 'python']) {
     const found = await new Promise<boolean>((resolve) => {
       const proc = spawn(cmd, ['--version'], { stdio: 'ignore' });
-      proc.on('error', () => resolve(false));
-      proc.on('close', (code) => resolve(code === 0));
+      // Timeout to prevent hanging if macOS prompts for Xcode tools
+      const timeout = setTimeout(() => { proc.kill(); resolve(false); }, 3000);
+      proc.on('error', () => { clearTimeout(timeout); resolve(false); });
+      proc.on('close', (code) => { clearTimeout(timeout); resolve(code === 0); });
     });
     if (found) return cmd;
   }
@@ -54,8 +56,9 @@ async function ensureVenvWithTwikit(): Promise<string | null> {
   if (fs.existsSync(venvPython)) {
     const installed = await new Promise<boolean>((resolve) => {
       const proc = spawn(venvPython, ['-c', 'import twscrape'], { stdio: 'ignore' });
-      proc.on('error', () => resolve(false));
-      proc.on('close', (code) => resolve(code === 0));
+      const timeout = setTimeout(() => { proc.kill(); resolve(false); }, 3000);
+      proc.on('error', () => { clearTimeout(timeout); resolve(false); });
+      proc.on('close', (code) => { clearTimeout(timeout); resolve(code === 0); });
     });
     if (installed) return venvPython;
   }

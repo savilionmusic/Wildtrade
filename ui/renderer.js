@@ -788,7 +788,8 @@ function refreshPortfolio() {
         div.innerHTML = `
           <div class="position-left">
             <span class="position-symbol"><a href="https://dexscreener.com/solana/${p.mintAddress}" target="_blank" class="token-link">${escapeHtml(p.symbol)}</a></span>
-            <span class="position-size">${p.solDeployed.toFixed(4)} SOL | DCA ${p.dcaLegsExecuted}/3</span>
+            <div style="font-size:11px; color:#aaa; margin-top:3px;">Reason: ${escapeHtml(p.reason || 'Scanner signal')}</div>
+            <span class="position-size" style="margin-top:3px">${p.solDeployed.toFixed(4)} SOL | DCA ${p.dcaLegsExecuted}/3</span>
           </div>
           <div class="position-center">
             <span class="position-mult" style="color:${posColor}">${mult}x</span>

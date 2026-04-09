@@ -178,14 +178,15 @@ async def main() -> None:
 
     # Fallback path: no-login RSS mode via Nitter mirrors.
     sys.stderr.write('[twikit] Falling back to Nitter RSS (no-login mode)...\n')
-    fallback_results: list[dict] = []
-
-    for handle in handles:
+    
+    async def fetch_rss(handle: str):
         tweets, err = await asyncio.to_thread(fetch_nitter_rss, handle)
-        if tweets:
-            fallback_results.extend(tweets)
-        elif err:
+        if err:
             sys.stderr.write(f'[twikit] Nitter error for @{handle}: {err}\n')
+        return tweets or []
+
+    results_list = await asyncio.gather(*(fetch_rss(h) for h in handles))
+    fallback_results: list[dict] = [t for sublist in results_list for t in sublist]
 
     if fallback_results:
         sys.stderr.write(f'[twikit] Nitter RSS fallback active ({len(fallback_results)} tweets).\n')

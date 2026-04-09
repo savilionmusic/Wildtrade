@@ -117,6 +117,7 @@ interface Position {
   entryScore: number;       // Score at time of entry
   highWaterMark: number;    // Highest multiplier seen (for graduated trailing stop)
   reason?: string;          // Why it was bought
+  kolStrategy?: 'flip' | 'conviction'; // KOL trade profile (flip = quick exit, conviction = hold)
 }
 
 // ── Deep Trade Memory ──
@@ -987,15 +988,19 @@ async function pollForSignals(): Promise<void> {
         }
       } catch (e) {}
 
-      log(`ENTERING POSITION: ${symbol} | Score: ${score.total} | MCap: $${mcap.toLocaleString()} | Size: ${positionSize.toFixed(4)} SOL (x${learnedPositionSizeMult.toFixed(2)}) | ${phase.name}`);
-      alert('dca_entry', `Entering ${symbol} — Score: ${score.total}/100, MCap: $${mcap.toLocaleString()}, DCA ${positionSize.toFixed(4)} SOL [${phase.name}]`);
+      const kolStrategy: 'flip' | 'conviction' | undefined =
+        score.kolStrategy === 'flip' || score.kolStrategy === 'conviction' ? score.kolStrategy : undefined;
+
+      const strategyLabel = kolStrategy ? ` [KOL:${kolStrategy.toUpperCase()}]` : '';
+      log(`ENTERING POSITION: ${symbol} | Score: ${score.total} | MCap: $${mcap.toLocaleString()} | Size: ${positionSize.toFixed(4)} SOL (x${learnedPositionSizeMult.toFixed(2)}) | ${phase.name}${strategyLabel}`);
+      alert('dca_entry', `Entering ${symbol} — Score: ${score.total}/100, MCap: $${mcap.toLocaleString()}, DCA ${positionSize.toFixed(4)} SOL [${phase.name}]${strategyLabel}`);
 
       recordCoinEntry(mintAddress);
       await openPosition(
         String(row.id ?? uuidv4()),
         mintAddress, symbol,
         String(row.name ?? ''),
-        positionSize, score.total ?? 0, mcap, undefined, reason
+        positionSize, score.total ?? 0, mcap, undefined, reason, kolStrategy
       );
 
       // Mark signal as traded
@@ -1019,7 +1024,8 @@ async function openPosition(
   score: number,
   marketCap: number = 0,
   prefetchedPrice?: number,
-  reason?: string
+  reason?: string,
+  kolStrategy?: 'flip' | 'conviction',
 ): Promise<void> {
   // Get current price from DexScreener (or use pre-fetched price for snipes)
   const price = prefetchedPrice && prefetchedPrice > 0
@@ -1054,33 +1060,41 @@ async function openPosition(
     entryScore: score,
     highWaterMark: 1.0,
     reason: reason || 'Scanner signal',
+    kolStrategy,
   };
 
   positions.set(position.id, position);
   
   // Make sure to add it to the open positions list immediately for portfolio tracking
-  log(`Position opened: ${symbol} (${position.id})`);
+  log(`Position opened: ${symbol} (${position.id})${kolStrategy ? ` [KOL: ${kolStrategy.toUpperCase()}]` : ''}`);
 
-  // Execute first DCA leg immediately (20%)
-  const leg1Sol = budgetSol * DCA_LEGS[0];
-  await executeBuy(position, leg1Sol, 1);
+  if (kolStrategy === 'flip') {
+    // FLIP KOL STRATEGY: Enter the entire budget in one shot — the pump window is 2-5 minutes.
+    // No DCA legs. We're racing the pump, not averaging in.
+    log(`FLIP KOL ENTRY: ${symbol} — buying full budget ${budgetSol.toFixed(4)} SOL immediately (no DCA)`);
+    await executeBuy(position, budgetSol, 1);
+  } else {
+    // DEFAULT / CONVICTION STRATEGY: DCA in across 3 legs
+    const leg1Sol = budgetSol * DCA_LEGS[0];
+    await executeBuy(position, leg1Sol, 1);
 
-  // Schedule remaining legs
-  pendingDcaLegs.push({
-    positionId: position.id,
-    leg: 2,
-    solAmount: budgetSol * DCA_LEGS[1],
-    mint: mintAddress,
-    executeAt: Date.now() + 15_000, // Short delay to let price settle, 15s instead of 60s
-  });
+    // Schedule remaining legs
+    pendingDcaLegs.push({
+      positionId: position.id,
+      leg: 2,
+      solAmount: budgetSol * DCA_LEGS[1],
+      mint: mintAddress,
+      executeAt: Date.now() + 15_000, // Short delay to let price settle, 15s instead of 60s
+    });
 
-  pendingDcaLegs.push({
-    positionId: position.id,
-    leg: 3,
-    solAmount: budgetSol * DCA_LEGS[2],
-    mint: mintAddress,
-    executeAt: Date.now() + 30_000, // Short delay, 30s instead of 180s
-  });
+    pendingDcaLegs.push({
+      positionId: position.id,
+      leg: 3,
+      solAmount: budgetSol * DCA_LEGS[2],
+      mint: mintAddress,
+      executeAt: Date.now() + 30_000, // Short delay, 30s instead of 180s
+    });
+  }
 
   // Save to DB
   try {
@@ -1349,6 +1363,45 @@ async function checkPricesAndExits(): Promise<void> {
       }
       const hwm = position.highWaterMark ?? 1.0;
 
+      // ── FLIP KOL STRATEGY: Aggressive quick-exit ──
+      // Pump-and-dump KOL — the entire opportunity is in the first 2-8 minutes.
+      if (position.kolStrategy === 'flip') {
+        // Tight stop: -15% — if it's not pumping, dump early
+        const flipStop = 0.85;
+        if (multiplier <= flipStop) {
+          log(`FLIP STOP-LOSS: ${position.symbol} hit ${multiplier.toFixed(2)}x — KOL pump did not materialise`);
+          await executeSell(position, 1.0, `flip_stop_loss (${multiplier.toFixed(2)}x)`);
+          position.status = 'stopped_out';
+          continue;
+        }
+
+        // Aggressive take-profit: sell 80% at 1.5x, last 20% at 2.5x or time limit
+        if (position.exitTiersHit === 0 && multiplier >= 1.5) {
+          log(`FLIP EXIT 1: ${position.symbol} at ${multiplier.toFixed(2)}x — selling 80%`);
+          await executeSell(position, 0.80, `flip_1.5x_take-profit`);
+        } else if (position.exitTiersHit >= 1 && multiplier >= 2.5) {
+          log(`FLIP FINAL EXIT: ${position.symbol} at ${multiplier.toFixed(2)}x — selling remainder`);
+          await executeSell(position, 1.0, `flip_2.5x_take-profit`);
+          continue;
+        }
+
+        // Time kill: exit remainder after 8 minutes — pump window is gone
+        if (holdMins >= 8) {
+          log(`FLIP TIME EXIT: ${position.symbol} at ${multiplier.toFixed(2)}x after ${Math.round(holdMins)}m — pump window closed`);
+          await executeSell(position, 1.0, `flip_time_exit (${multiplier.toFixed(2)}x, ${Math.round(holdMins)}m)`);
+          continue;
+        }
+
+        await sleep(1000);
+        continue; // Skip default exit logic for flip positions
+      }
+
+      // ── CONVICTION / DEFAULT STRATEGY: Patient hold with graduated exits ──
+      // Conviction KOL (Gold Tier) or no KOL — use the standard DCA/trailing approach.
+      const maxHoldMins = position.kolStrategy === 'conviction'
+        ? 60  // Give conviction calls up to 60 min (vs 120 for default)
+        : (learnedMaxHoldMs > 0 ? learnedMaxHoldMs / 60_000 : 120);
+
       // ── Graduated trailing stop ──
       let trailingStop = STOP_LOSS_MULTIPLIER; // default 0.70
       if (hwm >= 3.0) {
@@ -1398,17 +1451,17 @@ async function checkPricesAndExits(): Promise<void> {
         continue;
       }
 
-      // ── Time-based exit: use learned optimal hold time, or default 2h ──
-      const maxHoldMins = learnedMaxHoldMs > 0 ? learnedMaxHoldMs / 60_000 : 120;
+      // ── Time-based exit: use learned optimal hold time, or strategy limit ──
       if (holdMins >= maxHoldMins && multiplier >= 0.85 && multiplier <= 1.15) {
-        log(`TIME EXIT: ${position.symbol} flat at ${multiplier.toFixed(2)}x for ${Math.round(holdMins)}m (learned max: ${Math.round(maxHoldMins)}m) — freeing capital`);
+        const label = position.kolStrategy === 'conviction' ? 'CONVICTION' : 'TIME';
+        log(`${label} EXIT: ${position.symbol} flat at ${multiplier.toFixed(2)}x for ${Math.round(holdMins)}m (max: ${Math.round(maxHoldMins)}m) — freeing capital`);
         await executeSell(position, 1.0, `time_exit (flat ${multiplier.toFixed(2)}x, ${Math.round(holdMins)}m)`);
         continue;
       }
 
       // ── Recovery DCA: only if price bounced back above 0.9x after dipping ──
-      // (Never DCA into a falling knife — only on recovery signals)
-      if (multiplier >= 0.88 && multiplier <= 0.95 && hwm >= 1.0 && holdMins <= 20 && position.dcaLegsExecuted < 3) {
+      // (Never DCA into a falling knife — only on recovery signals. Not for flip positions.)
+      if (!position.kolStrategy && multiplier >= 0.88 && multiplier <= 0.95 && hwm >= 1.0 && holdMins <= 20 && position.dcaLegsExecuted < 3) {
         const phase = getCurrentPhase();
         const available = totalBudgetSol - deployedSol + realizedPnlSol;
         const dcaAmount = Math.min(phase.positionSizeMin * 0.5, available * 0.10) * learnedDcaAggression;

@@ -504,6 +504,8 @@ async function processToken(token: {
   // Look up KOL/social mentions for this mint
   let kolMentions = 0;
   let hasGoldKol = false;
+  let detectedKolStrategy: 'flip' | 'conviction' | 'unknown' = 'unknown';
+  let detectedKolName: string | undefined;
   try {
     const kolSignals = getKolSignals();
     const fiveMinAgo = Date.now() - 300_000;
@@ -511,17 +513,26 @@ async function processToken(token: {
       s => s.tokenMint === mint && s.timestamp > fiveMinAgo
     ).length;
     // Also check twitter_kol specifically — these are high signal
-    const twitterKolCount = kolSignals.filter(
+    const twitterKolSignals = kolSignals.filter(
       s => s.tokenMint === mint && s.source === 'twitter_kol'
-    ).length;
-    if (twitterKolCount > 0) {
-      kolMentions += twitterKolCount * 2; // Twitter KOL mentions count double
+    );
+    if (twitterKolSignals.length > 0) {
+      kolMentions += twitterKolSignals.length * 2; // Twitter KOL mentions count double
     }
     
-    // Check for Gold Tier KOL mentions
-    hasGoldKol = kolSignals.some(
-      s => s.tokenMint === mint && s.kolName && isGoldKol(s.kolName) && s.source === 'twitter_kol'
+    // Check for Gold Tier KOL mentions (conviction callers — researched, hold-worthy)
+    const goldKolSignal = twitterKolSignals.find(
+      s => s.kolName && isGoldKol(s.kolName)
     );
+    if (goldKolSignal) {
+      hasGoldKol = true;
+      detectedKolStrategy = 'conviction';
+      detectedKolName = goldKolSignal.kolName;
+    } else if (twitterKolSignals.length > 0) {
+      // Regular KOL (not Gold Tier) — treat as a flip: quick pump, quick exit
+      detectedKolStrategy = 'flip';
+      detectedKolName = twitterKolSignals[0].kolName;
+    }
   } catch { /* no KOL data available */ }
 
   // Look up smart money buys for this mint (GMGN + Wallet Intel + Helius)
@@ -562,6 +573,12 @@ async function processToken(token: {
     whaleNetFlow,
     liquidityUsd: market.liquidity,
   });
+
+  // Attach KOL profile to score so trader can apply strategy-specific exit logic
+  if (detectedKolStrategy !== 'unknown') {
+    score.kolStrategy = detectedKolStrategy;
+    if (detectedKolName) score.kolName = detectedKolName;
+  }
 
   // ── Token age bonus (reduced — prevent FOMO inflation) ──
   

@@ -1,6 +1,8 @@
 export type SignalSource = 'pumpportal' | 'helius_whale' | 'twitter_kol' | 'smart_money' | 'migration' | 'convergence' | 'dexscreener';
 export type SignalConviction = 'low' | 'medium' | 'high';
 
+export type KolStrategy = 'flip' | 'conviction' | 'unknown';
+
 export interface CompositeScore {
   volumeScore: number;       // 0–20
   holderScore: number;       // 0–20
@@ -9,6 +11,9 @@ export interface CompositeScore {
   liquidityScore: number;    // 0–15
   total: number;             // 0–100
   conviction: SignalConviction;
+  // KOL-specific fields (only present when signal was triggered by a KOL mention)
+  kolStrategy?: KolStrategy; // 'flip' = pump-and-dump, 'conviction' = genuine caller
+  kolName?: string;          // The KOL handle that triggered the signal
 }
 
 export interface AlphaSignal {

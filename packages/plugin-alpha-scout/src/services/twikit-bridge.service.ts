@@ -86,12 +86,12 @@ async function ensureVenvWithTwikit(): Promise<string | null> {
     return null;
   }
 
-  console.log('[twikit] Installing twscrape into virtual environment (one-time, ~10 seconds)...');
+  console.log('[twikit] Installing twscrape + ntscraper into virtual environment (one-time, ~15 seconds)...');
 
-  // Install twscrape — more reliable than twikit on Python 3.14
+  // Install twscrape and ntscraper — twscrape for auth, ntscraper for Nitter fallback
   const venvPip = path.join(venvDir, 'bin', 'pip3');
   const installed = await new Promise<boolean>((resolve) => {
-    const proc = spawn(venvPip, ['install', 'twscrape', '--quiet'], { stdio: 'pipe' });
+    const proc = spawn(venvPip, ['install', 'twscrape', 'ntscraper', '--quiet'], { stdio: 'pipe' });
     let stderr = '';
     proc.stderr?.on('data', (d: Buffer) => { stderr += d.toString(); });
     proc.on('error', () => resolve(false));

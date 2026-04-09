@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-twscrape + RSS bridge for Wildtrade Alpha Intel.
+twscrape + ntscraper bridge for Wildtrade Alpha Intel.
 Fetches recent tweets from KOL handles and outputs JSON to stdout.
 
 Usage: python3 twikit_scraper.py handle1 handle2 ...
 
 Credentials are read from env vars:
   TWITTER_USERNAME, TWITTER_PASSWORD, TWITTER_EMAIL (optional)
+  TWITTER_COOKIES — full Cookie-Editor JSON export
 
 Account state is cached at ~/.wildtrade_twscrape.db
 """
@@ -15,95 +16,67 @@ try:
     from twscrape import API, gather
 except ImportError:
     import json, sys
-    print(json.dumps({"error": "twscrape not installed", "hint": "pip3 install twscrape"}), flush=True)
+    print(json.dumps({"error": "twscrape not installed", "hint": "pip3 install twscrape ntscraper"}), flush=True)
     sys.exit(1)
+
+try:
+    from ntscraper import Nitter
+    NTSCRAPER_AVAILABLE = True
+except ImportError:
+    NTSCRAPER_AVAILABLE = False
 
 import asyncio
 import json
 import os
 import sys
 import traceback
-import urllib.parse
-import urllib.request
-import xml.etree.ElementTree as ET
-from email.utils import parsedate_to_datetime
 
 DB_PATH = os.path.expanduser('~/.wildtrade_twscrape.db')
-NITTER_INSTANCES = [
-    'https://nitter.poast.org',
-    'https://nitter.privacydev.net',
-    'https://nitter.space',
-    'https://nitter.1d4.us',
-    'https://nitter.kavin.rocks',
-    'https://nitter.unixfox.eu',
-    'https://nitter.net',
-]
-USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36'
 
 
-def parse_rss_date(raw: str) -> int:
+def fetch_via_ntscraper(handles: list[str]) -> list[dict]:
+    """Use ntscraper to fetch tweets — it auto-picks a working Nitter instance."""
+    if not NTSCRAPER_AVAILABLE:
+        sys.stderr.write('[twikit] ntscraper not installed, skipping Nitter fallback.\n')
+        return []
+
     try:
-        dt = parsedate_to_datetime(raw)
-        return int(dt.timestamp() * 1000)
-    except Exception:
-        return 0
+        scraper = Nitter(log_level=0, skip_instance_check=False)
+        results: list[dict] = []
 
+        for handle in handles:
+            try:
+                data = scraper.get_tweets(handle, mode='user', number=20)
+                tweets_raw = data.get('tweets', []) if isinstance(data, dict) else []
+                for t in tweets_raw:
+                    text = t.get('text', '') or ''
+                    tweet_id = ''
+                    link = t.get('link', '')
+                    if '/status/' in link:
+                        tweet_id = link.split('/status/', 1)[1].split('?')[0].strip('/')
+                    if not tweet_id or not text:
+                        continue
+                    date_str = t.get('date', '')
+                    ts = 0
+                    if date_str:
+                        try:
+                            from datetime import datetime
+                            ts = int(datetime.strptime(date_str, '%b %d, %Y · %I:%M %p UTC').timestamp() * 1000)
+                        except Exception:
+                            pass
+                    results.append({
+                        'handle': handle,
+                        'id': tweet_id,
+                        'text': text,
+                        'timestamp': ts,
+                    })
+            except Exception as e:
+                sys.stderr.write(f'[twikit] ntscraper error for @{handle}: {str(e)}\n')
 
-def extract_tweet_id(link: str) -> str:
-    if '/status/' not in link:
-        return ''
-    tail = link.split('/status/', 1)[1]
-    tail = tail.split('?', 1)[0].split('#', 1)[0]
-    return tail.strip('/')
-
-
-def fetch_nitter_rss(handle: str) -> tuple[list[dict], str | None]:
-    last_error: str | None = None
-    quoted = urllib.parse.quote(handle)
-
-    for base in NITTER_INSTANCES:
-        url = f"{base.rstrip('/')}/{quoted}/rss"
-        try:
-            req = urllib.request.Request(url, headers={'User-Agent': USER_AGENT})
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                xml_bytes = resp.read()
-
-            root = ET.fromstring(xml_bytes)
-            items = root.findall('./channel/item')
-            tweets: list[dict] = []
-
-            for item in items[:20]:
-                title = (item.findtext('title') or '').strip()
-                if not title:
-                    continue
-
-                prefix = f'{handle}: '
-                if title.lower().startswith(prefix.lower()):
-                    title = title[len(prefix):]
-
-                link = (item.findtext('link') or '').strip()
-                guid = (item.findtext('guid') or '').strip()
-                tweet_id = extract_tweet_id(link) or extract_tweet_id(guid)
-                if not tweet_id:
-                    continue
-
-                timestamp = parse_rss_date((item.findtext('pubDate') or '').strip())
-
-                tweets.append({
-                    'handle': handle,
-                    'id': tweet_id,
-                    'text': title,
-                    'timestamp': timestamp,
-                })
-
-            if tweets:
-                return tweets, None
-
-            last_error = f'No RSS items from {base}'
-        except Exception as e:
-            last_error = f'{base}: {str(e)}'
-
-    return [], last_error
+        return results
+    except Exception as e:
+        sys.stderr.write(f'[twikit] ntscraper init failed: {str(e)}\n')
+        return []
 
 
 async def main() -> None:
@@ -248,26 +221,18 @@ async def main() -> None:
             sys.stderr.write(f'[twikit] Login exception:\n{tb}\n')
             login_error = f'{type(e).__name__}: {str(e)}'
 
-    # Fallback path: no-login RSS mode via Nitter mirrors.
-    sys.stderr.write('[twikit] Falling back to Nitter RSS (no-login mode)...\n')
-    
-    async def fetch_rss(handle: str):
-        tweets, err = await asyncio.to_thread(fetch_nitter_rss, handle)
-        if err:
-            sys.stderr.write(f'[twikit] Nitter error for @{handle}: {err}\n')
-        return tweets or []
-
-    results_list = await asyncio.gather(*(fetch_rss(h) for h in handles))
-    fallback_results: list[dict] = [t for sublist in results_list for t in sublist]
+    # Fallback path: ntscraper (auto-selects a working Nitter instance)
+    sys.stderr.write('[twikit] Trying ntscraper Nitter fallback...\n')
+    fallback_results = await asyncio.to_thread(fetch_via_ntscraper, handles)
 
     if fallback_results:
-        sys.stderr.write(f'[twikit] Nitter RSS fallback active — fetched {len(fallback_results)} tweets from {len(handles)} handles.\n')
+        sys.stderr.write(f'[twikit] Nitter fallback active — fetched {len(fallback_results)} tweets from {len(handles)} handles.\n')
         print(json.dumps(fallback_results), flush=True)
         return
 
-    sys.stderr.write(f'[twikit] All Nitter instances failed for {len(handles)} handles. No Twitter data available.\n')
+    sys.stderr.write(f'[twikit] All Twitter paths failed for {len(handles)} handles.\n')
     if login_error:
-        sys.stderr.write(f'[twikit] Login error was: {login_error}\n')
+        sys.stderr.write(f'[twikit] Last error: {login_error}\n')
     print(json.dumps([]), flush=True)
 
 

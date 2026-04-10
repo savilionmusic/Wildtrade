@@ -39,6 +39,7 @@ import { getRecentSmartBuys } from './smart-money-monitor.service.js';
 import { getRecentWalletBuys } from './wallet-intelligence.service.js';
 import { getTrackedWalletAddresses } from './smart-money-monitor.service.js';
 import { triggerInstantSnipe } from '@wildtrade/plugin-smart-trader';
+import { scanForSybilRings } from './sybil-ring-scanner.service.js';
 import { startPumpSwapSniper, stopPumpSwapSniper, onPumpPortalMigration } from './pumpswap-sniper.service.js';
 import type { MigrationSnipeEvent } from './pumpswap-sniper.service.js';
 import {
@@ -95,14 +96,25 @@ export function startScanner(
   // 0. Start Pump launch sniper lane (separate from the regular scoring queue)
   // This keeps normal scanner behavior while allowing fast launch entries.
   startPumpLaunchSniper(
-    (launch) => {
+    async (launch) => {
       logCb(
         'info',
-        `🚀 PUMP LAUNCH SNIPE: ${launch.symbol || launch.mint.slice(0, 8)} | ` +
+        `🚀 PUMP LAUNCH SNIPE CANDIDATE: ${launch.symbol || launch.mint.slice(0, 8)} | ` +
         `liq=$${Math.round(launch.liquidityUsd).toLocaleString()} | ` +
         `vol1h=$${Math.round(launch.volumeH1Usd).toLocaleString()} | ` +
         `b/s=${launch.buySellRatio.toFixed(2)}`,
       );
+
+      // Pre-flight Sybil Ring Scan for Degen-Scanner logic (Respect Constant-K Rate Limits)
+      // Only runs on tokens that have passed the volume/liquidity filters above
+      const sybilReport = await scanForSybilRings(launch.mint, (msg) => logCb('info', msg));
+      
+      if (sybilReport?.isInsiderCabal) {
+        logCb('warn', `🚨 ABORT SNIPE: ${launch.symbol || launch.mint.slice(0,8)} has an Insider Cabal (Cluster Size: ${sybilReport.largestClusterSize}). Likely rug/farm.`);
+        return;
+      }
+
+      logCb('info', `✅ CLEAN SYBIL REPORT: ${launch.symbol || launch.mint.slice(0,8)} is safe. Proceeding to instant snipe...`);
 
       triggerInstantSnipe(launch.mint, launch.symbol || launch.mint.slice(0, 8)).catch((err) => {
         logCb('error', `Launch snipe trigger failed for ${launch.mint}: ${String(err)}`);

@@ -118,9 +118,23 @@ export async function scanForSybilRings(mint: string, logCb: (msg: string) => vo
       }
     }
 
-    const isInsiderCabal = largestClusterSize >= 3;
+    let isInsiderCabal = false;
+    let reportLog = `\n📊 --- DEGEN-SCANNER REPORT FOR ${mint.slice(0,6)} --- 📊\n`;
+    reportLog += `Total Buyers Checked: ${buyers.length}\n`;
 
-    logCb(`[sybil-scanner] Scan complete for ${mint}. Largest cluster: ${largestClusterSize}. Cabal detected: ${isInsiderCabal}`);
+    for (const funder in funderClusters) {
+      const cluster = funderClusters[funder];
+      if (cluster.length > largestClusterSize) {
+        largestClusterSize = cluster.length;
+      }
+      if (cluster.length >= 3) {
+        isInsiderCabal = true;
+      }
+      reportLog += `📍 Funder: ${funder.slice(0, 8)}... funded ${cluster.length} wallets: [${cluster.map(w => w.slice(0,4)).join(', ')}]\n`;
+    }
+
+    reportLog += `🚨 Cabal Detected: ${isInsiderCabal ? 'YES' : 'NO'} (Largest Cluster: ${largestClusterSize})\n`;
+    logCb(reportLog);
 
     return {
       mint,

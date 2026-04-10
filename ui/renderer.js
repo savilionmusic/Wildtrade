@@ -909,8 +909,8 @@ function refreshPortfolio() {
     } else {
       posContainer.innerHTML = '';
       for (const p of data.positions) {
-        const mult = p.currentPrice > 0 && p.entryPrice > 0 ? (p.currentPrice / p.entryPrice).toFixed(2) : '?';
         const pnlPct = p.pnlPct ?? 0;
+        const mult = pnlPct !== 0 ? (pnlPct / 100).toFixed(2) : '0.00';
         const pnlSol = p.pnlSol ?? 0;
         const posUp = pnlPct >= 0;
         const posArrow = posUp ? '\u25B2' : '\u25BC';

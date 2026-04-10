@@ -50,7 +50,6 @@ const SOL_MINT = 'So11111111111111111111111111111111111111112';
 
 // ── Trade Limits ──
 let maxTradesPerDay = 20;
-const MAX_TRADES_PER_HOUR = 5;
 const MAX_DAILY_LOSS_PCT = 30;  // Stop trading if down 30% of budget in a day
 // Track unique coins traded (mint + timestamp), not individual DCA legs
 const coinEntries: Array<{ mint: string; timestamp: number }> = [];
@@ -568,13 +567,6 @@ function getTradesToday(): number {
   return uniqueMints.size;
 }
 
-function getTradesThisHour(): number {
-  const hourAgo = Date.now() - 3_600_000;
-  const hourEntries = coinEntries.filter(e => e.timestamp > hourAgo);
-  const uniqueMints = new Set(hourEntries.map(e => e.mint));
-  return uniqueMints.size;
-}
-
 function recordCoinEntry(mint: string): void {
   coinEntries.push({ mint, timestamp: Date.now() });
   // Clean up old entries
@@ -585,9 +577,6 @@ function recordCoinEntry(mint: string): void {
 function canTrade(): { allowed: boolean; reason?: string } {
   if (getTradesToday() >= maxTradesPerDay) {
     return { allowed: false, reason: `Daily trade limit reached (${maxTradesPerDay})` };
-  }
-  if (getTradesThisHour() >= MAX_TRADES_PER_HOUR) {
-    return { allowed: false, reason: `Hourly trade limit reached (${MAX_TRADES_PER_HOUR})` };
   }
   // Check daily loss limit — include unrealized losses
   const dailyLossLimit = totalBudgetSol * (MAX_DAILY_LOSS_PCT / 100);

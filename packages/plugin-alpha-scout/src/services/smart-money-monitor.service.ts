@@ -40,6 +40,7 @@ export interface WalletBuy {
 }
 
 export type SmartMoneyCallback = (signal: SmartMoneySignal) => void;
+export type SmartMoneyBuyCallback = (buy: { wallet: string; tokenAddress: string; tokenSymbol: string; solAmount: number }) => void;
 
 // ── Config ──
 
@@ -104,6 +105,7 @@ let connection: Connection | null = null;
 let trackedWallets: TrackedWallet[] = [];
 let recentBuys: RecentBuy[] = [];
 let onSignalCallback: SmartMoneyCallback | null = null;
+let onBuyCallback: SmartMoneyBuyCallback | null = null;
 let walletRefreshTimer: ReturnType<typeof setInterval> | null = null;
 let gmgnBackfillTimer: ReturnType<typeof setInterval> | null = null;
 let isRunning = false;
@@ -179,6 +181,7 @@ const emittedSignals = new Set<string>();
 export async function startSmartMoneyMonitor(
   onSignal: SmartMoneyCallback,
   userWallets?: string[],
+  onBuy?: SmartMoneyBuyCallback,
 ): Promise<void> {
   if (isRunning) {
     console.log('[smart-money] Monitor already running');
@@ -187,6 +190,7 @@ export async function startSmartMoneyMonitor(
 
   isRunning = true;
   onSignalCallback = onSignal;
+  onBuyCallback = onBuy ?? null;
   connection = new Connection(CONFIG.RPC_ENDPOINT, {
     wsEndpoint: CONFIG.WS_ENDPOINT,
     commitment: 'confirmed',
@@ -279,16 +283,19 @@ async function backfillRecentBuysFromGmgn(): Promise<void> {
 
       if (existing) continue;
 
+      const sym = buy.token_symbol || buy.token_address.slice(0, 6);
+      const solAmt = Number(buy.sol_amount || 0);
       recentBuys.push({
         wallet: wallet.address,
         tokenAddress: buy.token_address,
-        tokenSymbol: buy.token_symbol || buy.token_address.slice(0, 6),
+        tokenSymbol: sym,
         tokenName: buy.token_name || buy.token_address,
-        solAmount: Number(buy.sol_amount || 0),
+        solAmount: solAmt,
         timestamp: buy.timestamp,
         qualityScore: wallet.qualityScore,
         winrate: wallet.winrate,
       });
+      if (onBuyCallback) onBuyCallback({ wallet: wallet.address, tokenAddress: buy.token_address, tokenSymbol: sym, solAmount: solAmt });
       added++;
     }
   }
@@ -581,6 +588,7 @@ async function handleWalletLogs(wallet: TrackedWallet, logs: Logs): Promise<void
           winrate: wallet.winrate,
         });
         
+        if (onBuyCallback) onBuyCallback({ wallet: wallet.address, tokenAddress: boughtTokenMint, tokenSymbol: symbol, solAmount: solSpent });
         detectClusters();
       }).catch(() => {
         recentBuys.push({
@@ -594,6 +602,7 @@ async function handleWalletLogs(wallet: TrackedWallet, logs: Logs): Promise<void
           winrate: wallet.winrate,
         });
         
+        if (onBuyCallback) onBuyCallback({ wallet: wallet.address, tokenAddress: boughtTokenMint, tokenSymbol: boughtTokenMint.slice(0, 6), solAmount: solSpent });
         detectClusters();
       });
     }

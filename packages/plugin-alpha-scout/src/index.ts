@@ -41,7 +41,7 @@ export {
   getMonitorStatus, getRecentSmartBuys, forceCheck,
   getTrackedWalletAddresses,
 } from './services/smart-money-monitor.service.js';
-export type { SmartMoneySignal, SmartMoneyCallback, WalletBuy } from './services/smart-money-monitor.service.js';
+export type { SmartMoneySignal, SmartMoneyCallback, SmartMoneyBuyCallback, WalletBuy } from './services/smart-money-monitor.service.js';
 
 export {
   startScanner, stopScanner, getScannerStats, enqueueToken,

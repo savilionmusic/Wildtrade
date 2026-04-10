@@ -329,6 +329,12 @@ async function main(): Promise<void> {
       );
     },
     userWallets.length > 0 ? userWallets : undefined,
+    // Individual buy callback — fire alert for every smart money buy
+    (buy) => {
+      const buyMsg = `🧠 Wallet ${buy.wallet.slice(0, 6)}...${buy.wallet.slice(-4)} bought ${buy.solAmount.toFixed(2)} SOL of ${buy.tokenSymbol} | https://dexscreener.com/solana/${buy.tokenAddress}`;
+      addProactiveAlert('smart_money_alert', buyMsg);
+      sendToParent({ type: 'proactive-alert', alertType: 'smart_money_alert', message: buyMsg });
+    },
   );
   console.log('[boot] Smart money monitor started.');
 

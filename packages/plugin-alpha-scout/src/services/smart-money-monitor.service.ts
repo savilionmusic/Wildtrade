@@ -87,6 +87,46 @@ let onSignalCallback: SmartMoneyCallback | null = null;
 let walletRefreshTimer: ReturnType<typeof setInterval> | null = null;
 let isRunning = false;
 
+// ── Rate Limiter ──
+let activeRpcCalls = 0;
+const rpcQueue: Array<() => Promise<void>> = [];
+
+async function enqueueGetParsedTransaction(signature: string): Promise<any> {
+  return new Promise((resolve, reject) => {
+    rpcQueue.push(async () => {
+      try {
+        if (!connection) return resolve(null);
+        const tx = await connection.getParsedTransaction(signature, {
+            maxSupportedTransactionVersion: 0,
+            commitment: 'confirmed'
+        });
+        resolve(tx);
+      } catch (err: any) {
+        reject(err);
+      }
+    });
+    processRpcQueue();
+  });
+}
+
+async function processRpcQueue() {
+  if (activeRpcCalls >= 2 || rpcQueue.length === 0) return; // Max 2 concurrent RPS
+  activeRpcCalls++;
+  
+  const task = rpcQueue.shift();
+  if (task) {
+    try {
+      await task();
+    } catch(e) {}
+  }
+  
+  // Wait 1000ms between parsed tx checks to stay under specific RPC call limits
+  setTimeout(() => {
+    activeRpcCalls--;
+    processRpcQueue();
+  }, 1000);
+}
+
 // Track which signals we've already emitted to avoid duplicates
 const emittedSignals = new Set<string>();
 
@@ -299,12 +339,18 @@ async function handleWalletLogs(wallet: TrackedWallet, logs: Logs): Promise<void
     let tx = null;
     
     for (let i = 0; i < maxRetries; i++) {
-        tx = await connection.getParsedTransaction(logs.signature, {
-            maxSupportedTransactionVersion: 0,
-            commitment: 'confirmed'
-        });
-        if (tx) break;
-        await new Promise(r => setTimeout(r, 2000));
+        try {
+            tx = await enqueueGetParsedTransaction(logs.signature);
+            if (tx) break;
+        } catch (e: any) {
+            if (e?.message?.includes('429')) {
+                // Backoff and retry silently
+                await new Promise(r => setTimeout(r, Math.random() * 2000 + 1000));
+                continue;
+            }
+            throw e;
+        }
+        if (!tx) await new Promise(r => setTimeout(r, 2000));
     }
 
     if (!tx || !tx.meta) return;
@@ -400,8 +446,12 @@ async function handleWalletLogs(wallet: TrackedWallet, logs: Logs): Promise<void
       });
     }
 
-  } catch (err) {
-    console.error(`[smart-money] Failed to parsed WSS transaction ${logs.signature}:`, err);
+  } catch (err: any) {
+    if (err?.message?.includes('429')) {
+      // Very silent drop for 429 if all retries exhausted, don't spam terminal
+    } else {
+      console.error(`[smart-money] Failed to parsed WSS transaction ${logs.signature}:`, err);
+    }
   }
 }
 

@@ -30,14 +30,12 @@ export async function checkToken(mint: string): Promise<RugcheckResult> {
   // Throttle
   const timeSinceLast = now - lastCallTime;
   if (timeSinceLast < MIN_INTERVAL_MS) {
-    console.log(`[self-healer] rugcheck: Rate limiting... waiting ${MIN_INTERVAL_MS - timeSinceLast}ms`);
     await new Promise(r => setTimeout(r, MIN_INTERVAL_MS - timeSinceLast));
   }
   lastCallTime = Date.now();
 
   try {
     const url = `${RUGCHECK_API_BASE}/tokens/${mint}/report`;
-    console.log(`[self-healer] rugcheck: fetching report for ${mint}`);
 
     const response = await fetch(url, {
       method: 'GET',
@@ -46,10 +44,10 @@ export async function checkToken(mint: string): Promise<RugcheckResult> {
     });
 
     if (!response.ok) {
-      console.log(`[self-healer] rugcheck: HTTP ${response.status} for ${mint}`);
       if (response.status === 429) {
-        console.log(`[self-healer] rugcheck: rate limited (429)! Backing off for 10s.`);
         lastCallTime = Date.now() + 10_000; // Increase throttle timeout on next call
+      } else {
+        console.log(`[self-healer] rugcheck: HTTP ${response.status} for ${mint}`);
       }
       return { score: 0, isRug: true, risks: [`http_${response.status}`] };
     }

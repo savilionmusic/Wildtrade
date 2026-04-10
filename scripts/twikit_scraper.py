@@ -107,8 +107,14 @@ async def main() -> None:
             accts = await api_check.pool.get_all()
             all_inactive = accts and all(not getattr(a, 'active', False) for a in accts)
             if all_inactive:
-                os.remove(DB_PATH)
-                sys.stderr.write('[twikit] Removed stale twscrape DB (all accounts inactive).\n')
+                # Instead of os.remove which breaks twscrape's internal migration state
+                # we delete all rows from accounts table
+                import sqlite3
+                conn = sqlite3.connect(DB_PATH)
+                conn.execute("DELETE FROM accounts")
+                conn.commit()
+                conn.close()
+                sys.stderr.write('[twikit] Cleared stale twscrape DB (all accounts inactive).\n')
         except Exception:
             pass
 

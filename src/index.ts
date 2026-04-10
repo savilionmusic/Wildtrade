@@ -76,6 +76,7 @@ import {
   onTelegramMessage,
   stopTelegramPolling,
   enqueueToken,
+  fetchDexScreenerData,
 } from '@wildtrade/plugin-alpha-scout';
 import {
   startAutonomousTrader,
@@ -87,6 +88,7 @@ import {
   setMaxTradesPerDay,
   resetPaperPortfolio,
   getLessons,
+  triggerInstantSnipe,
 } from '@wildtrade/plugin-smart-trader';
 import {
   seedEndpoints,
@@ -349,10 +351,38 @@ async function main(): Promise<void> {
   });
 
   // Wire KOL signals into the scanner queue
-  setTokenMentionCallback((signal) => {
+  setTokenMentionCallback(async (signal) => {
     addProactiveAlert('kol_signal', `${signal.source}: ${signal.context}`);
     sendToParent({ type: 'proactive-alert', alertType: 'kol_signal', message: `${signal.source}: ${signal.context}` });
     
+    try {
+      // Check for fast-lane snipe opportunity
+      const dexDataStr = await fetchDexScreenerData(signal.tokenMint);
+      if (dexDataStr) {
+        const dexData = JSON.parse(dexDataStr);
+        const pairs = dexData.pairs || [];
+        
+        if (pairs.length > 0) {
+          const mainPair = pairs[0];
+          const pairAgeMs = Date.now() - mainPair.pairCreatedAt;
+          const pairAgeMinutes = pairAgeMs / (1000 * 60);
+          
+          const signalAgeMinutes = (Date.now() - (signal.timestamp || Date.now())) / (1000 * 60);
+          
+          if (pairAgeMinutes <= 15 && signalAgeMinutes < 2) {
+            console.log(`[kol-intel] 🚀 FAST-LANE SNIPE TRIGGERED for ${signal.tokenSymbol || signal.tokenMint} - Pair is ${pairAgeMinutes.toFixed(1)} mins old, Tweet is ${signalAgeMinutes.toFixed(1)} mins old`);
+            addProactiveAlert('kol_signal', `FAST LANE SNIPE: ${signal.tokenSymbol || signal.tokenMint} is fresh (${pairAgeMinutes.toFixed(1)} min age)`);
+            triggerInstantSnipe(signal.tokenMint);
+            return; // Skip normal enqueue
+          } else {
+             console.log(`[kol-intel] Token ${signal.tokenSymbol || signal.tokenMint} too old for fast-lane (Pair: ${pairAgeMinutes.toFixed(1)}m, Signal: ${signalAgeMinutes.toFixed(1)}m). Queueing normally.`);
+          }
+        }
+      }
+    } catch (err) {
+       console.log(`[kol-intel] Fast lane check failed: ${err}`);
+    }
+
     // Actually push this token into the deep-analysis scanner queue!
     enqueueToken(signal.tokenMint, signal.tokenSymbol, signal.context, 'twitter_kol');
   });

@@ -37,7 +37,7 @@ async function fetchJupiterPrice(mint: string): Promise<string | null> {
   }
 }
 
-async function fetchDexScreenerData(mint: string): Promise<string | null> {
+export async function fetchDexScreenerData(mint: string): Promise<string | null> {
   try {
     const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${mint}`);
     if (!res.ok) return null;

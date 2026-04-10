@@ -66,6 +66,8 @@ export type { PumpLaunchSnipeEvent, PumpLaunchSnipeCallback } from './services/p
 export { getTrendingTokens, getTokenPairs, searchTokens } from './services/dexscreener.service.js';
 export type { TrendingToken, DexPair } from './services/dexscreener.service.js';
 
+export { fetchDexScreenerData } from './providers/market-data.provider.js';
+
 // Wallet Intelligence
 export {
   startWalletIntelligence, stopWalletIntelligence,

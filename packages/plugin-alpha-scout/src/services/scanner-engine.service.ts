@@ -298,7 +298,7 @@ async function processNextToken(): Promise<void> {
   const prefetchedHolders = new Map<string, { count: number, topPct: number }>();
 
   try {
-    const SOLANA_RPC = process.env.SOLANA_RPC_HELIUS || process.env.SOLANA_RPC_QUICKNODE || process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com';
+    const SOLANA_RPC = process.env.SOLANA_RPC_CONSTANTK || process.env.SOLANA_RPC_HELIUS || process.env.SOLANA_RPC_QUICKNODE || process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com';
     const payload = batch.map((t, i) => ({
       jsonrpc: '2.0', id: i + 1,
       method: 'getTokenLargestAccounts',
@@ -517,7 +517,7 @@ async function processToken(
     holderCount = prefetchedHolders.count;
   } else {
     try {
-      const SOLANA_RPC = process.env.SOLANA_RPC_HELIUS || process.env.SOLANA_RPC_QUICKNODE || process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com';
+      const SOLANA_RPC = process.env.SOLANA_RPC_CONSTANTK || process.env.SOLANA_RPC_HELIUS || process.env.SOLANA_RPC_QUICKNODE || process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com';
       const holdersRes = await fetch(SOLANA_RPC, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

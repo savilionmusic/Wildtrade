@@ -52,10 +52,12 @@ const CONFIG = {
   MIN_WALLET_QUALITY: 30,
   // Maximum wallets to track
   MAX_TRACKED_WALLETS: 30,
+  // Maximum WebSocket subscriptions (Constant-K Operator allows 10 total; reserve 2 for PumpSwap + buffer)
+  MAX_WS_SUBSCRIPTIONS: 8,
   // Minimum SOL amount to consider a "buy" from log heuristics
   MIN_SOL_AMOUNT_HEURISTIC: 0.1,
   // RPC Endpoint
-  get RPC_ENDPOINT() { return process.env.SOLANA_RPC_HELIUS || process.env.SOLANA_RPC_QUICKNODE || process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com'; },
+  get RPC_ENDPOINT() { return process.env.SOLANA_RPC_CONSTANTK || process.env.SOLANA_RPC_HELIUS || process.env.SOLANA_RPC_QUICKNODE || process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com'; },
   get WS_ENDPOINT() { return (this.RPC_ENDPOINT || '').replace('https', 'wss').replace('http', 'ws'); },
 };
 
@@ -290,22 +292,26 @@ async function refreshWalletSubscriptions(): Promise<void> {
       }
     }
 
-    // Subscribe new wallets
+    // Subscribe new wallets — cap at MAX_WS_SUBSCRIPTIONS to respect provider limits
+    let wsCount = 0;
     for (const w of nextTracked) {
       const existing = trackedWallets.find(t => t.address === w.address);
       if (existing && existing.subscriptionId !== undefined) {
         w.subscriptionId = existing.subscriptionId;
-      } else if (connection) {
+        wsCount++;
+      } else if (connection && wsCount < CONFIG.MAX_WS_SUBSCRIPTIONS) {
         try {
           w.subscriptionId = connection.onLogs(
             new PublicKey(w.address),
             (logs, ctx) => handleWalletLogs(w, logs),
             'confirmed'
           );
+          wsCount++;
         } catch (err) {
           console.error(`[smart-money] Failed to subscribe to ${w.address}:`, err);
         }
       }
+      // Wallets beyond the WS cap are still tracked but rely on convergence polling
     }
 
     trackedWallets = nextTracked;

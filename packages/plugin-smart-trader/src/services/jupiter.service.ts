@@ -43,7 +43,8 @@ let rpcConnection: Connection | null = null;
 
 function getRpcConnection(): Connection {
   if (rpcConnection) return rpcConnection;
-  const rpcUrl = process.env.SOLANA_RPC_HELIUS
+  const rpcUrl = process.env.SOLANA_RPC_CONSTANTK
+    || process.env.SOLANA_RPC_HELIUS
     || process.env.SOLANA_RPC_QUICKNODE
     || 'https://api.mainnet-beta.solana.com';
   rpcConnection = new Connection(rpcUrl, { commitment: 'confirmed', fetch: global.fetch });

@@ -12,6 +12,7 @@ interface RpcEndpointRow {
 }
 
 const ENV_ENDPOINTS: Array<{ envKey: string; provider: string; priority: number }> = [
+  { envKey: 'SOLANA_RPC_CONSTANTK', provider: 'constant-k', priority: 0 },
   { envKey: 'SOLANA_RPC_HELIUS', provider: 'helius', priority: 1 },
   { envKey: 'SOLANA_RPC_QUICKNODE', provider: 'quicknode', priority: 2 },
   { envKey: 'SOLANA_RPC_PUBLIC', provider: 'public', priority: 3 },

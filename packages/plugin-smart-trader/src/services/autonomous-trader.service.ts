@@ -1121,14 +1121,15 @@ async function openPosition(
     const strategyTiers = kolStrategy === 'conviction' ? CONVICTION_EXIT_TIERS : DEFAULT_EXIT_TIERS;
     await db.query(
       `INSERT INTO positions (id, signal_id, mint, symbol, name, status, budget_sol, entry_price_usd,
-        token_balance, sol_deployed, sol_returned, pnl_sol, pnl_pct, dca_legs, exit_tiers, paper, opened_at, total_budget_lamports)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
+        token_balance, sol_deployed, sol_returned, pnl_sol, pnl_pct, dca_legs, exit_tiers, paper, opened_at, total_budget_lamports, created_at)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
       [
         position.id, signalId, mintAddress, symbol, name, 'open',
         budgetSol, price, 0, 0, 0, 0, 0,
         JSON.stringify(DCA_LEGS), JSON.stringify(strategyTiers),
         position.paper ? 1 : 0, position.openedAt,
         Math.floor(totalBudgetSol * 1_000_000_000).toString(),
+        Date.now(),
       ],
     );
   } catch { /* DB write not fatal */ }
@@ -1675,8 +1676,8 @@ async function saveState(): Promise<void> {
       await db.query(
         `INSERT INTO positions (id, signal_id, mint, symbol, name, status, budget_sol, entry_price_usd,
           token_balance, sol_deployed, sol_returned, pnl_sol, pnl_pct, dca_legs, exit_tiers, paper, opened_at, closed_at, current_price_usd, entry_mcap, total_budget_lamports,
-          dca_legs_executed, exit_tiers_hit, high_water_mark, entry_score, reason, kol_strategy)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)
+          dca_legs_executed, exit_tiers_hit, high_water_mark, entry_score, reason, kol_strategy, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28)
          ON CONFLICT (id) DO UPDATE SET
            status=$6, token_balance=$9, sol_deployed=$10, sol_returned=$11,
            pnl_sol=$12, pnl_pct=$13, current_price_usd=$19, closed_at=$18, total_budget_lamports=$21,
@@ -1689,7 +1690,7 @@ async function saveState(): Promise<void> {
           p.paper ? 1 : 0, p.openedAt, p.closedAt, p.currentPrice, p.marketCap,
           Math.floor(totalBudgetSol * 1_000_000_000).toString(),
           p.dcaLegsExecuted, p.exitTiersHit, p.highWaterMark, p.entryScore,
-          p.reason || '', p.kolStrategy || null,
+          p.reason || '', p.kolStrategy || null, p.openedAt || Date.now(),
         ],
       );
     }

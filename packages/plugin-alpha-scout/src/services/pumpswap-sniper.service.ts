@@ -77,7 +77,8 @@ export function startPumpSwapSniper(
   log('Starting PumpSwap migration sniper...');
 
   // Connect to Solana WebSocket for real-time log monitoring
-  const rpcUrl = process.env.SOLANA_RPC_HELIUS
+  const rpcUrl = process.env.SOLANA_RPC_CONSTANTK
+    || process.env.SOLANA_RPC_HELIUS
     || process.env.SOLANA_RPC_QUICKNODE
     || process.env.SOLANA_RPC_URL
     || 'https://api.mainnet-beta.solana.com';

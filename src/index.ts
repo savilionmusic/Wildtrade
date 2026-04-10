@@ -3,6 +3,47 @@ import { mkdirSync } from 'fs';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb, closeDb, SCORE_THRESHOLDS, SIGNAL_DEFAULT_TTL_MS } from '@wildtrade/shared';
 import { getElizaAdapter } from './db-adapter.js';
+
+// --- Smart Fetch Interceptor (Self-Healing 429 handler) ---
+const originalFetch = global.fetch;
+const domainCooldowns = new Map<string, number>();
+
+global.fetch = async (...args) => {
+  const urlObj = typeof args[0] === 'string' ? new URL(args[0]) : args[0] instanceof URL ? args[0] : null;
+  const domain = urlObj ? urlObj.hostname : 'unknown';
+  
+  if (domain !== 'unknown') {
+    const cooldownEnds = domainCooldowns.get(domain);
+    if (cooldownEnds && Date.now() < cooldownEnds) {
+      const waitTime = cooldownEnds - Date.now();
+      console.warn(`[self-healer] ⚠️ Circuit breaker ACTIVE for ${domain}. Delayed request by ${Math.ceil(waitTime/1000)}s.`);
+      await new Promise(r => setTimeout(r, waitTime));
+    }
+  }
+
+  let attempt = 0;
+  while (attempt < 3) {
+    try {
+      const response = await originalFetch(...args);
+      if (response.status === 429) {
+        console.warn(`[self-healer] 🛑 429 Too Many Requests from ${domain}. Engaging circuit breaker for 30 seconds...`);
+        domainCooldowns.set(domain, Date.now() + 30000);
+        await new Promise(r => setTimeout(r, 30000));
+        attempt++;
+        continue;
+      }
+      return response;
+    } catch (err: any) {
+      if (attempt === 2) throw err;
+      console.warn(`[self-healer] Network error to ${domain}: ${err.message}. Retrying in 5s...`);
+      await new Promise(r => setTimeout(r, 5000));
+      attempt++;
+    }
+  }
+  throw new Error(`[self-healer] Exhausted retries for ${domain}`);
+};
+// ------------------------------------------------------------
+
 import { createFinderRuntime } from './agents/finder.js';
 import { createTraderRuntime } from './agents/trader.js';
 import { createAuditorRuntime } from './agents/auditor.js';

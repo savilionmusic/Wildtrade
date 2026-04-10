@@ -468,9 +468,19 @@ function checkLogForTwitterStatus(msg) {
     }
     return;
   }
-  // All Nitter instances failed
+  // All Twitter paths failed
   if (m.includes('all twitter paths failed') || m.includes('all nitter instances failed')) {
-    setTwitterStatus('#ef4444', 'No Source Available');
+    // Show specific hint if available
+    if (m.includes('tried: none configured') || m.includes('hint: add twitter')) {
+      setTwitterStatus('#ef4444', 'No Credentials');
+    } else {
+      setTwitterStatus('#ef4444', 'No Source Available');
+    }
+    return;
+  }
+  // Stale DB cleanup
+  if (m.includes('removed stale twscrape db')) {
+    setTwitterStatus('#f59e0b', 'Retrying Auth...');
     return;
   }
   // Cookie rejected

@@ -41,7 +41,21 @@ def fetch_via_ntscraper(handles: list[str]) -> list[dict]:
         return []
 
     try:
-        scraper = Nitter(log_level=0, skip_instance_check=False)
+        # First try with instance checking, then without if it fails
+        scraper = None
+        for skip_check in [False, True]:
+            try:
+                scraper = Nitter(log_level=0, skip_instance_check=skip_check)
+                break
+            except Exception:
+                if skip_check:
+                    raise
+                sys.stderr.write('[twikit] ntscraper instance check failed, retrying without check...\n')
+                continue
+
+        if scraper is None:
+            return []
+
         results: list[dict] = []
 
         for handle in handles:
@@ -86,6 +100,18 @@ async def main() -> None:
         print(json.dumps([]), flush=True)
         return
 
+    # Clean stale twscrape DB if it exists but account is inactive (avoids UNIQUE constraint blocking fresh cookies)
+    if os.path.exists(DB_PATH):
+        try:
+            api_check = API(DB_PATH)
+            accts = await api_check.pool.get_all()
+            all_inactive = accts and all(not getattr(a, 'active', False) for a in accts)
+            if all_inactive:
+                os.remove(DB_PATH)
+                sys.stderr.write('[twikit] Removed stale twscrape DB (all accounts inactive).\n')
+        except Exception:
+            pass
+
     username = os.environ.get('TWITTER_USERNAME', '').lstrip('@').strip()
     password = os.environ.get('TWITTER_PASSWORD', '').strip()
     email = os.environ.get('TWITTER_EMAIL', '').strip()
@@ -93,8 +119,12 @@ async def main() -> None:
 
     login_error: str | None = None
 
+    # Collect attempted methods for diagnostics
+    tried_methods: list[str] = []
+
     # Primary path: cookie-based twscrape session (no login attempt needed).
     if cookies_raw:
+        tried_methods.append('cookies')
         try:
             cookies_list = json.loads(cookies_raw)
             # Build a cookie jar dict — accept both {key,value} and {name,value} formats
@@ -112,7 +142,6 @@ async def main() -> None:
                 api = API(DB_PATH)
 
                 # Inject cookie-based account into twscrape pool
-                # twscrape add_account accepts cookies dict via cookies kwarg
                 acct_username = username or 'cookie_session'
                 try:
                     await api.pool.add_account(
@@ -120,11 +149,24 @@ async def main() -> None:
                         password or 'unused',
                         email or f'{acct_username}@example.com',
                         password or 'unused',
-                        cookies=cookie_dict,
                     )
                 except Exception as add_err:
                     if 'UNIQUE constraint failed' not in str(add_err):
                         raise
+
+                # Set cookies directly (works reliably across twscrape versions)
+                # Build "name=value; name=value" string for set_cookies
+                cookie_str = '; '.join(f'{k}={v}' for k, v in cookie_dict.items())
+                try:
+                    await api.pool.set_cookies(acct_username, cookie_str)
+                    sys.stderr.write(f'[twikit] Cookie auth: injected {len(cookie_dict)} cookies for @{acct_username}\n')
+                except Exception as cookie_err:
+                    sys.stderr.write(f'[twikit] set_cookies failed ({cookie_err}), trying direct activation...\n')
+                    # Fallback: mark account active and hope the cookies from add_account stuck
+                    try:
+                        await api.pool.set_active(acct_username, True)
+                    except Exception:
+                        pass
 
                 results: list[dict] = []
                 for handle in handles:
@@ -162,6 +204,7 @@ async def main() -> None:
             sys.stderr.write(f'[twikit] Cookie auth exception:\n{tb}\n')
             login_error = f'{type(e).__name__}: {str(e)}'
     if username and password:
+        tried_methods.append('login')
         try:
             api = API(DB_PATH)
 
@@ -222,6 +265,7 @@ async def main() -> None:
             login_error = f'{type(e).__name__}: {str(e)}'
 
     # Fallback path: ntscraper (auto-selects a working Nitter instance)
+    tried_methods.append('nitter')
     sys.stderr.write('[twikit] Trying ntscraper Nitter fallback...\n')
     fallback_results = await asyncio.to_thread(fetch_via_ntscraper, handles)
 
@@ -230,9 +274,12 @@ async def main() -> None:
         print(json.dumps(fallback_results), flush=True)
         return
 
-    sys.stderr.write(f'[twikit] All Twitter paths failed for {len(handles)} handles.\n')
+    methods_str = ', '.join(tried_methods) if tried_methods else 'none configured'
+    sys.stderr.write(f'[twikit] All Twitter paths failed for {len(handles)} handles. Tried: {methods_str}\n')
     if login_error:
         sys.stderr.write(f'[twikit] Last error: {login_error}\n')
+    if not cookies_raw and not (username and password):
+        sys.stderr.write('[twikit] Hint: Add TWITTER_COOKIES (Cookie-Editor JSON) or TWITTER_USERNAME + TWITTER_PASSWORD in Settings.\n')
     print(json.dumps([]), flush=True)
 
 

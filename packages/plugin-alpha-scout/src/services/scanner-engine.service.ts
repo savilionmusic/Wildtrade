@@ -37,7 +37,6 @@ import { analyzeKolTweetQuality } from './kol-quality-grader.service.js';
 import { screenTokenWithDeepSeek } from './deepseek-alpha-screener.service.js';
 import { getRecentSmartBuys } from './smart-money-monitor.service.js';
 import { getRecentWalletBuys } from './wallet-intelligence.service.js';
-import { getCachedWhaleActivity } from './helius.service.js';
 import { getTrackedWalletAddresses } from './smart-money-monitor.service.js';
 import { triggerInstantSnipe } from '@wildtrade/plugin-smart-trader';
 import { startPumpSwapSniper, stopPumpSwapSniper, onPumpPortalMigration } from './pumpswap-sniper.service.js';
@@ -599,7 +598,7 @@ async function processToken(
     }
   } catch { /* no KOL data available */ }
 
-  // Look up smart money buys for this mint (GMGN + Wallet Intel + Helius)
+  // Look up smart money buys for this mint (WSS + Wallet Intel)
   let whaleNetFlow = 0;
   try {
     const smartBuys = getRecentSmartBuys();
@@ -616,16 +615,6 @@ async function processToken(
     const walletMintBuys = walletBuys.filter(b => b.tokenMint === mint);
     if (walletMintBuys.length > 0) {
       whaleNetFlow += walletMintBuys.reduce((sum, b) => sum + b.solSpent, 0);
-    }
-    // Also check Helius whale transactions (if HELIUS_API_KEY is set)
-    const heliusTxs = await getCachedWhaleActivity(getTrackedWalletAddresses());
-    const heliusBuys = heliusTxs.filter(t => t.mint === mint && t.type === 'buy');
-    if (heliusBuys.length > 0) {
-      const heliusFlow = heliusBuys.reduce((sum, b) => sum + b.amountSol, 0);
-      whaleNetFlow += heliusFlow;
-      if (heliusFlow > 0) {
-        logCb('info', `${token.symbol || mint.slice(0, 8)}: Helius whale buys! ${heliusBuys.length} txs, ${heliusFlow.toFixed(2)} SOL`);
-      }
     }
   } catch { /* no smart money data available */ }
 

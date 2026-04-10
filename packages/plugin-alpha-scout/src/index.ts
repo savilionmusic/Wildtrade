@@ -23,8 +23,8 @@ export default pluginAlphaScout;
 export { connect as connectPumpPortal, disconnect as disconnectPumpPortal, onMigration as onPumpMigration } from './services/pumpportal.service.js';
 export type { PumpPortalToken, PumpPortalCallback, PumpMigrationEvent, PumpMigrationCallback } from './services/pumpportal.service.js';
 
-export { pollWhaleActivity, getCachedWhaleActivity } from './services/helius.service.js';
-export type { WhaleTransaction } from './services/helius.service.js';
+// Remove Helius to avoid 429 rate limit issues
+// Remove Helius to avoid 429 rate limit issues
 
 export { pollKolTimelines, getTwitterPollIntervalMs } from './services/twitter.service.js';
 export type { KolTweetResult } from './services/twitter.service.js';

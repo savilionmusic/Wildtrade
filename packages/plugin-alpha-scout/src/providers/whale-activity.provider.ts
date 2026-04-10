@@ -1,22 +1,21 @@
 import type { Provider, IAgentRuntime, Memory, State } from '@elizaos/core';
-import { getCachedWhaleActivity } from '../services/helius.service.js';
+import { getRecentSmartBuys } from '../services/smart-money-monitor.service.js';
 
 const whaleActivityProvider: Provider = {
   get: async (_runtime: IAgentRuntime, _message: Memory, _state?: State): Promise<string | null> => {
     console.log('[alpha-scout] Fetching whale activity for provider');
 
-    const activity = await getCachedWhaleActivity();
+    const activity = getRecentSmartBuys();
     if (activity.length === 0) {
       return 'No recent whale activity detected.';
     }
 
     const lines = activity.slice(0, 20).map((tx) => {
-      const direction = tx.type === 'buy' ? 'BOUGHT' : 'SOLD';
       const walletShort = `${tx.wallet.slice(0, 4)}...${tx.wallet.slice(-4)}`;
-      const mintShort = `${tx.mint.slice(0, 4)}...${tx.mint.slice(-4)}`;
-      const solAmount = tx.amountSol > 0 ? ` (${tx.amountSol.toFixed(2)} SOL)` : '';
+      const tokenShort = `${tx.tokenAddress.slice(0, 4)}...${tx.tokenAddress.slice(-4)}`;
+      const solAmount = tx.solAmount > 0 ? ` (${tx.solAmount.toFixed(2)} SOL)` : '';
       const time = new Date(tx.timestamp).toISOString();
-      return `  ${walletShort} ${direction} ${mintShort}${solAmount} at ${time}`;
+      return `  ${walletShort} BOUGHT ${tx.tokenSymbol || tokenShort}${solAmount} at ${time}`;
     });
 
     return [

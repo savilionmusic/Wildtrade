@@ -37,7 +37,7 @@ export async function runReconciliation(): Promise<ReconcileDiscrepancy[]> {
     return [];
   }
 
-  const connection = new Connection(rpcUrl, { commitment: 'confirmed' });
+  const connection = new Connection(rpcUrl, { commitment: 'confirmed', fetch: global.fetch });
   const walletPubkey = new PublicKey(process.env.SOLANA_WALLET_PUBLIC_KEY || '');
 
   const positionsResult = await db.query<PositionRow>(

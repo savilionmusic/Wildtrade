@@ -149,7 +149,7 @@ async function runHealthChecks(): Promise<void> {
 
   for (const row of result.rows) {
     try {
-      const connection = new Connection(row.url, { commitment: 'confirmed' });
+      const connection = new Connection(row.url, { commitment: 'confirmed', fetch: global.fetch });
       await connection.getSlot();
 
       // Endpoint responded: restore it

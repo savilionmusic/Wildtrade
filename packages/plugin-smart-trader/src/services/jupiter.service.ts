@@ -46,7 +46,7 @@ function getRpcConnection(): Connection {
   const rpcUrl = process.env.SOLANA_RPC_HELIUS
     || process.env.SOLANA_RPC_QUICKNODE
     || 'https://api.mainnet-beta.solana.com';
-  rpcConnection = new Connection(rpcUrl, 'confirmed');
+  rpcConnection = new Connection(rpcUrl, { commitment: 'confirmed', fetch: global.fetch });
   console.log(`[jupiter] RPC connected: ${rpcUrl.slice(0, 40)}...`);
   return rpcConnection;
 }

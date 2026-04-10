@@ -151,6 +151,7 @@ export async function startSmartMoneyMonitor(
   connection = new Connection(CONFIG.RPC_ENDPOINT, {
     wsEndpoint: CONFIG.WS_ENDPOINT,
     commitment: 'confirmed',
+    fetch: global.fetch,
   });
 
   console.log('[smart-money] Starting WSS smart money monitor...');

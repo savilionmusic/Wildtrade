@@ -103,6 +103,7 @@ export function startPumpSwapSniper(
     connection = new Connection(rpcUrl, {
       wsEndpoint: wsUrl,
       commitment: 'confirmed',
+      fetch: global.fetch,
     });
 
     // Subscribe to logs mentioning the PumpSwap migration program

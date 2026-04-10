@@ -84,7 +84,7 @@ const recoverPositionAction: Action = {
       return { success: false, error: msg };
     }
 
-    const connection = new Connection(rpcUrl, { commitment: 'confirmed' });
+    const connection = new Connection(rpcUrl, { commitment: 'confirmed', fetch: global.fetch });
     const walletPubkey = new PublicKey(process.env.SOLANA_WALLET_PUBLIC_KEY || '');
     const mintPubkey = new PublicKey(discrepancy.mintAddress);
 

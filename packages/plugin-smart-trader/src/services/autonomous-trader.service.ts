@@ -1001,16 +1001,19 @@ async function pollForSignals(): Promise<void> {
         score.kolStrategy === 'flip' || score.kolStrategy === 'conviction' ? score.kolStrategy : undefined;
 
       const strategyLabel = kolStrategy ? ` [KOL:${kolStrategy.toUpperCase()}]` : '';
-      log(`ENTERING POSITION: ${symbol} | Score: ${score.total} | MCap: $${mcap.toLocaleString()} | Size: ${positionSize.toFixed(4)} SOL (x${learnedPositionSizeMult.toFixed(2)}) | ${phase.name}${strategyLabel}`);
-      alert('dca_entry', `Entering ${symbol} — Score: ${score.total}/100, MCap: $${mcap.toLocaleString()}, DCA ${positionSize.toFixed(4)} SOL [${phase.name}]${strategyLabel}`);
+      log(`EVALUATING: ${symbol} | Score: ${score.total} | MCap: $${mcap.toLocaleString()} | Size: ${positionSize.toFixed(4)} SOL (x${learnedPositionSizeMult.toFixed(2)}) | ${phase.name}${strategyLabel}`);
 
       recordCoinEntry(mintAddress);
-      await openPosition(
+      const opened = await openPosition(
         String(row.id ?? uuidv4()),
         mintAddress, symbol,
         String(row.name ?? ''),
         positionSize, score.total ?? 0, mcap, undefined, reason, kolStrategy
       );
+
+      if (opened) {
+        alert('dca_entry', `Entering ${symbol} — Score: ${score.total}/100, MCap: $${mcap.toLocaleString()}, DCA ${positionSize.toFixed(4)} SOL [${phase.name}]${strategyLabel}`);
+      }
 
       // Mark signal as traded
       try {
@@ -1035,7 +1038,7 @@ async function openPosition(
   prefetchedPrice?: number,
   reason?: string,
   kolStrategy?: 'flip' | 'conviction',
-): Promise<void> {
+): Promise<boolean> {
 
   // ── PRE-TRADE DEEPSEEK CONVICTION CHECK ──
   if (budgetSol >= 0.1) {
@@ -1045,7 +1048,7 @@ async function openPosition(
     if (!aiApproved) {
       log(`[🚫 DEEPSEEK REJECTED] AI Gatekeeper blocked entry into ${symbol}. Cancelling trade.`);
       alert('trade_rejected', `DeepSeek AI vetoed entering ${symbol} — too high risk.`);
-      return;
+      return false;
     }
   }
 
@@ -1055,7 +1058,7 @@ async function openPosition(
     : await getTokenPrice(mintAddress);
   if (!price || price <= 0) {
     log(`Cannot get price for ${symbol} — skipping`);
-    return;
+    return false;
   }
 
   const position: Position = {
@@ -1135,6 +1138,8 @@ async function openPosition(
       ],
     );
   } catch { /* DB write not fatal */ }
+
+  return true;
 }
 
 async function executeBuy(position: Position, solAmount: number, legNum: number): Promise<void> {
@@ -1441,7 +1446,7 @@ async function checkPricesAndExits(): Promise<void> {
       // If we are at the edge of getting stopped out (or below), check momentum to survive dips
       if (multiplier <= trailingStop) {
         // Fetch fresh volume data
-        const market = await getMarketData(position.mint);
+        const market = await getMarketData(position.mintAddress);
         
         const isHighVolumeDump = market.volume1h > 50000 && multiplier < 0.6; // Heavy dumping
         const isHealthyDip = market.volume1h > 100000 && multiplier > 0.55 && hwm < 1.5; // Big volume + price holding around -40%
@@ -1675,11 +1680,13 @@ async function saveState(): Promise<void> {
     for (const p of positions.values()) {
       await db.query(
         `INSERT INTO positions (id, signal_id, mint, symbol, name, status, budget_sol, entry_price_usd,
-          token_balance, sol_deployed, sol_returned, pnl_sol, pnl_pct, dca_legs, exit_tiers, paper, opened_at, closed_at, current_price_usd, entry_mcap, total_budget_lamports)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+          token_balance, sol_deployed, sol_returned, pnl_sol, pnl_pct, dca_legs, exit_tiers, paper, opened_at, closed_at, current_price_usd, entry_mcap, total_budget_lamports,
+          dca_legs_executed, exit_tiers_hit, high_water_mark, entry_score, reason, kol_strategy)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)
          ON CONFLICT (id) DO UPDATE SET
            status=$6, token_balance=$9, sol_deployed=$10, sol_returned=$11,
-           pnl_sol=$12, pnl_pct=$13, current_price_usd=$19, closed_at=$18, total_budget_lamports=$21`,
+           pnl_sol=$12, pnl_pct=$13, current_price_usd=$19, closed_at=$18, total_budget_lamports=$21,
+           dca_legs_executed=$22, exit_tiers_hit=$23, high_water_mark=$24`,
         [
           p.id, p.signalId || '', p.mintAddress, p.symbol, p.name || '',
           p.status, p.budgetSol, p.entryPrice,
@@ -1687,6 +1694,8 @@ async function saveState(): Promise<void> {
           JSON.stringify(DCA_LEGS), JSON.stringify(p.kolStrategy === 'conviction' ? CONVICTION_EXIT_TIERS : DEFAULT_EXIT_TIERS),
           p.paper ? 1 : 0, p.openedAt, p.closedAt, p.currentPrice, p.marketCap,
           Math.floor(totalBudgetSol * 1_000_000_000).toString(),
+          p.dcaLegsExecuted, p.exitTiersHit, p.highWaterMark, p.entryScore,
+          p.reason || '', p.kolStrategy || null,
         ],
       );
     }
@@ -1786,8 +1795,8 @@ async function restoreState(): Promise<void> {
         tokenBalance: Number(row.token_balance ?? 0),
         solDeployed: Number(row.sol_deployed ?? 0),
         solReturned: Number(row.sol_returned ?? 0),
-        dcaLegsExecuted: 0, // Fallback to 0 if not tracked natively
-        exitTiersHit: 0,
+        dcaLegsExecuted: Number(row.dca_legs_executed ?? 0),
+        exitTiersHit: Number(row.exit_tiers_hit ?? 0),
         openedAt: Number(row.opened_at ?? Date.now()),
         closedAt: row.closed_at ? Number(row.closed_at) : null,
         pnlSol: Number(row.pnl_sol ?? 0),
@@ -1795,7 +1804,10 @@ async function restoreState(): Promise<void> {
         paper: Number(row.paper ?? 1) === 1,
         marketCap: Number(row.entry_mcap ?? 0),
         entryScore: Number(row.entry_score ?? 0),
-        highWaterMark: 1.0, // Default for graduated trailing stop tracking
+        highWaterMark: Number(row.high_water_mark ?? 1.0),
+        reason: String(row.reason ?? ''),
+        kolStrategy: row.kol_strategy === 'flip' || row.kol_strategy === 'conviction'
+          ? row.kol_strategy as 'flip' | 'conviction' : undefined,
       };
       positions.set(p.id, p);
     }

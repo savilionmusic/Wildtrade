@@ -55,7 +55,13 @@ CREATE TABLE IF NOT EXISTS positions (
   created_at            BIGINT,
   realized_pnl_sol      REAL,
   last_reconciled_at    BIGINT,
-  entry_mcap            REAL
+  entry_mcap            REAL,
+  dca_legs_executed     INTEGER NOT NULL DEFAULT 0,
+  exit_tiers_hit        INTEGER NOT NULL DEFAULT 0,
+  high_water_mark       REAL NOT NULL DEFAULT 1.0,
+  entry_score           REAL NOT NULL DEFAULT 0,
+  reason                TEXT NOT NULL DEFAULT '',
+  kol_strategy          TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_positions_mint ON positions(mint);

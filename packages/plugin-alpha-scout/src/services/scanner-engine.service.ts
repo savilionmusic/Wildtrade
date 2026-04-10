@@ -205,9 +205,9 @@ export function enqueueToken(
   source: SignalSource,
   creator?: string,
 ): void {
-  const isHighVelocity = getMentionVelocity(mint) >= 3;
+  const isHighVelocity = getMentionVelocity(mint) >= 3 || source === 'smart_money' || source === 'convergence';
 
-  // Skip if recently processed (within last 30 min) unless high velocity
+  // Skip if recently processed (within last 30 min) unless high velocity or high tier source
   if (!isHighVelocity && recentlyProcessed.has(mint)) return;
 
   // Skip if already in queue unless high velocity

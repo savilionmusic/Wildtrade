@@ -75,28 +75,28 @@ const PHASES: TradingPhase[] = [
     minPortfolio: 0, maxPortfolio: 2,
     targetMCapMin: 5_000, targetMCapMax: 100_000,
     positionSizeMin: 0.03, positionSizeMax: 0.15,
-    maxPositions: 5, minScore: 52,
+    maxPositions: 3, minScore: 58,
   },
   {
     name: 'Phase 2: Small Caps',
     minPortfolio: 2, maxPortfolio: 5,
     targetMCapMin: 20_000, targetMCapMax: 500_000,
     positionSizeMin: 0.08, positionSizeMax: 0.3,
-    maxPositions: 4, minScore: 56,
+    maxPositions: 3, minScore: 62,
   },
   {
     name: 'Phase 3: Scaling Up',
     minPortfolio: 5, maxPortfolio: 10,
     targetMCapMin: 50_000, targetMCapMax: 2_000_000,
     positionSizeMin: 0.15, positionSizeMax: 0.5,
-    maxPositions: 3, minScore: 60,
+    maxPositions: 3, minScore: 65,
   },
   {
     name: 'Phase 4: Mission Complete',
     minPortfolio: 10, maxPortfolio: Infinity,
     targetMCapMin: 100_000, targetMCapMax: 10_000_000,
     positionSizeMin: 0.3, positionSizeMax: 1.0,
-    maxPositions: 3, minScore: 64,
+    maxPositions: 3, minScore: 68,
   },
 ];
 
@@ -284,7 +284,7 @@ function getAdaptiveMinScore(): number {
   // Cap total adjustment — max +2 up, -5 down
   minScore += Math.max(-5, Math.min(2, adjust));
 
-  return Math.max(35, Math.min(80, minScore)); // Hard floor at 35, cap at 80 (adapted for free-tier missing whale scores)
+  return Math.max(50, Math.min(80, minScore)); // Hard floor at 50, cap at 80 — no more garbage trades
 }
 
 // ── Learning Analysis Helpers ──
@@ -1040,7 +1040,7 @@ async function openPosition(
   // ── PRE-TRADE DEEPSEEK CONVICTION CHECK ──
   if (budgetSol >= 0.1) {
     const aiApproved = await runAiPreTradeConvictionCheck(
-      mintAddress, symbol, budgetSol, score, marketCap, reason || 'Scanner signal'
+      mintAddress, symbol, budgetSol, score, marketCap, reason || 'Scanner signal', kolStrategy
     );
     if (!aiApproved) {
       log(`[🚫 DEEPSEEK REJECTED] AI Gatekeeper blocked entry into ${symbol}. Cancelling trade.`);

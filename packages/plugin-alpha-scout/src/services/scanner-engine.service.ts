@@ -34,6 +34,7 @@ import type { PumpPortalToken } from './pumpportal.service.js';
 import { getKolSignals } from './kol-intelligence.service.js';
 import { isGoldKol } from './kol-scraper.service.js';
 import { analyzeKolTweetQuality } from './kol-quality-grader.service.js';
+import { screenTokenWithDeepSeek } from './deepseek-alpha-screener.service.js';
 import { getRecentSmartBuys } from './smart-money-monitor.service.js';
 import { getRecentWalletBuys } from './wallet-intelligence.service.js';
 import { getCachedWhaleActivity } from './helius.service.js';
@@ -674,7 +675,40 @@ async function processToken(token: {
     );
   }
 
-  // 5. Build signal
+  // 5. DeepSeek Alpha Screen — AI quality gate for non-KOL tokens
+  // KOL tokens already have social proof; skip the screen for them to avoid blocking real alpha
+  const hasKolBacking = detectedKolStrategy !== 'unknown' || kolMentions >= 2 || whaleNetFlow >= 2;
+  if (!hasKolBacking && score.total >= 45 && process.env.OPENROUTER_API_KEY) {
+    try {
+      const screenResult = await screenTokenWithDeepSeek({
+        symbol: token.symbol || mint.slice(0, 8),
+        mint,
+        marketCap: market.marketCap,
+        liquidity: market.liquidity,
+        volume24h: market.volume24h,
+        tokenAgeMinutes,
+        priceChange5m,
+        priceChange1h,
+        buySellRatio,
+        holderCount,
+        topHolderPct,
+        whaleNetFlow,
+        kolMentions,
+        score: score.total,
+        narrativeTag: aiState?.narrative,
+      });
+      
+      if (!screenResult.worthy) {
+        logCb('info', `[DeepSeek Alpha] REJECTED ${token.symbol || mint.slice(0, 8)}: ${screenResult.reasoning}`);
+        return; // AI says not worth it
+      }
+      logCb('info', `[DeepSeek Alpha] APPROVED ${token.symbol || mint.slice(0, 8)} (${screenResult.confidence}): ${screenResult.reasoning}`);
+    } catch {
+      // Fail open — don't block on AI errors
+    }
+  }
+
+  // 6. Build signal
   const now = Date.now();
   const signal: AlphaSignal = {
     id: uuidv4(),

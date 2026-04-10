@@ -138,7 +138,7 @@ function relaxBackoff(): void {
   adaptiveDelayMs = Math.max(BASE_PROCESS_DELAY_MS, Math.round(adaptiveDelayMs * 0.9));
 }
 
-function requeue(item: QueueItem, reason: string): void {
+function requeue(item: QueueItem, reason: string, silent = false): void {
   if (item.attempts >= MAX_RETRY_ATTEMPTS) return;
   const nextAttempt = item.attempts + 1;
   queue.push({
@@ -146,10 +146,12 @@ function requeue(item: QueueItem, reason: string): void {
     attempts: nextAttempt,
     nextEligibleAt: Date.now() + RETRY_BASE_DELAY_MS * nextAttempt,
   });
-  log(
-    `Retrying ${item.token.symbol || item.token.mint.slice(0, 8)} ` +
-    `(attempt ${nextAttempt}/${MAX_RETRY_ATTEMPTS}) - ${reason}`,
-  );
+  if (!silent) {
+    log(
+      `Retrying ${item.token.symbol || item.token.mint.slice(0, 8)} ` +
+      `(attempt ${nextAttempt}/${MAX_RETRY_ATTEMPTS}) - ${reason}`,
+    );
+  }
 }
 
 type DexPair = {
@@ -179,14 +181,15 @@ async function evaluateCandidate(item: QueueItem): Promise<void> {
 
     if (res.status === 429) {
       increaseBackoff('DexScreener 429');
-      requeue(item, 'DexScreener rate limit');
+      // Silently requeue without logging to prevent console spam
+      requeue(item, 'DexScreener rate limit', true);
       return;
     }
 
     if (!res.ok) {
       if (res.status >= 500) {
         increaseBackoff(`DexScreener ${res.status}`);
-        requeue(item, `DexScreener HTTP ${res.status}`);
+        requeue(item, `DexScreener HTTP ${res.status}`, true);
       }
       return;
     }
@@ -195,7 +198,7 @@ async function evaluateCandidate(item: QueueItem): Promise<void> {
     const pair = pickBestPair(data.pairs ?? []);
 
     if (!pair) {
-      requeue(item, 'No pair yet');
+      requeue(item, 'No pair yet', true);
       return;
     }
 

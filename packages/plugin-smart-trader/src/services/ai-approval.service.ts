@@ -29,20 +29,26 @@ export async function runAiPreTradeConvictionCheck(
       ? '\n  - KOL Signal: Yes (FLIP strategy — quick momentum play, a KOL tweeted about this)'
       : '';
 
-    // Give the AI the context needed
     const prompt = `
-You are a highly experienced crypto hedge fund AI risk manager. 
-Your trading bot requested approval to execute the following trade on Solana:
-  - Token Symbol: ${symbol}
-  - Contract Address: ${mint}
-  - Proposed Trade Size: ${budgetSol} SOL
-  - Bot's Algorithmic Score: ${score}/100
-  - Est. Market Cap: $${marketCap}
-  - Bot Reason / Context: ${reason}${kolContext}
+You are a Solana memecoin trading bot's final risk check. This bot trades micro-cap tokens ($5k-$500k market cap) on Solana — these are NOT blue-chip investments. Small market caps and high volatility are EXPECTED and NORMAL for this strategy.
 
-Does this trade make sense? If you spot massive red flags (e.g., buying into obviously fake metrics or a bot spam score), reject it.
-If there is a KOL signal attached, weigh that positively — social proof from real traders is valuable early alpha.
-Respond with a JSON object containing exactly one key "approval" which is a boolean (true to allow the trade, false to block it).
+Trade request:
+  - Token: ${symbol}
+  - Contract: ${mint}
+  - Size: ${budgetSol} SOL (small position)
+  - Bot Score: ${score}/100 (already passed 10+ algorithmic filters)
+  - Market Cap: $${marketCap.toLocaleString()}
+  - Context: ${reason}${kolContext}
+
+Your job: ONLY reject if you see OBVIOUS scam indicators like:
+  - Token name is a known scam pattern (e.g. "FREE ETH", obvious honeypot names)
+  - The reason/context mentions critical red flags the bot missed
+
+You should APPROVE most trades because the bot's algorithmic pipeline already filtered out rugs, honeypots, low-liquidity tokens, and spam. A score of 50+ means it passed all safety checks.
+
+Small market cap ($5k-$100k) is the SWEET SPOT for this strategy, not a red flag.
+
+Respond with JSON: {"approval": true} or {"approval": false}
     `.trim();
 
     const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {

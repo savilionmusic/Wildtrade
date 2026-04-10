@@ -10,6 +10,7 @@ import { Connection, PublicKey, type Logs } from '@solana/web3.js';
 import {
   getQualityWallets,
   getTokenInfo,
+  getWalletBuys,
   type GmgnTokenInfo,
 } from './gmgn.service.js';
 import { getMentionVelocity } from './twitter.service.js';
@@ -59,6 +60,9 @@ const CONFIG = {
   MAX_WS_SUBSCRIPTIONS: 4,
   // Minimum SOL amount to consider a "buy" from log heuristics
   MIN_SOL_AMOUNT_HEURISTIC: 0.01,
+  // Secondary ingest path: backfill recent buys from GMGN every 2 minutes
+  GMGN_BACKFILL_INTERVAL_MS: 120_000,
+  GMGN_BACKFILL_WALLETS: 8,
   // RPC Endpoint
   get RPC_ENDPOINT() {
     const raw = process.env.SOLANA_RPC_CONSTANTK || process.env.SOLANA_RPC_HELIUS || process.env.SOLANA_RPC_QUICKNODE || process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com';
@@ -101,15 +105,25 @@ let trackedWallets: TrackedWallet[] = [];
 let recentBuys: RecentBuy[] = [];
 let onSignalCallback: SmartMoneyCallback | null = null;
 let walletRefreshTimer: ReturnType<typeof setInterval> | null = null;
+let gmgnBackfillTimer: ReturnType<typeof setInterval> | null = null;
 let isRunning = false;
 let wsRotationOffset = 0;
 
 // ── Rate Limiter ──
 let activeRpcCalls = 0;
 const rpcQueue: Array<() => Promise<void>> = [];
+const queuedSignatures = new Set<string>();
+const processedSignatures: string[] = [];
+const processedSignatureSet = new Set<string>();
+const MAX_PROCESSED_SIGNATURES = 3000;
 
 async function enqueueGetParsedTransaction(signature: string): Promise<any> {
+  if (!signature || queuedSignatures.has(signature) || processedSignatureSet.has(signature)) {
+    return null;
+  }
+
   return new Promise((resolve, reject) => {
+    queuedSignatures.add(signature);
     rpcQueue.push(async () => {
       try {
         if (!connection) return resolve(null);
@@ -117,9 +131,17 @@ async function enqueueGetParsedTransaction(signature: string): Promise<any> {
             maxSupportedTransactionVersion: 0,
             commitment: 'confirmed'
         });
+        processedSignatureSet.add(signature);
+        processedSignatures.push(signature);
+        if (processedSignatures.length > MAX_PROCESSED_SIGNATURES) {
+          const old = processedSignatures.shift();
+          if (old) processedSignatureSet.delete(old);
+        }
         resolve(tx);
       } catch (err: any) {
         reject(err);
+      } finally {
+        queuedSignatures.delete(signature);
       }
     });
     processRpcQueue();
@@ -187,6 +209,16 @@ export async function startSmartMoneyMonitor(
 
   await refreshWalletSubscriptions();
 
+  // Secondary ingest path for reliability when WSS parsing misses buys.
+  backfillRecentBuysFromGmgn().catch(err => {
+    console.log(`[smart-money] GMGN backfill startup error: ${String(err)}`);
+  });
+  gmgnBackfillTimer = setInterval(() => {
+    backfillRecentBuysFromGmgn().catch(err => {
+      console.log(`[smart-money] GMGN backfill error: ${String(err)}`);
+    });
+  }, CONFIG.GMGN_BACKFILL_INTERVAL_MS);
+
   walletRefreshTimer = setInterval(() => {
     refreshWalletSubscriptions().catch(err => {
       console.log(`[smart-money] Wallet refresh error: ${String(err)}`);
@@ -202,6 +234,8 @@ export async function startSmartMoneyMonitor(
 export function stopSmartMoneyMonitor(): void {
   if (walletRefreshTimer) clearInterval(walletRefreshTimer);
   walletRefreshTimer = null;
+  if (gmgnBackfillTimer) clearInterval(gmgnBackfillTimer);
+  gmgnBackfillTimer = null;
   isRunning = false;
   onSignalCallback = null;
 
@@ -215,6 +249,54 @@ export function stopSmartMoneyMonitor(): void {
   }
   connection = null;
   console.log('[smart-money] Monitor stopped');
+}
+
+async function backfillRecentBuysFromGmgn(): Promise<void> {
+  if (!isRunning || trackedWallets.length === 0) return;
+
+  const wallets = [...trackedWallets]
+    .sort((a, b) => b.qualityScore - a.qualityScore)
+    .slice(0, CONFIG.GMGN_BACKFILL_WALLETS);
+
+  let added = 0;
+
+  for (const wallet of wallets) {
+    const buys = await getWalletBuys(wallet.address, 5);
+    if (!buys || buys.length === 0) continue;
+
+    const cutoff = Date.now() - CONFIG.CLUSTER_WINDOW_MS;
+    recentBuys = recentBuys.filter(b => b.timestamp > cutoff);
+
+    for (const buy of buys) {
+      if (!buy?.token_address || buy.event_type !== 'buy') continue;
+      if (buy.timestamp < cutoff) continue;
+
+      const existing = recentBuys.find(b =>
+        b.wallet === wallet.address &&
+        b.tokenAddress === buy.token_address &&
+        Math.abs(b.timestamp - buy.timestamp) < 60_000,
+      );
+
+      if (existing) continue;
+
+      recentBuys.push({
+        wallet: wallet.address,
+        tokenAddress: buy.token_address,
+        tokenSymbol: buy.token_symbol || buy.token_address.slice(0, 6),
+        tokenName: buy.token_name || buy.token_address,
+        solAmount: Number(buy.sol_amount || 0),
+        timestamp: buy.timestamp,
+        qualityScore: wallet.qualityScore,
+        winrate: wallet.winrate,
+      });
+      added++;
+    }
+  }
+
+  if (added > 0) {
+    console.log(`[smart-money] GMGN backfill added ${added} recent buys`);
+    detectClusters();
+  }
 }
 
 /**
@@ -391,7 +473,8 @@ async function handleWalletLogs(wallet: TrackedWallet, logs: Logs): Promise<void
     log.includes('Program log: Instruction: Buy')
   );
 
-  if (!isSwap) return;
+  // If logs don't explicitly look like swaps, we still allow parsed-tx fallback for compatibility.
+  // This catches routers that don't emit the exact instruction strings above.
 
   try {
     if (!connection) return;
@@ -422,18 +505,19 @@ async function handleWalletLogs(wallet: TrackedWallet, logs: Logs): Promise<void
     // We only care about SOL going OUT (to buy) and Tokens coming IN.
     // Extremely simplified heuristic for alpha/speed.
     
-    // Find pre/post SOL balances for the wallet
-    const accountIndex = tx.transaction.message.accountKeys.findIndex(
-      k => k.pubkey.toBase58() === wallet.address
-    );
+    // Find pre/post SOL balances for the wallet (support both string and PublicKey/object key formats)
+    const accountIndex = tx.transaction.message.accountKeys.findIndex((k: any) => {
+      const raw = k?.pubkey ?? k;
+      if (!raw) return false;
+      if (typeof raw === 'string') return raw === wallet.address;
+      if (typeof raw?.toBase58 === 'function') return raw.toBase58() === wallet.address;
+      return String(raw) === wallet.address;
+    });
     if (accountIndex === -1) return;
 
     const preSol = tx.meta.preBalances[accountIndex];
     const postSol = tx.meta.postBalances[accountIndex];
     const solSpent = (preSol - postSol) / 1e9; // in SOL
-
-    // If it didn't spend SOL, or spent less than min amount (likely just gas/small test), skip
-    if (solSpent < CONFIG.MIN_SOL_AMOUNT_HEURISTIC) return;
 
     // Find token that increased in balance
     const preTokenBalances = tx.meta.preTokenBalances || [];
@@ -443,7 +527,8 @@ async function handleWalletLogs(wallet: TrackedWallet, logs: Logs): Promise<void
     let maxIncrease = 0;
 
     for (const post of postTokenBalances) {
-      if (post.owner === wallet.address) {
+      const postOwner = String((post as any).owner ?? '');
+      if (postOwner === wallet.address) {
         const pre = preTokenBalances.find(
           p => p.accountIndex === post.accountIndex && p.mint === post.mint
         );
@@ -459,6 +544,9 @@ async function handleWalletLogs(wallet: TrackedWallet, logs: Logs): Promise<void
     }
 
     if (!boughtTokenMint) return;
+
+    // Keep tiny-gas noise out unless logs strongly indicate a swap route.
+    if (!isSwap && solSpent < CONFIG.MIN_SOL_AMOUNT_HEURISTIC) return;
 
     // Avoid Wrapped SOL
     if (boughtTokenMint === 'So11111111111111111111111111111111111111112') return;

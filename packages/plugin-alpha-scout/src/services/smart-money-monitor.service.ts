@@ -53,9 +53,9 @@ const CONFIG = {
   // Maximum wallets to track
   MAX_TRACKED_WALLETS: 30,
   // Maximum WebSocket subscriptions (Constant-K Operator: heavy WS methods limited to 5/sec)
-  MAX_WS_SUBSCRIPTIONS: 5,
+  MAX_WS_SUBSCRIPTIONS: 50,
   // Minimum SOL amount to consider a "buy" from log heuristics
-  MIN_SOL_AMOUNT_HEURISTIC: 0.1,
+  MIN_SOL_AMOUNT_HEURISTIC: 0.01,
   // RPC Endpoint
   get RPC_ENDPOINT() {
     const raw = process.env.SOLANA_RPC_CONSTANTK || process.env.SOLANA_RPC_HELIUS || process.env.SOLANA_RPC_QUICKNODE || process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com';
@@ -133,11 +133,11 @@ async function processRpcQueue() {
     } catch(e) {}
   }
   
-  // Wait 1000ms between parsed tx checks to stay under specific RPC call limits
+  // Wait 100ms between parsed tx checks to stay under specific RPC call limits
   setTimeout(() => {
     activeRpcCalls--;
     processRpcQueue();
-  }, 1000);
+  }, 100);
 }
 
 // Track which signals we've already emitted to avoid duplicates
@@ -360,8 +360,8 @@ async function refreshWalletSubscriptions(): Promise<void> {
 
 // ── Internal: WSS Log Handling ──
 
-async function handleWalletLogs(wallet: TrackedWallet, logs: Logs): Promise<void> {
-  if (logs.err) return; // Ignore failed transactions
+async function handleWalletLogs(wallet: TrackedWallet, logs: any): Promise<void> {
+  if (logs.err || !logs.logs) return; // Ignore failed transactions
 
   // Basic heuristic: Is it a Raydium or Pump.fun interact?
   const isSwap = logs.logs.some(log => 

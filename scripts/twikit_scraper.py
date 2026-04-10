@@ -32,7 +32,41 @@ import sys
 import traceback
 
 DB_PATH = os.path.expanduser('~/.wildtrade_twscrape.db')
+USER_CACHE_PATH = os.path.expanduser('~/.wildtrade_twscrape_user_ids.json')
 
+def load_user_cache() -> dict[str, int]:
+    try:
+        if os.path.exists(USER_CACHE_PATH):
+            with open(USER_CACHE_PATH, 'r') as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {}
+
+def save_user_cache(cache: dict[str, int]) -> None:
+    try:
+        with open(USER_CACHE_PATH, 'w') as f:
+            json.dump(cache, f)
+    except Exception:
+        pass
+
+user_id_cache = load_user_cache()
+
+async def get_user_id(api, handle: str) -> int | None:
+    handle_lower = handle.lower()
+    if handle_lower in user_id_cache:
+        return user_id_cache[handle_lower]
+    
+    try:
+        user = await api.user_by_login(handle)
+        if user and user.id:
+            user_id_cache[handle_lower] = user.id
+            save_user_cache(user_id_cache)
+            return user.id
+    except Exception as e:
+        sys.stderr.write(f'[twikit] Failed to resolve user ID for @{handle}: {e}\n')
+    
+    return None
 
 def fetch_via_ntscraper(handles: list[str]) -> list[dict]:
     """Use ntscraper to fetch tweets — it auto-picks a working Nitter instance."""
@@ -177,10 +211,10 @@ async def main() -> None:
                 results: list[dict] = []
                 for handle in handles:
                     try:
-                        user = await api.user_by_login(handle)
-                        if not user:
+                        user_id = await get_user_id(api, handle)
+                        if not user_id:
                             continue
-                        tweets = await gather(api.user_tweets(user.id, limit=20))
+                        tweets = await gather(api.user_tweets(user_id, limit=20))
                         for tweet in tweets:
                             text = getattr(tweet, 'rawContent', None) or ''
                             if not text:
@@ -236,11 +270,11 @@ async def main() -> None:
             results: list[dict] = []
             for handle in handles:
                 try:
-                    user = await api.user_by_login(handle)
-                    if not user:
+                    user_id = await get_user_id(api, handle)
+                    if not user_id:
                         continue
 
-                    tweets = await gather(api.user_tweets(user.id, limit=20))
+                    tweets = await gather(api.user_tweets(user_id, limit=20))
 
                     for tweet in tweets:
                         text = getattr(tweet, 'rawContent', None) or ''

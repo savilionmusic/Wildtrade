@@ -73,16 +73,16 @@ const PHASES: TradingPhase[] = [
   {
     name: 'Phase 1: Micro Gems',
     minPortfolio: 0, maxPortfolio: 2,
-    targetMCapMin: 5_000, targetMCapMax: 100_000,
+    targetMCapMin: 5_000, targetMCapMax: 500_000,
     positionSizeMin: 0.03, positionSizeMax: 0.15,
-    maxPositions: 3, minScore: 54,
+    maxPositions: 3, minScore: 45,
   },
   {
     name: 'Phase 2: Small Caps',
     minPortfolio: 2, maxPortfolio: 5,
-    targetMCapMin: 20_000, targetMCapMax: 500_000,
+    targetMCapMin: 20_000, targetMCapMax: 1_000_000,
     positionSizeMin: 0.08, positionSizeMax: 0.3,
-    maxPositions: 3, minScore: 58,
+    maxPositions: 3, minScore: 50,
   },
   {
     name: 'Phase 3: Scaling Up',
@@ -284,7 +284,7 @@ function getAdaptiveMinScore(): number {
   // Cap total adjustment — max +2 up, -5 down
   minScore += Math.max(-5, Math.min(2, adjust));
 
-  return Math.max(50, Math.min(80, minScore)); // Hard floor at 50, cap at 80 — no more garbage trades
+  return Math.max(42, Math.min(80, minScore)); // Hard floor at 42, cap at 80
 }
 
 // ── Learning Analysis Helpers ──
@@ -936,12 +936,6 @@ async function pollForSignals(): Promise<void> {
        AND market_cap_usd >= $1
        AND market_cap_usd <= $2
        AND liquidity_usd >= 3000
-       AND (
-         COALESCE((score_json::jsonb->>'socialScore')::integer, 0) >= 3
-         OR COALESCE((score_json::jsonb->>'whaleScore')::integer, 0) >= 4
-         OR COALESCE((score_json::jsonb->>'liquidityScore')::integer, 0) >= 6
-         OR (score_json::jsonb->>'total')::integer >= ${Math.max(55, minScore + 5)}
-       )
        AND discovered_at > $3
        ORDER BY (score_json::jsonb->>'total')::integer DESC
        LIMIT 3`,

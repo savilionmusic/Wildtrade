@@ -450,7 +450,7 @@ async function processToken(token: {
   if (market.marketCap > 1_000_000_000) return;
 
   // Skip tokens that are too old (> 2 hours) — stale opportunities
-  if (tokenAgeMinutes > 120) {
+  if (tokenAgeMinutes > 360) {
     return;  // Quietly skip old tokens — there are thousands of them
   }
 
@@ -678,7 +678,7 @@ async function processToken(token: {
   // 5. DeepSeek Alpha Screen — AI quality gate for non-KOL tokens
   // KOL tokens already have social proof; skip the screen for them to avoid blocking real alpha
   const hasKolBacking = detectedKolStrategy !== 'unknown' || kolMentions >= 2 || whaleNetFlow >= 2;
-  if (!hasKolBacking && score.total >= 45 && process.env.OPENROUTER_API_KEY) {
+  if (!hasKolBacking && score.total >= 55 && process.env.OPENROUTER_API_KEY) {
     try {
       const screenResult = await screenTokenWithDeepSeek({
         symbol: token.symbol || mint.slice(0, 8),

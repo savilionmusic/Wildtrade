@@ -93,78 +93,22 @@ export function startScanner(
 
   logCb('info', 'Starting token scanner...');
 
-  // 0. Start Pump launch sniper lane (separate from the regular scoring queue)
-  // This keeps normal scanner behavior while allowing fast launch entries.
-  startPumpLaunchSniper(
-    async (launch) => {
-      logCb(
-        'info',
-        `🚀 PUMP LAUNCH SNIPE CANDIDATE: ${launch.symbol || launch.mint.slice(0, 8)} | ` +
-        `liq=$${Math.round(launch.liquidityUsd).toLocaleString()} | ` +
-        `vol1h=$${Math.round(launch.volumeH1Usd).toLocaleString()} | ` +
-        `b/s=${launch.buySellRatio.toFixed(2)}`,
-      );
+  // -- PUMP.FUN HOSE DRIED UP --
+  // startPumpLaunchSniper(...)
+  // connectPumpPortal(...)
+  // onPumpMigration(...)
+  // startPumpSwapSniper(...)
 
-      // Pre-flight Sybil Ring Scan for Degen-Scanner logic (Respect Constant-K Rate Limits)
-      // Only runs on tokens that have passed the volume/liquidity filters above
-      const sybilReport = await scanForSybilRings(launch.mint, (msg) => logCb('info', msg));
-      
-      if (sybilReport?.isInsiderCabal) {
-        logCb('warn', `🚨 ABORT SNIPE: ${launch.symbol || launch.mint.slice(0,8)} has an Insider Cabal (Cluster Size: ${sybilReport.largestClusterSize}). Likely rug/farm.`);
-        return;
-      }
+  // -- DEXSCREENER POLLER DISABLED --
+  // logCb('info', 'Starting DexScreener trending scanner...');
+  // pollDexScreenerTrending();
+  // dexScreenerTimer = setInterval(pollDexScreenerTrending, DEXSCREENER_POLL_MS);
 
-      logCb('info', `✅ CLEAN SYBIL REPORT: ${launch.symbol || launch.mint.slice(0,8)} is safe. Proceeding to instant snipe...`);
-
-      triggerInstantSnipe(launch.mint, launch.symbol || launch.mint.slice(0, 8)).catch((err) => {
-        logCb('error', `Launch snipe trigger failed for ${launch.mint}: ${String(err)}`);
-      });
-    },
-    (msg) => logCb('info', msg),
-  );
-
-  // 1. Connect PumpPortal for real-time new launches
-  logCb('info', 'Connecting to PumpPortal for new token launches (launch sniper + migration sniper enabled)...');
-  connectPumpPortal((token: PumpPortalToken) => {
-    // We still avoid queueing the full firehose into the normal scanner pipeline,
-    // but we feed launch candidates into a dedicated, throttled pump-sniper lane.
-    onPumpLaunchToken(token);
-  });
-
-  // 1b. Subscribe to PumpFun migration events (tokens moving to Raydium = big pump opportunity)
-  // ONLY forward to PumpSwap sniper → triggerInstantSnipe.
-  // Do NOT also enqueue in tokenQueue — that caused double-buys (once via instant snipe,
-  // once via normal signal pipeline with +20 migration bonus).
-  onPumpMigration((migration) => {
-    logCb('info', `MIGRATION DETECTED: ${migration.symbol || migration.mint.slice(0, 8)} migrating from PumpFun to Raydium — forwarding to sniper`);
-    onPumpPortalMigration(migration);
-  });
-
-  // 1c. Start PumpSwap Migration Sniper — monitors on-chain for migrations and triggers instant buys
-  logCb('info', 'Starting PumpSwap migration sniper for instant migration catches...');
-  startPumpSwapSniper(
-    (snipeEvent: MigrationSnipeEvent) => {
-      logCb('info', `🎯 PUMPSWAP SNIPE: ${snipeEvent.symbol || snipeEvent.mint.slice(0, 8)} — migration detected via ${snipeEvent.source}!`);
-      
-      // Fast-track DIRECTLY to autonomous trader as an instant snipe
-      // Skip the signals db and inter-agent messages — execute the buy function immediately
-      triggerInstantSnipe(snipeEvent.mint, snipeEvent.symbol || snipeEvent.mint.slice(0, 8)).catch(err => {
-        logCb('error', `Snipe trigger failed for ${snipeEvent.mint}: ${String(err)}`);
-      });
-      logCb('info', `🚀 MIGRATION FORWARDED: Sent ${snipeEvent.mint.slice(0, 8)} directly to trader for instant buy!`);
-    },
-    (msg) => logCb('info', msg),
-  );
-
-  // 2. Start DexScreener trending poller
-  logCb('info', 'Starting DexScreener trending scanner...');
-  pollDexScreenerTrending();
-  dexScreenerTimer = setInterval(pollDexScreenerTrending, DEXSCREENER_POLL_MS);
-
-  // 3. Start token processing loop
+  // 3. Start token processing loop ONLY (for KOLs and manual triggers)
+  logCb('info', 'Starting processing queue for KOL signals...');
   processNextToken();
 
-  logCb('info', 'Scanner fully active — watching PumpPortal + DexScreener');
+  logCb('info', 'Scanner fully active — processing targeted signals only');
 }
 
 export function stopScanner(): void {

@@ -124,6 +124,7 @@ const smartMoneyScanAction: Action = {
 
     // 3. Score with smart money boost
     const score = calculateCompositeScore({
+      tokenAddress: mintAddress,
       volume24h: clusterData.tokenInfo?.volume_24h ?? 0,
       holderCount: clusterData.tokenInfo?.holder_count ?? 0,
       top10Concentration: 0,

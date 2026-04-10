@@ -288,20 +288,61 @@ async function pollDexScreenerTrending(): Promise<void> {
 async function processNextToken(): Promise<void> {
   if (!scannerRunning) return;
 
-  const token = tokenQueue.shift();
-  if (!token) {
+  const batchSize = Math.min(tokenQueue.length, 100);
+  if (batchSize === 0) {
     // Nothing to process, check again in 5 seconds
     processTimer = setTimeout(processNextToken, 5_000);
     return;
   }
 
+  const batch = tokenQueue.splice(0, batchSize);
+  const prefetchedHolders = new Map<string, { count: number, topPct: number }>();
+
   try {
-    await processToken(token);
+    const SOLANA_RPC = process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com';
+    const payload = batch.map((t, i) => ({
+      jsonrpc: '2.0', id: i + 1,
+      method: 'getTokenLargestAccounts',
+      params: [t.mint, { commitment: 'confirmed' }],
+    }));
+
+    const holdersRes = await fetch(SOLANA_RPC, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    if (holdersRes.ok) {
+      const results = await holdersRes.json() as any[];
+      if (Array.isArray(results)) {
+        results.forEach(res => {
+          const idx = res.id - 1;
+          const token = batch[idx];
+          if (token && res.result?.value) {
+            const accounts = res.result.value;
+            let count = 0;
+            let topPct = 0;
+            if (accounts.length > 0) {
+              count = accounts.length;
+              const totalAmount = accounts.reduce((sum: number, a: any) => sum + (a.uiAmount ?? 0), 0);
+              const topAmount = accounts[0]?.uiAmount ?? 0;
+              topPct = totalAmount > 0 ? (topAmount / totalAmount) * 100 : 0;
+            }
+            prefetchedHolders.set(token.mint, { count, topPct });
+          }
+        });
+      }
+    }
+
+    // Process all tokens in the batch concurrently
+    await Promise.all(batch.map(t => processToken(t, prefetchedHolders.get(t.mint)).catch(err => {
+      logCb('error', `Error processing ${t.symbol || t.mint.slice(0, 8)}: ${String(err)}`);
+    })));
   } catch (err) {
-    logCb('error', `Error processing ${token.symbol || token.mint.slice(0, 8)}: ${String(err)}`);
+    logCb('error', `Error processing token batch: ${String(err)}`);
   }
 
-  // Continue with next token after delay
+  // Continue with next batch after delay
   processTimer = setTimeout(processNextToken, TOKEN_PROCESS_DELAY_MS);
 }
 
@@ -317,14 +358,17 @@ const SKIP_MINTS = new Set([
   '7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs', // WETH
 ]);
 
-async function processToken(token: {
-  mint: string;
-  symbol: string;
-  name: string;
-  source: SignalSource;
-  creator?: string;
-  isMigration?: boolean;
-}): Promise<void> {
+async function processToken(
+  token: {
+    mint: string;
+    symbol: string;
+    name: string;
+    source: SignalSource;
+    creator?: string;
+    isMigration?: boolean;
+  },
+  prefetchedHolders?: { count: number; topPct: number }
+): Promise<void> {
   const { mint } = token;
 
   // Skip known stablecoins and wrapped assets immediately
@@ -469,31 +513,36 @@ async function processToken(token: {
   // This is the TrenchClaw technique: detect rug risk and whale accumulation
   let topHolderPct = 0;
   let holderCount = 0;
-  try {
-    const SOLANA_RPC = process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com';
-    const holdersRes = await fetch(SOLANA_RPC, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        jsonrpc: '2.0', id: 1,
-        method: 'getTokenLargestAccounts',
-        params: [mint, { commitment: 'confirmed' }],
-      }),
-    });
-    if (holdersRes.ok) {
-      const holdersData = await holdersRes.json() as {
-        result?: { value?: Array<{ amount: string; uiAmount: number }> };
-      };
-      const accounts = holdersData.result?.value ?? [];
-      if (accounts.length > 0) {
-        holderCount = accounts.length; // coarse count — top 20 largest
-        const totalAmount = accounts.reduce((sum, a) => sum + (a.uiAmount ?? 0), 0);
-        const topAmount = accounts[0]?.uiAmount ?? 0;
-        topHolderPct = totalAmount > 0 ? (topAmount / totalAmount) * 100 : 0;
+  if (prefetchedHolders) {
+    topHolderPct = prefetchedHolders.topPct;
+    holderCount = prefetchedHolders.count;
+  } else {
+    try {
+      const SOLANA_RPC = process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com';
+      const holdersRes = await fetch(SOLANA_RPC, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0', id: 1,
+          method: 'getTokenLargestAccounts',
+          params: [mint, { commitment: 'confirmed' }],
+        }),
+      });
+      if (holdersRes.ok) {
+        const holdersData = await holdersRes.json() as {
+          result?: { value?: Array<{ amount: string; uiAmount: number }> };
+        };
+        const accounts = holdersData.result?.value ?? [];
+        if (accounts.length > 0) {
+          holderCount = accounts.length; // coarse count — top 20 largest
+          const totalAmount = accounts.reduce((sum, a) => sum + (a.uiAmount ?? 0), 0);
+          const topAmount = accounts[0]?.uiAmount ?? 0;
+          topHolderPct = totalAmount > 0 ? (topAmount / totalAmount) * 100 : 0;
+        }
       }
+    } catch {
+      // Holder check failed — proceed without it
     }
-  } catch {
-    // Holder check failed — proceed without it
   }
 
   // Hard rug filter: single wallet holding > 30% is a red flag (unless it's a known liquidity pool)
@@ -581,6 +630,7 @@ async function processToken(token: {
   } catch { /* no smart money data available */ }
 
   const score = calculateCompositeScore({
+    tokenAddress: mint,
     volume24h: market.volume24h,
     holderCount,
     top10Concentration: topHolderPct,

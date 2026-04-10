@@ -1,6 +1,8 @@
 import type { CompositeScore, SignalConviction } from '@wildtrade/shared';
+import { getRecentConvergences } from '../services/convergence-detector.service.js';
 
 export interface ScoreParams {
+  tokenAddress?: string;
   volume24h: number;
   holderCount: number;
   top10Concentration: number;
@@ -117,11 +119,26 @@ export function calculateCompositeScore(params: ScoreParams): CompositeScore {
   const socialScore = scoreSocial(params.kolMentions);
   const whaleScore = scoreWhale(params.whaleNetFlow, params.liquidityUsd);
   const liquidityScore = scoreLiquidity(params.liquidityUsd);
-  const total = Math.min(100, volumeScore + holderScore + socialScore + whaleScore + liquidityScore);
+  
+  let baseTotal = volumeScore + holderScore + socialScore + whaleScore + liquidityScore;
+
+  // Convergence Boost (+40 points for 2-minute rolling window)
+  let convergenceBoost = 0;
+  if (params.tokenAddress) {
+    const twoMinutesAgo = Date.now() - 120_000;
+    const isConvergent = getRecentConvergences()
+      .some(c => c.tokenMint === params.tokenAddress && c.detectedAt >= twoMinutesAgo);
+    
+    if (isConvergent) {
+      convergenceBoost = 40;
+    }
+  }
+
+  const total = Math.min(100, baseTotal + convergenceBoost);
   const conviction = deriveConviction(total);
 
   console.log(
-    `[alpha-scout] Score breakdown: vol=${volumeScore} hold=${holderScore} soc=${socialScore} whale=${whaleScore} liq=${liquidityScore} total=${total} conviction=${conviction}`
+    `[alpha-scout] Score breakdown: vol=${volumeScore} hold=${holderScore} soc=${socialScore} whale=${whaleScore} liq=${liquidityScore} convergenceBoost=${convergenceBoost} total=${total} conviction=${conviction}`
   );
 
   return { volumeScore, holderScore, socialScore, whaleScore, liquidityScore, total, conviction };

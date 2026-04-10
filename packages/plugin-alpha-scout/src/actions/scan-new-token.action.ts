@@ -194,6 +194,7 @@ const scanNewTokenAction: Action = {
 
     // 5. Score
     const score = calculateCompositeScore({
+      tokenAddress: mintAddress,
       volume24h: market.volume24h,
       holderCount: topHolders.length > 0 ? topHolders.length * 10 : 0,
       top10Concentration,

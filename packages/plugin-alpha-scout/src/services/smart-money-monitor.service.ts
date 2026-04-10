@@ -1,19 +1,15 @@
 /**
- * Smart Money Monitor — Polling-based, no WebSockets.
+ * Smart Money Monitor — WebSocket-based real-time tracking.
  *
- * Periodically polls GMGN for top wallet activity, detects when
- * multiple smart wallets buy the same token (cluster detection),
+ * Uses @solana/web3.js onLogs to monitor top wallet activity in real-time,
+ * detects when multiple smart wallets buy the same token (cluster detection),
  * and emits signals to the Finder agent pipeline.
- *
- * Free-tier friendly: polls every 3-5 min, caches aggressively.
  */
 
+import { Connection, PublicKey, type Logs } from '@solana/web3.js';
 import {
   getQualityWallets,
-  getWalletBuys,
   getTokenInfo,
-  type GmgnWallet,
-  type GmgnWalletTrade,
   type GmgnTokenInfo,
 } from './gmgn.service.js';
 import { getMentionVelocity } from './twitter.service.js';
@@ -48,20 +44,19 @@ export type SmartMoneyCallback = (signal: SmartMoneySignal) => void;
 const CONFIG = {
   // How often to refresh the wallet list (1 hour)
   WALLET_REFRESH_INTERVAL_MS: 3_600_000,
-  // How often to poll wallet activity (2 min — faster for better alpha)
-  ACTIVITY_POLL_INTERVAL_MS: 120_000,
-  // Time window for cluster detection (60 minutes — wider window catches more)
+  // Time window for cluster detection (60 minutes)
   CLUSTER_WINDOW_MS: 3_600_000,
   // Minimum smart wallets buying same token to trigger signal
   MIN_CLUSTER_SIZE: 2,
   // Minimum wallet quality score to track
   MIN_WALLET_QUALITY: 30,
-  // Maximum wallets to track (more wallets = more coverage)
+  // Maximum wallets to track
   MAX_TRACKED_WALLETS: 30,
-  // Buys per wallet to check
-  BUYS_PER_WALLET: 10,
-  // How many wallets to poll per cycle (spread load)
-  WALLETS_PER_CYCLE: 8,
+  // Minimum SOL amount to consider a "buy" from log heuristics
+  MIN_SOL_AMOUNT_HEURISTIC: 0.1,
+  // RPC Endpoint
+  RPC_ENDPOINT: process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com',
+  WS_ENDPOINT: process.env.SOLANA_WS_URL || 'wss://api.mainnet-beta.solana.com',
 };
 
 // ── State ──
@@ -71,7 +66,7 @@ interface TrackedWallet {
   qualityScore: number;
   winrate: number;
   pnl7d: number;
-  lastChecked: number;
+  subscriptionId?: number;
 }
 
 interface RecentBuy {
@@ -85,13 +80,12 @@ interface RecentBuy {
   winrate: number;
 }
 
+let connection: Connection | null = null;
 let trackedWallets: TrackedWallet[] = [];
 let recentBuys: RecentBuy[] = [];
 let onSignalCallback: SmartMoneyCallback | null = null;
 let walletRefreshTimer: ReturnType<typeof setInterval> | null = null;
-let activityPollTimer: ReturnType<typeof setInterval> | null = null;
 let isRunning = false;
-let walletPollIndex = 0;
 
 // Track which signals we've already emitted to avoid duplicates
 const emittedSignals = new Set<string>();
@@ -99,9 +93,9 @@ const emittedSignals = new Set<string>();
 // ── Public API ──
 
 /**
- * Start the smart money monitor.
+ * Start the smart money monitor using WebSockets.
  * @param onSignal - Callback when a cluster is detected
- * @param userWallets - Optional extra wallets from user config (SMART_MONEY_WALLETS env)
+ * @param userWallets - Optional extra wallets from user config
  */
 export async function startSmartMoneyMonitor(
   onSignal: SmartMoneyCallback,
@@ -114,60 +108,54 @@ export async function startSmartMoneyMonitor(
 
   isRunning = true;
   onSignalCallback = onSignal;
+  connection = new Connection(CONFIG.RPC_ENDPOINT, {
+    wsEndpoint: CONFIG.WS_ENDPOINT,
+    commitment: 'confirmed',
+  });
 
-  console.log('[smart-money] Starting smart money monitor...');
-  console.log(`[smart-money] Config: poll every ${CONFIG.ACTIVITY_POLL_INTERVAL_MS / 1000}s, cluster window ${CONFIG.CLUSTER_WINDOW_MS / 60000}min, min cluster size ${CONFIG.MIN_CLUSTER_SIZE}`);
+  console.log('[smart-money] Starting WSS smart money monitor...');
+  console.log(`[smart-money] Config: cluster window ${CONFIG.CLUSTER_WINDOW_MS / 60000}min, min cluster size ${CONFIG.MIN_CLUSTER_SIZE}`);
 
-  // Add user-configured wallets with high priority
   if (userWallets && userWallets.length > 0) {
     for (const addr of userWallets) {
       trackedWallets.push({
         address: addr,
-        qualityScore: 90, // User wallets get high priority
+        qualityScore: 90,
         winrate: 0,
         pnl7d: 0,
-        lastChecked: 0,
       });
     }
-    console.log(`[smart-money] Added ${userWallets.length} user-configured wallets`);
   }
 
-  // Initial wallet list fetch
-  await refreshWalletList();
+  await refreshWalletSubscriptions();
 
-  // Start polling cycles
   walletRefreshTimer = setInterval(() => {
-    refreshWalletList().catch(err => {
+    refreshWalletSubscriptions().catch(err => {
       console.log(`[smart-money] Wallet refresh error: ${String(err)}`);
     });
   }, CONFIG.WALLET_REFRESH_INTERVAL_MS);
 
-  activityPollTimer = setInterval(() => {
-    pollActivityCycle().catch(err => {
-      console.log(`[smart-money] Activity poll error: ${String(err)}`);
-    });
-  }, CONFIG.ACTIVITY_POLL_INTERVAL_MS);
-
-  // Do first activity poll after short delay
-  setTimeout(() => {
-    pollActivityCycle().catch(err => {
-      console.log(`[smart-money] Initial poll error: ${String(err)}`);
-    });
-  }, 10_000);
-
-  console.log(`[smart-money] Monitor started, tracking ${trackedWallets.length} wallets`);
+  console.log(`[smart-money] Monitor started.`);
 }
 
 /**
- * Stop the monitor.
+ * Stop the monitor and unsubscribe from all logs.
  */
 export function stopSmartMoneyMonitor(): void {
   if (walletRefreshTimer) clearInterval(walletRefreshTimer);
-  if (activityPollTimer) clearInterval(activityPollTimer);
   walletRefreshTimer = null;
-  activityPollTimer = null;
   isRunning = false;
   onSignalCallback = null;
+
+  if (connection) {
+    for (const wallet of trackedWallets) {
+      if (wallet.subscriptionId !== undefined) {
+        connection.removeOnLogsListener(wallet.subscriptionId).catch(() => {});
+        wallet.subscriptionId = undefined;
+      }
+    }
+  }
+  connection = null;
   console.log('[smart-money] Monitor stopped');
 }
 
@@ -213,15 +201,16 @@ export async function forceCheck(): Promise<SmartMoneySignal[]> {
     if (origCallback) origCallback(sig);
   };
 
-  await pollActivityCycle();
+  detectClusters();
+  
   onSignalCallback = origCallback;
   return signals;
 }
 
-// ── Internal: Wallet List Management ──
+// ── Internal: Wallet List & Subscription Management ──
 
-async function refreshWalletList(): Promise<void> {
-  console.log('[smart-money] Refreshing wallet list from GMGN...');
+async function refreshWalletSubscriptions(): Promise<void> {
+  console.log('[smart-money] Refreshing wallet list from GMGN and updating WSS subscriptions...');
 
   try {
     const qualityWallets = await getQualityWallets(
@@ -234,11 +223,9 @@ async function refreshWalletList(): Promise<void> {
       return;
     }
 
-    // Preserve user-configured wallets (qualityScore=90)
     const userWallets = trackedWallets.filter(w => w.qualityScore === 90);
     const userAddrs = new Set(userWallets.map(w => w.address));
 
-    // Build new list: user wallets first, then GMGN wallets
     const newList: TrackedWallet[] = [...userWallets];
 
     for (const w of qualityWallets) {
@@ -248,91 +235,174 @@ async function refreshWalletList(): Promise<void> {
           qualityScore: w.qualityScore,
           winrate: w.winrate,
           pnl7d: w.pnl_7d,
-          lastChecked: 0,
         });
       }
     }
 
-    trackedWallets = newList.slice(0, CONFIG.MAX_TRACKED_WALLETS);
-    console.log(`[smart-money] Tracking ${trackedWallets.length} wallets (${userWallets.length} user + ${trackedWallets.length - userWallets.length} GMGN)`);
+    const nextTracked = newList.slice(0, CONFIG.MAX_TRACKED_WALLETS);
+    
+    // Unsubscribe removed wallets
+    const nextAddrs = new Set(nextTracked.map(w => w.address));
+    for (const w of trackedWallets) {
+      if (!nextAddrs.has(w.address) && w.subscriptionId !== undefined && connection) {
+        connection.removeOnLogsListener(w.subscriptionId).catch(() => {});
+      }
+    }
+
+    // Subscribe new wallets
+    for (const w of nextTracked) {
+      const existing = trackedWallets.find(t => t.address === w.address);
+      if (existing && existing.subscriptionId !== undefined) {
+        w.subscriptionId = existing.subscriptionId;
+      } else if (connection) {
+        try {
+          w.subscriptionId = connection.onLogs(
+            new PublicKey(w.address),
+            (logs, ctx) => handleWalletLogs(w, logs),
+            'confirmed'
+          );
+        } catch (err) {
+          console.error(`[smart-money] Failed to subscribe to ${w.address}:`, err);
+        }
+      }
+    }
+
+    trackedWallets = nextTracked;
+    console.log(`[smart-money] Tracking ${trackedWallets.length} wallets via WSS`);
   } catch (err) {
     console.log(`[smart-money] Wallet refresh failed: ${String(err)}`);
   }
 }
 
-// ── Internal: Activity Polling ──
+// ── Internal: WSS Log Handling ──
 
-async function pollActivityCycle(): Promise<void> {
-  if (trackedWallets.length === 0) {
-    return; // Silent — no point logging "no wallets" every 3 min
-  }
+async function handleWalletLogs(wallet: TrackedWallet, logs: Logs): Promise<void> {
+  if (logs.err) return; // Ignore failed transactions
 
-  // Clean up old buys outside the cluster window
-  const cutoff = Date.now() - CONFIG.CLUSTER_WINDOW_MS;
-  recentBuys = recentBuys.filter(b => b.timestamp > cutoff);
+  // Basic heuristic: Is it a Raydium or Pump.fun interact?
+  const isSwap = logs.logs.some(log => 
+    log.includes('Program log: Instruction: Swap') || 
+    log.includes('Program log: Instruction: Route') ||
+    log.includes('Program 6EF8rrecthR5Dkzon8YargZYa8m4CjHExuC5M62bV2gL invoke') || // pump.fun target 
+    log.includes('Program log: Instruction: Buy')
+  );
 
-  // Clean up old emitted signal keys (older than 1 hour)
-  const signalCutoff = Date.now() - 3_600_000;
-  for (const key of emittedSignals) {
-    const ts = parseInt(key.split(':')[1] ?? '0');
-    if (ts < signalCutoff) emittedSignals.delete(key);
-  }
+  if (!isSwap) return;
 
-  // Sort by least recently checked, pick next batch
-  const sorted = [...trackedWallets].sort((a, b) => a.lastChecked - b.lastChecked);
-  const batch = sorted.slice(0, CONFIG.WALLETS_PER_CYCLE);
-
-  // Only log every 5th cycle to avoid spam
-  if (walletPollIndex % 5 === 0) {
-    console.log(`[smart-money] Polling ${batch.length} wallets (cycle ${walletPollIndex}, ${recentBuys.length} recent buys tracked)...`);
-  }
-  walletPollIndex++;
-
-  // Poll each wallet sequentially to stay rate-limit friendly
-  for (const wallet of batch) {
-    try {
-      const buys = await getWalletBuys(wallet.address, CONFIG.BUYS_PER_WALLET);
-      wallet.lastChecked = Date.now();
-      
-      // Delay 1 second between wallets to avoid free-tier rate limits!
-      await new Promise(r => setTimeout(r, 1000));
-
-      for (const buy of buys) {
-        // Only count recent buys within the cluster window
-        if (buy.timestamp > cutoff) {
-          // Avoid duplicates
-          const buyKey = `${wallet.address}:${buy.token_address}:${buy.timestamp}`;
-          const existing = recentBuys.find(b =>
-            b.wallet === wallet.address &&
-            b.tokenAddress === buy.token_address &&
-            Math.abs(b.timestamp - buy.timestamp) < 60_000,
-          );
-
-          if (!existing) {
-            recentBuys.push({
-              wallet: wallet.address,
-              tokenAddress: buy.token_address,
-              tokenSymbol: buy.token_symbol,
-              tokenName: buy.token_name,
-              solAmount: buy.sol_amount,
-              timestamp: buy.timestamp,
-              qualityScore: wallet.qualityScore,
-              winrate: wallet.winrate,
-            });
-          }
-        }
-      }
-    } catch (err) {
-      // Don't log every individual wallet failure — too spammy
-      wallet.lastChecked = Date.now();
+  try {
+    if (!connection) return;
+    
+    // Delay slightly to ensure RPC has the parsed tx ready
+    await new Promise(r => setTimeout(r, 2000));
+    
+    const maxRetries = 3;
+    let tx = null;
+    
+    for (let i = 0; i < maxRetries; i++) {
+        tx = await connection.getParsedTransaction(logs.signature, {
+            maxSupportedTransactionVersion: 0,
+            commitment: 'confirmed'
+        });
+        if (tx) break;
+        await new Promise(r => setTimeout(r, 2000));
     }
 
-    // Small delay between wallets
-    await new Promise(r => setTimeout(r, 2_000));
-  }
+    if (!tx || !tx.meta) return;
 
-  // Run cluster detection
-  detectClusters();
+    // We only care about SOL going OUT (to buy) and Tokens coming IN.
+    // Extremely simplified heuristic for alpha/speed.
+    
+    // Find pre/post SOL balances for the wallet
+    const accountIndex = tx.transaction.message.accountKeys.findIndex(
+      k => k.pubkey.toBase58() === wallet.address
+    );
+    if (accountIndex === -1) return;
+
+    const preSol = tx.meta.preBalances[accountIndex];
+    const postSol = tx.meta.postBalances[accountIndex];
+    const solSpent = (preSol - postSol) / 1e9; // in SOL
+
+    // If it didn't spend SOL, or spent less than min amount (likely just gas/small test), skip
+    if (solSpent < CONFIG.MIN_SOL_AMOUNT_HEURISTIC) return;
+
+    // Find token that increased in balance
+    const preTokenBalances = tx.meta.preTokenBalances || [];
+    const postTokenBalances = tx.meta.postTokenBalances || [];
+    
+    let boughtTokenMint = '';
+    let maxIncrease = 0;
+
+    for (const post of postTokenBalances) {
+      if (post.owner === wallet.address) {
+        const pre = preTokenBalances.find(
+          p => p.accountIndex === post.accountIndex && p.mint === post.mint
+        );
+        const preAmt = pre ? Number(pre.uiTokenAmount.uiAmount || 0) : 0;
+        const postAmt = Number(post.uiTokenAmount.uiAmount || 0);
+        
+        const increase = postAmt - preAmt;
+        if (increase > 0 && increase > maxIncrease) {
+          maxIncrease = increase;
+          boughtTokenMint = post.mint;
+        }
+      }
+    }
+
+    if (!boughtTokenMint) return;
+
+    // Avoid Wrapped SOL
+    if (boughtTokenMint === 'So11111111111111111111111111111111111111112') return;
+
+    // Record the buy
+    const cutoff = Date.now() - CONFIG.CLUSTER_WINDOW_MS;
+    recentBuys = recentBuys.filter(b => b.timestamp > cutoff);
+
+    // Check duplicate
+    const existing = recentBuys.find(b =>
+      b.wallet === wallet.address &&
+      b.tokenAddress === boughtTokenMint &&
+      Math.abs(b.timestamp - Date.now()) < 60_000,
+    );
+
+    if (!existing) {
+      console.log(`[smart-money] WSS: Wallet ${wallet.address.slice(0, 6)} bought ${boughtTokenMint.slice(0, 6)}... (${solSpent.toFixed(2)} SOL)`);
+      
+      // Async enrich token name symbol just so UI looks nice, but don't block
+      getTokenInfo(boughtTokenMint).then(info => {
+        let symbol = info?.symbol || boughtTokenMint.slice(0, 6);
+        let name = info?.name || boughtTokenMint;
+        
+        recentBuys.push({
+          wallet: wallet.address,
+          tokenAddress: boughtTokenMint,
+          tokenSymbol: symbol,
+          tokenName: name,
+          solAmount: solSpent,
+          timestamp: Date.now(),
+          qualityScore: wallet.qualityScore,
+          winrate: wallet.winrate,
+        });
+        
+        detectClusters();
+      }).catch(() => {
+        recentBuys.push({
+          wallet: wallet.address,
+          tokenAddress: boughtTokenMint,
+          tokenSymbol: boughtTokenMint.slice(0, 6),
+          tokenName: boughtTokenMint,
+          solAmount: solSpent,
+          timestamp: Date.now(),
+          qualityScore: wallet.qualityScore,
+          winrate: wallet.winrate,
+        });
+        
+        detectClusters();
+      });
+    }
+
+  } catch (err) {
+    console.error(`[smart-money] Failed to parsed WSS transaction ${logs.signature}:`, err);
+  }
 }
 
 // ── Internal: Cluster Detection ──
@@ -368,14 +438,6 @@ function detectClusters(): void {
     const signalKey = `${tokenAddress}:${hourKey}`;
     if (!isHighVelocity && emittedSignals.has(signalKey)) continue;
 
-    // Calculate confidence — enhanced with SOL invested weighting
-    let confidence: SmartMoneySignal['confidence'];
-    if (walletCount >= 5) confidence = 'very_high';
-    else if (walletCount >= 4) confidence = 'high';
-    else if (walletCount >= 3) confidence = 'high';
-    else if (walletCount >= 2 && totalSol >= 3) confidence = 'medium';
-    else if (walletCount >= 2) confidence = 'low';
-
     const walletBuys: WalletBuy[] = Array.from(uniqueWallets.values()).map(b => ({
       wallet: b.wallet,
       solAmount: b.solAmount,
@@ -385,6 +447,16 @@ function detectClusters(): void {
     }));
 
     const totalSol = walletBuys.reduce((sum, b) => sum + b.solAmount, 0);
+
+    // Calculate confidence — enhanced with SOL invested weighting
+    let confidence: SmartMoneySignal['confidence'];
+    if (walletCount >= 5) confidence = 'very_high';
+    else if (walletCount >= 4) confidence = 'high';
+    else if (walletCount >= 3) confidence = 'high';
+    else if (walletCount >= 2 && totalSol >= 3) confidence = 'medium';
+    else if (walletCount >= 2) confidence = 'low';
+    else confidence = 'low'; // fallback
+
     const sampleBuy = buys[0];
 
     // Emit signal

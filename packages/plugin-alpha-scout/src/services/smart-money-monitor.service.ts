@@ -55,8 +55,8 @@ const CONFIG = {
   // Minimum SOL amount to consider a "buy" from log heuristics
   MIN_SOL_AMOUNT_HEURISTIC: 0.1,
   // RPC Endpoint
-  RPC_ENDPOINT: process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com',
-  WS_ENDPOINT: process.env.SOLANA_WS_URL || 'wss://api.mainnet-beta.solana.com',
+  get RPC_ENDPOINT() { return process.env.SOLANA_RPC_HELIUS || process.env.SOLANA_RPC_QUICKNODE || process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com'; },
+  get WS_ENDPOINT() { return (this.RPC_ENDPOINT || '').replace('https', 'wss').replace('http', 'ws'); },
 };
 
 // ── State ──

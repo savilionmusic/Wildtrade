@@ -19,7 +19,7 @@ import { getDb } from '@wildtrade/shared';
 import type { AlphaSignal, InterAgentMessage } from '@wildtrade/shared';
 import { v4 as uuidv4 } from 'uuid';
 import { executeFullSwap } from './jupiter.service.js';
-import { runAiPreTradeConvictionCheck } from './ai-approval.service.js';
+import { runAiPreTradeConvictionCheck, runAiActivePositionAnalyzer, type AiTradeAction } from './ai-approval.service.js';
 import { Keypair } from '@solana/web3.js';
 import bs58 from 'bs58';
 
@@ -127,6 +127,7 @@ interface Position {
   highWaterMark: number;    // Highest multiplier seen (for graduated trailing stop)
   reason?: string;          // Why it was bought
   kolStrategy?: 'flip' | 'conviction'; // KOL trade profile (flip = quick exit, conviction = hold)
+  lastAiAnalysisAt?: number; // Store timestamp of last deepseek evaluation
 }
 
 // ── Deep Trade Memory ──
@@ -611,6 +612,8 @@ function canTrade(): { allowed: boolean; reason?: string } {
 let lastRugCheckTime = 0;
 let RUGCHECK_COOLDOWN_MS = 1_000;
 
+let pendingSnipes = 0;
+
 export async function triggerInstantSnipe(mintAddress: string, symbol: string): Promise<void> {
   if (!running) {
     log(`🚀 SNIPE REJECTED: Trader not running`);
@@ -625,8 +628,8 @@ export async function triggerInstantSnipe(mintAddress: string, symbol: string): 
   const phase = getCurrentPhase();
   const openCount = Array.from(positions.values()).filter(p => p.status === 'open' || p.status === 'partial_exit').length;
   const maxPos = userMaxPositions ?? phase.maxPositions;
-  if (openCount >= maxPos) {
-    log(`🚀 SNIPE REJECTED: Max positions (${maxPos}) reached`);
+  if (openCount + pendingSnipes >= maxPos) {
+    log(`🚀 SNIPE REJECTED: Max positions (${maxPos}) reached (including pending snipes)`);
     return;
   }
 
@@ -637,6 +640,9 @@ export async function triggerInstantSnipe(mintAddress: string, symbol: string): 
     log(`🚀 SNIPE REJECTED: Already in ${symbol || mintAddress.slice(0, 8)}`);
     return;
   }
+  
+  pendingSnipes++;
+  try {
 
   // ── Safety checks for migration snipes ──
   // Quick RugCheck — block confirmed honeypots/mintables even on snipes
@@ -711,6 +717,11 @@ export async function triggerInstantSnipe(mintAddress: string, symbol: string): 
   
   // Explicitly log the opening so the UI and portfolio track it instantly
   log(`Position fully opened via snipe: ${symbol} at $${price.toFixed(6)}`);
+  } catch (err) {
+    log(`🚀 SNIPE ERROR: ${String(err)}`);
+  } finally {
+    pendingSnipes--;
+  }
 }
 
 export async function startAutonomousTrader(opts: {
@@ -922,10 +933,8 @@ async function pollForSignals(): Promise<void> {
     const db = await getDb();
     const phase = getCurrentPhase();
     const minScore = getAdaptiveMinScore();
-    const openCount = Array.from(positions.values()).filter(p => p.status === 'open' || p.status === 'partial_exit').length;
-
+    // We dynamically check openCount per signal to strictly enforce maxPositions
     const maxPos = userMaxPositions ?? phase.maxPositions;
-    if (openCount >= maxPos) return; // Max positions limit
 
     // Get qualifying signals — filter by MCap range, liquidity, score
     const result = await db.query(
@@ -945,6 +954,11 @@ async function pollForSignals(): Promise<void> {
     const signals = (result?.rows ?? []) as Array<Record<string, unknown>>;
 
     for (const row of signals) {
+      const currentOpenCount = Array.from(positions.values()).filter(p => p.status === 'open' || p.status === 'partial_exit').length;
+      if (currentOpenCount >= maxPos) {
+        log(`[Strict Enforce] Max positions (${maxPos}) reached, skipped remaining signals.`);
+        break;
+      }
       const mintAddress = String(row.mint ?? '');
       if (!mintAddress) continue;
 
@@ -1509,6 +1523,46 @@ async function checkPricesAndExits(): Promise<void> {
           log(`EXIT TIER ${i + 1} hit for ${position.symbol}: ${multiplier.toFixed(2)}x (target: ${tier.multiplier}x)`);
           await executeSell(position, tier.sellPct, `${tier.multiplier}x take-profit`);
           break;
+        }
+      }
+
+      // ── AI Smart Portfolio Manager (DeepSeek) ──
+      // Run every 5 minutes to get intelligent entry/exit and moon-bag evaluation
+      if (Date.now() - (position.lastAiAnalysisAt || 0) > 300_000) {
+        position.lastAiAnalysisAt = Date.now();
+        const market = await getMarketData(position.mintAddress);
+        const topHoldersPercent = 35.0; // Simulated RPC placeholder for cabal check
+
+        log(`[AI Portfolio] Asking DeepSeek to evaluate open trade: ${position.symbol} (${multiplier.toFixed(2)}x)...`);
+        const analysis = await runAiActivePositionAnalyzer(
+          position.mintAddress, position.symbol, position.solDeployed, 
+          position.solDeployed * multiplier, multiplier, holdMins, 
+          market.liquidity > 0 ? market.liquidity * 5 : 50000, market.volume1h, topHoldersPercent
+        );
+
+        log(`[AI Portfolio] ${position.symbol} analysis: ${analysis.action} (Confidence: ${analysis.confidence}%) | ${analysis.reason}`);
+
+        if (analysis.confidence >= 65) {
+          if (analysis.action === 'EXIT') {
+             log(`🚨 AI OVERRIDE EXIT: Dumping ${position.symbol}: ${analysis.reason}`);
+             await executeSell(position, 1.0, `ai_exit_override`);
+             continue; // Trade dumped, skip rest
+          } else if (analysis.action === 'TAKE_PROFIT' && position.exitTiersHit < 2) {
+             log(`💰 AI TAKE PROFIT: Securing 50% on ${position.symbol}: ${analysis.reason}`);
+             await executeSell(position, 0.5, `ai_take_profit`);
+          } else if (analysis.action === 'MOON_BAG' && position.exitTiersHit < 4) {
+             log(`🚀 AI MOON BAG: Selling 80%, leaving remainder forever: ${analysis.reason}`);
+             await executeSell(position, 0.8, `ai_moon_bag`);
+             position.highWaterMark = Math.max(position.highWaterMark, 5.0); // Permanently widen stop loss to prevent early exit
+          } else if (analysis.action === 'DCA_IN' && position.dcaLegsExecuted < 2 && multiplier < 0.9) {
+             const phase = getCurrentPhase();
+             const available = totalBudgetSol - deployedSol + realizedPnlSol;
+             const dcaAmount = Math.min(phase.positionSizeMin * 0.5, available * 0.10);
+             if (dcaAmount >= 0.01) {
+               log(`🤖 AI DCA IN: Buying the dip on ${position.symbol} (${dcaAmount.toFixed(4)} SOL): ${analysis.reason}`);
+               await executeBuy(position, dcaAmount, position.dcaLegsExecuted + 1);
+             }
+          }
         }
       }
 

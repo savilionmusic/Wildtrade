@@ -76,7 +76,7 @@ import {
   onTelegramMessage,
   stopTelegramPolling,
   enqueueToken,
-  fetchDexScreenerData,
+  getTokenPairs,
 } from '@wildtrade/plugin-alpha-scout';
 import {
   startAutonomousTrader,
@@ -357,19 +357,16 @@ async function main(): Promise<void> {
     
     try {
       // Check for fast-lane snipe opportunity
-      const dexDataStr = await fetchDexScreenerData(signal.tokenMint);
-      if (dexDataStr) {
-        const dexData = JSON.parse(dexDataStr);
-        const pairs = dexData.pairs || [];
-        
-        if (pairs.length > 0) {
-          const mainPair = pairs[0];
-          const pairAgeMs = Date.now() - mainPair.pairCreatedAt;
-          const pairAgeMinutes = pairAgeMs / (1000 * 60);
+      const pairs = await getTokenPairs(signal.tokenMint);
+      
+      if (pairs && pairs.length > 0) {
+        const mainPair = pairs[0];
+        const pairAgeMs = Date.now() - mainPair.pairCreatedAt;
+        const pairAgeMinutes = pairAgeMs / (1000 * 60);
           
-          const signalAgeMinutes = (Date.now() - (signal.timestamp || Date.now())) / (1000 * 60);
+        const signalAgeMinutes = (Date.now() - (signal.timestamp || Date.now())) / (1000 * 60);
           
-          if (pairAgeMinutes <= 15 && signalAgeMinutes < 2) {
+        if (pairAgeMinutes <= 15 && signalAgeMinutes < 2) {
             console.log(`[kol-intel] 🚀 FAST-LANE SNIPE TRIGGERED for ${signal.tokenSymbol || signal.tokenMint} - Pair is ${pairAgeMinutes.toFixed(1)} mins old, Tweet is ${signalAgeMinutes.toFixed(1)} mins old`);
             addProactiveAlert('kol_signal', `FAST LANE SNIPE: ${signal.tokenSymbol || signal.tokenMint} is fresh (${pairAgeMinutes.toFixed(1)} min age)`);
             triggerInstantSnipe(signal.tokenMint);
@@ -377,7 +374,6 @@ async function main(): Promise<void> {
           } else {
              console.log(`[kol-intel] Token ${signal.tokenSymbol || signal.tokenMint} too old for fast-lane (Pair: ${pairAgeMinutes.toFixed(1)}m, Signal: ${signalAgeMinutes.toFixed(1)}m). Queueing normally.`);
           }
-        }
       }
     } catch (err) {
        console.log(`[kol-intel] Fast lane check failed: ${err}`);

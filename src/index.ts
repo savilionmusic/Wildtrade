@@ -301,20 +301,13 @@ async function main(): Promise<void> {
         tokenInfo: signal.tokenInfo,
       });
 
-      console.log(`[smart-money] Feeding cluster to Finder agent for scoring...`);
-      // Create a memory in the finder's runtime that triggers SMART_MONEY_SCAN
-      finder.messageManager.createMemory({
-        id: crypto.randomUUID() as any,
-        userId: '00000000-0000-0000-0000-000000000001' as any,
-        agentId: finder.agentId,
-        roomId: '00000000-0000-0000-0000-000000000099' as any,
-        content: {
-          text: `SMART_MONEY_CLUSTER ${clusterPayload}`,
-        },
-        createdAt: Date.now(),
-      }).catch(err => {
-        console.log(`[smart-money] Error feeding to Finder: ${String(err)}`);
-      });
+      console.log(`[smart-money] Feeding cluster to scanner engine queue...`);
+      enqueueToken(
+        signal.tokenAddress,
+        signal.tokenSymbol || signal.tokenAddress.slice(0, 8),
+        signal.tokenName || '',
+        'smart_money'
+      );
     },
     userWallets.length > 0 ? userWallets : undefined,
   );
@@ -378,6 +371,13 @@ async function main(): Promise<void> {
         addProactiveAlert('smart_money_cluster', convMsg);
         sendToParent({ type: 'proactive-alert', alertType: 'smart_money_cluster', message: convMsg });
         sendTelegramAlert('smart_money_cluster', convMsg);
+
+        enqueueToken(
+          signal.tokenMint,
+          signal.tokenSymbol || signal.tokenMint.slice(0, 8),
+          signal.tokenName || '',
+          'convergence'
+        );
 
         // Score based on wallet convergence count
         const baseScore = signal.walletCount >= 5 ? 85

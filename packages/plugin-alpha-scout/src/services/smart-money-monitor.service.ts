@@ -53,7 +53,9 @@ const CONFIG = {
   // Maximum wallets to track
   MAX_TRACKED_WALLETS: 30,
   // Maximum WebSocket subscriptions (Constant-K Operator: heavy WS methods limited to 5/sec)
-  MAX_WS_SUBSCRIPTIONS: 50,
+  // Web3.js blasts all active subscriptions simultaneously on reconnect, so we MUST keep the total 
+  // active WS subscriptions strictly <= 5 to prevent 429 bans from Constant-K.
+  MAX_WS_SUBSCRIPTIONS: 4,
   // Minimum SOL amount to consider a "buy" from log heuristics
   MIN_SOL_AMOUNT_HEURISTIC: 0.01,
   // RPC Endpoint
@@ -123,7 +125,7 @@ async function enqueueGetParsedTransaction(signature: string): Promise<any> {
 }
 
 async function processRpcQueue() {
-  if (activeRpcCalls >= 2 || rpcQueue.length === 0) return; // Max 2 concurrent RPS
+  if (activeRpcCalls >= 1 || rpcQueue.length === 0) return; // Strict max 1 concurrent to respect heavy limits
   activeRpcCalls++;
   
   const task = rpcQueue.shift();
@@ -133,11 +135,11 @@ async function processRpcQueue() {
     } catch(e) {}
   }
   
-  // Wait 100ms between parsed tx checks to stay under specific RPC call limits
+  // Wait 250ms between parsed tx checks to stay strictly under 5/sec limit
   setTimeout(() => {
     activeRpcCalls--;
     processRpcQueue();
-  }, 100);
+  }, 250);
 }
 
 // Track which signals we've already emitted to avoid duplicates
@@ -332,8 +334,12 @@ async function refreshWalletSubscriptions(): Promise<void> {
     for (const w of nextTracked) {
       const existing = trackedWallets.find(t => t.address === w.address);
       if (existing && existing.subscriptionId !== undefined) {
-        w.subscriptionId = existing.subscriptionId;
-        wsCount++;
+        if (wsCount < CONFIG.MAX_WS_SUBSCRIPTIONS) {
+          w.subscriptionId = existing.subscriptionId;
+          wsCount++;
+        } else if (connection) {
+          connection.removeOnLogsListener(existing.subscriptionId).catch(() => {});
+        }
       } else if (connection && wsCount < CONFIG.MAX_WS_SUBSCRIPTIONS) {
         // Stagger: wait 500ms between logsSubscribe calls (max 2/sec, well under 5/sec heavy limit)
         if (wsCount > 0) await new Promise(r => setTimeout(r, 500));

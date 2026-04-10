@@ -13,6 +13,8 @@ import { handleChatMessage, addProactiveAlert } from './chat-handler.js';
 import {
   startSmartMoneyMonitor,
   stopSmartMoneyMonitor,
+  getTrackedWalletAddresses,
+  getRecentSmartBuys,
   startScanner,
   stopScanner,
   startWalletIntelligence,
@@ -209,11 +211,25 @@ async function main(): Promise<void> {
     .map(w => w.trim())
     .filter(Boolean);
 
+  const recentClusters: object[] = [];
+
   await startSmartMoneyMonitor(
     (signal) => {
       // When a cluster is detected, log it and broadcast to UI
       const clusterMsg = `CLUSTER: ${signal.tokenSymbol || signal.tokenAddress.slice(0, 8)} — ${signal.smartWalletCount} wallets, ${signal.totalSolInvested.toFixed(2)} SOL, ${signal.confidence} confidence | https://dexscreener.com/solana/${signal.tokenAddress}`;
       console.log(`[smart-money] ${clusterMsg}`);
+      
+      const cEvent = {
+        tokenAddress: signal.tokenAddress,
+        tokenSymbol: signal.tokenSymbol,
+        smartWalletCount: signal.smartWalletCount,
+        totalSolInvested: signal.totalSolInvested,
+        confidence: signal.confidence,
+        detectedAt: signal.detectedAt,
+      };
+      recentClusters.unshift(cEvent);
+      if (recentClusters.length > 50) recentClusters.pop();
+
       addProactiveAlert('smart_money_cluster', clusterMsg);
       sendToParent({ type: 'proactive-alert', alertType: 'smart_money_cluster', message: clusterMsg });
       sendTelegramAlert('smart_money_cluster', clusterMsg);
@@ -452,6 +468,27 @@ async function main(): Promise<void> {
           },
         });
       }
+
+      if (msg?.type === 'smartmoney:get') {
+        const wallets = getTrackedWalletAddresses();
+        const recentBuys = getRecentSmartBuys();
+        
+        // Count whales discovered today
+        // For simplicity right now, simulate from tracked list if we don't have a direct DB count
+        const whalesFound = wallets.length > (userWallets?.length || 0) ? wallets.length - (userWallets?.length || 0) : 0;
+
+        process.send!({
+          type: 'smartmoney:response',
+          id: msg.id,
+          data: {
+            wallets,
+            whalesFound,
+            recentBuys: recentBuys.slice(0, 50),
+            clusters: recentClusters
+          }
+        });
+      }
+
       if (msg?.type === 'config:set') {
         if (msg.key === 'MAX_POSITIONS') {
           setMaxPositions(Number(msg.value));

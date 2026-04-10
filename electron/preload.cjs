@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld('wildtrade', {
   stopBot: () => ipcRenderer.invoke('bot:stop'),
   getBotStatus: () => ipcRenderer.invoke('bot:status'),
   getBotLogs: () => ipcRenderer.invoke('bot:logs'),
+  getSmartMoneyStats: () => ipcRenderer.invoke('smartmoney:get'),
 
   // Open URLs in system browser
   openExternal: (url) => ipcRenderer.invoke('open-external', url),

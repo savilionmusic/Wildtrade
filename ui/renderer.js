@@ -23,6 +23,7 @@ let alertsPaused = false;
 let alertFilter = 'all';
 let unseenAlerts = 0;
 let portfolioInterval = null;
+let smartMoneyInterval = null;
 
 // ── Tab navigation ──
 document.querySelectorAll('.nav-btn').forEach(btn => {
@@ -778,6 +779,47 @@ window.wildtrade.onBotLog(entry => {
 });
 
 // ── Portfolio Tab ──
+// ── Smart Money ──
+async function refreshSmartMoney() {
+  if (!botRunning) return;
+  const stats = await window.wildtrade.getSmartMoneyStats();
+  if (!stats) return;
+
+  if (document.getElementById('val-sm-wallets')) {
+    document.getElementById('val-sm-wallets').textContent = stats.wallets?.length || 0;
+    document.getElementById('val-whales-found').textContent = stats.whalesFound || 0;
+
+    const clustersEl = document.getElementById('sm-clusters');
+    if (stats.clusters && stats.clusters.length > 0) {
+      clustersEl.innerHTML = stats.clusters.map(c => `
+        <div style="margin-bottom: 8px; padding: 8px; background: rgba(16,185,129,0.1); border-left: 2px solid #10b981;">
+          <div style="color: #10b981; font-weight: bold;">[${new Date(c.detectedAt).toLocaleTimeString()}] ${c.tokenSymbol || c.tokenAddress.slice(0, 8)}</div>
+          <div style="color: #ccc; font-size: 12px; margin-top: 4px;">Confidence: ${c.confidence.toUpperCase()} | ${c.smartWalletCount} wallets | ${c.totalSolInvested.toFixed(2)} SOL total</div>
+          <a href="#" onclick="window.wildtrade.openExternal('https://dexscreener.com/solana/${c.tokenAddress}')" style="color: #3b82f6; text-decoration: none; font-size: 12px; cursor: pointer;">View on DexScreener</a>
+        </div>
+      `).join('');
+    } else {
+      clustersEl.innerHTML = '<div style="color: #555;">No recent convergence clusters detected.</div>';
+    }
+
+    const buysEl = document.getElementById('sm-recent-buys');
+    if (stats.recentBuys && stats.recentBuys.length > 0) {
+      buysEl.innerHTML = stats.recentBuys.map(b => `
+        <div style="margin-bottom: 4px; padding: 4px 0; border-bottom: 1px solid #333; font-size: 12px; color: #aaa;">
+          <span style="color: #888;">[${new Date(b.timestamp).toLocaleTimeString()}]</span> 
+          <span style="color: #eee;">${b.wallet.slice(0, 6)}...${b.wallet.slice(-4)}</span> bought 
+          <strong style="color: #10b981;">${b.solAmount.toFixed(2)} SOL</strong> of 
+          <a href="#" onclick="window.wildtrade.openExternal('https://dexscreener.com/solana/${b.tokenAddress}')" style="color: #3b82f6; text-decoration: none;">${b.tokenSymbol || b.tokenAddress.slice(0, 6)}</a>
+        </div>
+      `).join('');
+    } else {
+      buysEl.innerHTML = '<div style="color: #555;">No recent smart money buys tracked.</div>';
+    }
+  }
+}
+
+app.refreshSmartMoney = refreshSmartMoney;
+
 function refreshPortfolio() {
   if (!window.wildtrade.getPortfolio) return;
   window.wildtrade.getPortfolio().then(data => {
@@ -949,6 +991,9 @@ document.querySelector('[data-tab="portfolio"]')?.addEventListener('click', () =
   refreshPortfolio();
   if (!portfolioInterval) {
     portfolioInterval = setInterval(refreshPortfolio, 3000);
+  }
+  if (!smartMoneyInterval) {
+    smartMoneyInterval = setInterval(refreshSmartMoney, 5000);
   }
 });
 

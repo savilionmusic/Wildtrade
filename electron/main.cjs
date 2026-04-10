@@ -435,12 +435,12 @@ function chatViaBotIPC(message) {
 function handleBotMessage(msg) {
   if (!msg || typeof msg !== 'object') return;
 
-  if (msg.type === 'chat:response' || msg.type === 'portfolio:response' || msg.type === 'portfolio:reset-response') {
+  if (msg.type === 'chat:response' || msg.type === 'portfolio:response' || msg.type === 'portfolio:reset-response' || msg.type === 'smartmoney:response') {
     const pending = pendingChatResponses.get(msg.id);
     if (pending) {
       clearTimeout(pending.timeout);
       pendingChatResponses.delete(msg.id);
-      if (msg.type === 'portfolio:response') {
+      if (msg.type === 'portfolio:response' || msg.type === 'smartmoney:response') {
         pending.resolve(msg.data);
       } else if (msg.type === 'portfolio:reset-response') {
         pending.resolve(msg.data);
@@ -573,6 +573,22 @@ ipcMain.handle('portfolio:get', async () => {
     }, 5000);
     pendingChatResponses.set(id, { resolve, timeout });
     botProcess.send({ type: 'portfolio:get', id });
+  });
+});
+
+ipcMain.handle('smartmoney:get', async () => {
+  if (!botProcess) {
+    return { wallets: 0, clusters: [], recentBuys: [], whalesFound: 0 };
+  }
+  return new Promise((resolve) => {
+    const id = ++chatIPCCounter;
+    const timeout = setTimeout(() => {
+      pendingChatResponses.delete(id);
+      resolve({ wallets: 0, clusters: [], recentBuys: [], whalesFound: 0 });
+    }, 5000);
+    // Reuse chat response queue ID system
+    pendingChatResponses.set(id, { resolve, timeout });
+    botProcess.send({ type: 'smartmoney:get', id });
   });
 });
 

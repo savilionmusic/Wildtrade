@@ -786,8 +786,20 @@ async function refreshSmartMoney() {
   if (!stats) return;
 
   if (document.getElementById('val-sm-wallets')) {
-    document.getElementById('val-sm-wallets').textContent = stats.wallets?.length || 0;
+    const trackedWallets = stats.monitorStatus?.trackedWallets ?? stats.wallets?.length ?? 0;
+    const activeWs = stats.monitorStatus?.activeWsSubscriptions ?? 0;
+    const wsCap = stats.monitorStatus?.wsSubscriptionCap ?? 0;
+    const wsRunning = stats.monitorStatus?.running !== false;
+
+    document.getElementById('val-sm-wallets').textContent = trackedWallets;
     document.getElementById('val-whales-found').textContent = stats.whalesFound || 0;
+
+    const wsEl = document.getElementById('val-ws-status');
+    if (wsEl) {
+      const capText = wsCap > 0 ? `/${wsCap}` : '';
+      wsEl.textContent = `${wsRunning ? 'Online' : 'Offline'} (${activeWs}${capText} active WS wallets)`;
+      wsEl.style.color = wsRunning ? '#10b981' : '#ef4444';
+    }
 
     const clustersEl = document.getElementById('sm-clusters');
     if (stats.clusters && stats.clusters.length > 0) {

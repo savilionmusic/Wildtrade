@@ -59,6 +59,7 @@ import {
   stopSmartMoneyMonitor,
   getTrackedWalletAddresses,
   getRecentSmartBuys,
+  getMonitorStatus,
   startScanner,
   stopScanner,
   startWalletIntelligence,
@@ -250,12 +251,28 @@ async function main(): Promise<void> {
     console.log('[boot] Telegram not configured — set bot token + chat ID in Settings for push alerts.');
   }
 
+  // Phase 4c: Wallet Intelligence (leaderboard + top trader discovery)
+  // Start this before smart money so seeded wallets are immediately available for monitoring.
+  console.log('[boot] Starting wallet intelligence...');
+  startWalletIntelligence((msg) => {
+    console.log(`[wallet-intel] ${msg}`);
+    // Only alert on significant discoveries (not routine updates)
+    if (msg.includes('Discovered') && msg.includes('new wallets')) {
+      addProactiveAlert('wallet_intel', msg);
+      sendToParent({ type: 'proactive-alert', alertType: 'wallet_intel', message: msg });
+    }
+  });
+  console.log('[boot] Wallet intelligence active — tracking smart money leaderboard.');
+
   // Phase 5: Smart Money Monitor
   console.log('[boot] Starting smart money monitor...');
-  const userWallets = (process.env.SMART_MONEY_WALLETS ?? '')
+  const configuredSmartWallets = (process.env.SMART_MONEY_WALLETS ?? '')
     .split(',')
     .map(w => w.trim())
     .filter(Boolean);
+  const walletIntelWallets = getTrackedWallets().map(w => w.address);
+  const userWallets = [...new Set([...configuredSmartWallets, ...walletIntelWallets])];
+  console.log(`[boot] Smart money wallet inputs: configured=${configuredSmartWallets.length}, wallet-intel=${walletIntelWallets.length}, combined=${userWallets.length}`);
 
   const recentClusters: object[] = [];
 
@@ -327,18 +344,6 @@ async function main(): Promise<void> {
     }
   });
   console.log('[boot] Token scanner active — watching for new launches and trending tokens.');
-
-  // Phase 6b: Wallet Intelligence (leaderboard + top trader discovery)
-  console.log('[boot] Starting wallet intelligence...');
-  startWalletIntelligence((msg) => {
-    console.log(`[wallet-intel] ${msg}`);
-    // Only alert on significant discoveries (not routine updates)
-    if (msg.includes('Discovered') && msg.includes('new wallets')) {
-      addProactiveAlert('wallet_intel', msg);
-      sendToParent({ type: 'proactive-alert', alertType: 'wallet_intel', message: msg });
-    }
-  });
-  console.log('[boot] Wallet intelligence active — tracking smart money leaderboard.');
 
   // Phase 6c: KOL Intelligence (DexScreener social + CTOs + ads)
   console.log('[boot] Starting KOL intelligence...');
@@ -542,6 +547,7 @@ async function main(): Promise<void> {
       if (msg?.type === 'smartmoney:get') {
         const wallets = getTrackedWalletAddresses();
         const recentBuys = getRecentSmartBuys();
+        const monitorStatus = getMonitorStatus();
         
         // Count whales discovered today
         // For simplicity right now, simulate from tracked list if we don't have a direct DB count
@@ -553,6 +559,7 @@ async function main(): Promise<void> {
           data: {
             wallets,
             whalesFound,
+            monitorStatus,
             recentBuys: recentBuys.slice(0, 50),
             clusters: recentClusters
           }

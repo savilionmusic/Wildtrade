@@ -13,6 +13,7 @@ import {
   type GmgnTokenInfo,
 } from './gmgn.service.js';
 import { getMentionVelocity } from './twitter.service.js';
+import { getTrackedWallets as getWalletIntelTrackedWallets } from './wallet-intelligence.service.js';
 
 // ── Types ──
 
@@ -42,8 +43,8 @@ export type SmartMoneyCallback = (signal: SmartMoneySignal) => void;
 // ── Config ──
 
 const CONFIG = {
-  // How often to refresh the wallet list (1 hour)
-  WALLET_REFRESH_INTERVAL_MS: 3_600_000,
+  // How often to refresh and rotate subscribed wallets (5 minutes)
+  WALLET_REFRESH_INTERVAL_MS: 300_000,
   // Time window for cluster detection (60 minutes)
   CLUSTER_WINDOW_MS: 3_600_000,
   // Minimum smart wallets buying same token to trigger signal
@@ -101,6 +102,7 @@ let recentBuys: RecentBuy[] = [];
 let onSignalCallback: SmartMoneyCallback | null = null;
 let walletRefreshTimer: ReturnType<typeof setInterval> | null = null;
 let isRunning = false;
+let wsRotationOffset = 0;
 
 // ── Rate Limiter ──
 let activeRpcCalls = 0;
@@ -221,12 +223,16 @@ export function stopSmartMoneyMonitor(): void {
 export function getMonitorStatus(): {
   running: boolean;
   trackedWallets: number;
+  activeWsSubscriptions: number;
+  wsSubscriptionCap: number;
   recentBuys: number;
   emittedSignals: number;
 } {
   return {
     running: isRunning,
     trackedWallets: trackedWallets.length,
+    activeWsSubscriptions: trackedWallets.filter(w => w.subscriptionId !== undefined).length,
+    wsSubscriptionCap: CONFIG.MAX_WS_SUBSCRIPTIONS,
     recentBuys: recentBuys.length,
     emittedSignals: emittedSignals.size,
   };
@@ -275,31 +281,26 @@ async function refreshWalletSubscriptions(): Promise<void> {
     );
 
     const userWallets = trackedWallets.filter(w => w.qualityScore === 90);
+    const intelWallets = getWalletIntelTrackedWallets()
+      .slice(0, CONFIG.MAX_TRACKED_WALLETS)
+      .map(w => ({
+        address: w.address,
+        qualityScore: Math.max(70, Math.min(95, Math.round(w.bes || 75))),
+        winrate: w.winRate ?? 0,
+        pnl7d: 0,
+      }));
 
-    // Fallback curated list of known profitable smart wallets if GMGN is blocked
-    // and the user didn't provide any custom wallets in the UI
-    const defaultCuratedWallets = [
-      'G53T3H5KqWb8j3Xkx5E6a5B6R5G6n9P5H6K5Q5M5V5', // Example curated whale 1
-      'H6G5T3H5KqWb8j3Xkx5E6a5B6R5G6n9P5H6K5Q5M5V', // Example curated whale 2
-      'BPeQ3D8A2u5XzK1b8T8uE1r48A4w7T1s3A1M8E6h7V', // Example curated whale 3
-      'J2G9B4M5T3H5KqWb8j3Xkx5E6a5B6R5G6n9P5H6K5Q'  // Example curated whale 4
-    ];
-
-    let effectiveUserWallets = userWallets;
-    if (qualityWallets.length === 0 && userWallets.length === 0) {
-      console.log('[smart-money] GMGN API blocked and no custom wallets. Injecting default curated smart money list...');
-      for (const addr of defaultCuratedWallets) {
-         effectiveUserWallets.push({
-           address: addr,
-           qualityScore: 90,
-           winrate: 0,
-           pnl7d: 0,
-         });
+    let effectiveUserWallets = [...userWallets];
+    const seeded = new Set(effectiveUserWallets.map(w => w.address));
+    for (const w of intelWallets) {
+      if (!seeded.has(w.address)) {
+        effectiveUserWallets.push(w);
+        seeded.add(w.address);
       }
     }
 
     if (qualityWallets.length === 0 && effectiveUserWallets.length === 0) {
-      console.log('[smart-money] No wallets found (GMGN API blocked/down and no curated wallets provided)');
+      console.log('[smart-money] No wallets found (GMGN blocked and wallet-intel not seeded yet)');
       return;
     }
 
@@ -328,10 +329,18 @@ async function refreshWalletSubscriptions(): Promise<void> {
       }
     }
 
-    // Subscribe new wallets — cap at MAX_WS_SUBSCRIPTIONS to respect provider limits
+    // Subscribe wallets — cap at MAX_WS_SUBSCRIPTIONS to respect provider limits.
+    // Rotate which wallets get WSS slots so inactive wallets do not starve coverage.
     // Stagger subscriptions: Constant-K Operator limits heavy WS methods to 5/sec
+    const rotatedTracked = nextTracked.length > 0
+      ? nextTracked.map((_, idx) => nextTracked[(idx + wsRotationOffset) % nextTracked.length])
+      : nextTracked;
+    if (nextTracked.length > 0) {
+      wsRotationOffset = (wsRotationOffset + CONFIG.MAX_WS_SUBSCRIPTIONS) % nextTracked.length;
+    }
+
     let wsCount = 0;
-    for (const w of nextTracked) {
+    for (const w of rotatedTracked) {
       const existing = trackedWallets.find(t => t.address === w.address);
       if (existing && existing.subscriptionId !== undefined) {
         if (wsCount < CONFIG.MAX_WS_SUBSCRIPTIONS) {
@@ -358,7 +367,12 @@ async function refreshWalletSubscriptions(): Promise<void> {
     }
 
     trackedWallets = nextTracked;
-    console.log(`[smart-money] Tracking ${trackedWallets.length} wallets via WSS`);
+    console.log(`[smart-money] Tracking ${trackedWallets.length} wallets total, ${wsCount} via WSS`);
+    const activeWsWallets = trackedWallets
+      .filter(w => w.subscriptionId !== undefined)
+      .slice(0, CONFIG.MAX_WS_SUBSCRIPTIONS)
+      .map(w => `${w.address.slice(0, 8)}...`);
+    console.log(`[smart-money] Active WSS wallets: ${activeWsWallets.join(', ') || 'none'}`);
   } catch (err) {
     console.log(`[smart-money] Wallet refresh failed: ${String(err)}`);
   }
@@ -366,11 +380,11 @@ async function refreshWalletSubscriptions(): Promise<void> {
 
 // ── Internal: WSS Log Handling ──
 
-async function handleWalletLogs(wallet: TrackedWallet, logs: any): Promise<void> {
-  if (logs.err || !logs.logs) return; // Ignore failed transactions
+async function handleWalletLogs(wallet: TrackedWallet, logs: Logs): Promise<void> {
+  if (logs.err || !Array.isArray(logs.logs)) return; // Ignore failed transactions
 
   // Basic heuristic: Is it a Raydium or Pump.fun interact?
-  const isSwap = logs.logs.some(log => 
+  const isSwap = logs.logs.some((log: string) => 
     log.includes('Program log: Instruction: Swap') || 
     log.includes('Program log: Instruction: Route') ||
     log.includes('Program 6EF8rrecthR5Dkzon8YargZYa8m4CjHExuC5M62bV2gL invoke') || // pump.fun target 

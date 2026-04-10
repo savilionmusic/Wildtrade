@@ -43,10 +43,12 @@ let rpcConnection: Connection | null = null;
 
 function getRpcConnection(): Connection {
   if (rpcConnection) return rpcConnection;
-  const rpcUrl = process.env.SOLANA_RPC_CONSTANTK
+  const rawRpc = process.env.SOLANA_RPC_CONSTANTK
     || process.env.SOLANA_RPC_HELIUS
     || process.env.SOLANA_RPC_QUICKNODE
     || 'https://api.mainnet-beta.solana.com';
+  // Normalize: if user pasted a wss:// URL, convert to https:// for HTTP RPC
+  const rpcUrl = rawRpc.startsWith('wss://') ? rawRpc.replace('wss://', 'https://') : rawRpc.startsWith('ws://') ? rawRpc.replace('ws://', 'http://') : rawRpc;
   rpcConnection = new Connection(rpcUrl, { commitment: 'confirmed', fetch: global.fetch });
   console.log(`[jupiter] RPC connected: ${rpcUrl.slice(0, 40)}...`);
   return rpcConnection;

@@ -77,11 +77,13 @@ export function startPumpSwapSniper(
   log('Starting PumpSwap migration sniper...');
 
   // Connect to Solana WebSocket for real-time log monitoring
-  const rpcUrl = process.env.SOLANA_RPC_CONSTANTK
+  const rawRpc = process.env.SOLANA_RPC_CONSTANTK
     || process.env.SOLANA_RPC_HELIUS
     || process.env.SOLANA_RPC_QUICKNODE
     || process.env.SOLANA_RPC_URL
     || 'https://api.mainnet-beta.solana.com';
+  // Normalize: if user pasted a wss:// URL, convert to https:// for HTTP RPC
+  const rpcUrl = rawRpc.startsWith('wss://') ? rawRpc.replace('wss://', 'https://') : rawRpc.startsWith('ws://') ? rawRpc.replace('ws://', 'http://') : rawRpc;
 
   // Validate that the RPC URL looks real (not a placeholder)
   const lowerUrl = rpcUrl.toLowerCase();

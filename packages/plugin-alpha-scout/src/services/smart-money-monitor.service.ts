@@ -57,8 +57,19 @@ const CONFIG = {
   // Minimum SOL amount to consider a "buy" from log heuristics
   MIN_SOL_AMOUNT_HEURISTIC: 0.1,
   // RPC Endpoint
-  get RPC_ENDPOINT() { return process.env.SOLANA_RPC_CONSTANTK || process.env.SOLANA_RPC_HELIUS || process.env.SOLANA_RPC_QUICKNODE || process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com'; },
-  get WS_ENDPOINT() { return (this.RPC_ENDPOINT || '').replace('https', 'wss').replace('http', 'ws'); },
+  get RPC_ENDPOINT() {
+    const raw = process.env.SOLANA_RPC_CONSTANTK || process.env.SOLANA_RPC_HELIUS || process.env.SOLANA_RPC_QUICKNODE || process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com';
+    // Normalize: if user pasted a wss:// URL, convert to https:// for HTTP RPC
+    if (raw.startsWith('wss://')) return raw.replace('wss://', 'https://');
+    if (raw.startsWith('ws://')) return raw.replace('ws://', 'http://');
+    return raw;
+  },
+  get WS_ENDPOINT() {
+    const rpc = this.RPC_ENDPOINT;
+    if (rpc.startsWith('https://')) return rpc.replace('https://', 'wss://');
+    if (rpc.startsWith('http://')) return rpc.replace('http://', 'ws://');
+    return rpc;
+  },
 };
 
 // ── State ──

@@ -27,8 +27,11 @@ let healthCheckInterval: ReturnType<typeof setInterval> | null = null;
 export async function seedEndpoints(): Promise<void> {
   const db = await getDb();
   for (const ep of ENV_ENDPOINTS) {
-    const url = process.env[ep.envKey];
+    let url = process.env[ep.envKey];
     if (!url) continue;
+    // Normalize: if user pasted a wss:// URL, convert to https:// for HTTP RPC
+    if (url.startsWith('wss://')) url = url.replace('wss://', 'https://');
+    else if (url.startsWith('ws://')) url = url.replace('ws://', 'http://');
     await db.query(
       `INSERT INTO rpc_endpoints (url, provider, priority, is_healthy, consecutive_failures)
        VALUES ($1, $2, $3, 1, 0)

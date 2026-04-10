@@ -27,6 +27,9 @@ global.fetch = async (...args) => {
       const response = await originalFetch(...args);
       if (response.status === 429) {
         console.warn(`[self-healer] 🛑 429 Too Many Requests from ${domain}. Engaging circuit breaker for 30 seconds...`);
+        if (domain === 'api.mainnet-beta.solana.com') {
+          console.warn(`[self-healer] ⚠️ CRITICAL: The public Solana RPC (api.mainnet-beta.solana.com) cannot handle bot traffic. You MUST create a free account at helius.dev or quicknode.com and enter your own RPC URL in the app's Settings to stop these errors.`);
+        }
         domainCooldowns.set(domain, Date.now() + 30000);
         await new Promise(r => setTimeout(r, 30000));
         attempt++;

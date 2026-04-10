@@ -52,8 +52,8 @@ const CONFIG = {
   MIN_WALLET_QUALITY: 30,
   // Maximum wallets to track
   MAX_TRACKED_WALLETS: 30,
-  // Maximum WebSocket subscriptions (Constant-K Operator allows 10 total; reserve 2 for PumpSwap + buffer)
-  MAX_WS_SUBSCRIPTIONS: 8,
+  // Maximum WebSocket subscriptions (Constant-K Operator: heavy WS methods limited to 5/sec)
+  MAX_WS_SUBSCRIPTIONS: 5,
   // Minimum SOL amount to consider a "buy" from log heuristics
   MIN_SOL_AMOUNT_HEURISTIC: 0.1,
   // RPC Endpoint
@@ -304,6 +304,7 @@ async function refreshWalletSubscriptions(): Promise<void> {
     }
 
     // Subscribe new wallets — cap at MAX_WS_SUBSCRIPTIONS to respect provider limits
+    // Stagger subscriptions: Constant-K Operator limits heavy WS methods to 5/sec
     let wsCount = 0;
     for (const w of nextTracked) {
       const existing = trackedWallets.find(t => t.address === w.address);
@@ -311,6 +312,8 @@ async function refreshWalletSubscriptions(): Promise<void> {
         w.subscriptionId = existing.subscriptionId;
         wsCount++;
       } else if (connection && wsCount < CONFIG.MAX_WS_SUBSCRIPTIONS) {
+        // Stagger: wait 500ms between logsSubscribe calls (max 2/sec, well under 5/sec heavy limit)
+        if (wsCount > 0) await new Promise(r => setTimeout(r, 500));
         try {
           w.subscriptionId = connection.onLogs(
             new PublicKey(w.address),

@@ -14,7 +14,7 @@ export const SERVICE_TYPES = {
 } as const;
 
 export const SCORE_THRESHOLDS = {
-  MIN_TO_TRADE: 55,
+  MIN_TO_TRADE: 52,
   HIGH_CONVICTION: 75,
   MEDIUM_CONVICTION: 55,
 };

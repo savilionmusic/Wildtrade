@@ -75,14 +75,14 @@ const PHASES: TradingPhase[] = [
     minPortfolio: 0, maxPortfolio: 2,
     targetMCapMin: 5_000, targetMCapMax: 100_000,
     positionSizeMin: 0.03, positionSizeMax: 0.15,
-    maxPositions: 3, minScore: 58,
+    maxPositions: 3, minScore: 54,
   },
   {
     name: 'Phase 2: Small Caps',
     minPortfolio: 2, maxPortfolio: 5,
     targetMCapMin: 20_000, targetMCapMax: 500_000,
     positionSizeMin: 0.08, positionSizeMax: 0.3,
-    maxPositions: 3, minScore: 62,
+    maxPositions: 3, minScore: 58,
   },
   {
     name: 'Phase 3: Scaling Up',
@@ -937,10 +937,10 @@ async function pollForSignals(): Promise<void> {
        AND market_cap_usd <= $2
        AND liquidity_usd >= 3000
        AND (
-         COALESCE((score_json::jsonb->>'socialScore')::integer, 0) >= 4
-         OR COALESCE((score_json::jsonb->>'whaleScore')::integer, 0) >= 6
-         OR COALESCE((score_json::jsonb->>'liquidityScore')::integer, 0) >= 8
-         OR (score_json::jsonb->>'total')::integer >= ${Math.max(55, minScore + 8)}
+         COALESCE((score_json::jsonb->>'socialScore')::integer, 0) >= 3
+         OR COALESCE((score_json::jsonb->>'whaleScore')::integer, 0) >= 4
+         OR COALESCE((score_json::jsonb->>'liquidityScore')::integer, 0) >= 6
+         OR (score_json::jsonb->>'total')::integer >= ${Math.max(55, minScore + 5)}
        )
        AND discovered_at > $3
        ORDER BY (score_json::jsonb->>'total')::integer DESC

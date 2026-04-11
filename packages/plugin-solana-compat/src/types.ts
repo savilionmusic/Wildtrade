@@ -32,33 +32,38 @@ export interface MintBalance {
   uiAmount: number;
 }
 
-export interface BirdeyePriceResponse {
-  success: boolean;
-  data: {
-    value: number;
-    updateUnixTime: number;
-    updateHumanTime: string;
-  };
+// ── DexScreener types ──
+
+export interface DexScreenerPair {
+  chainId: string;
+  dexId: string;
+  pairAddress: string;
+  baseToken: { address: string; name: string; symbol: string };
+  quoteToken: { address: string; symbol: string };
+  priceUsd: string;
+  volume: { h24: number; h6: number; h1: number; m5: number };
+  priceChange: { h24: number; h6: number; h1: number; m5: number };
+  liquidity: { usd: number; base: number; quote: number };
+  fdv: number;
+  marketCap: number;
+  pairCreatedAt: number;
 }
 
-export interface BirdeyeWalletTokenItem {
-  address: string;
-  symbol?: string;
-  name?: string;
-  decimals?: number;
-  balance?: string;
-  balanceUsd?: number;
-  priceUsd?: string;
-  valueUsd?: string;
-  uiAmount?: string;
+export interface DexScreenerTokenResponse {
+  pairs?: DexScreenerPair[];
 }
 
-export interface BirdeyeWalletTokenListResponse {
-  success: boolean;
-  data?: {
-    totalUsd: number | string;
-    items: BirdeyeWalletTokenItem[];
-  };
+// ── Jupiter Price API v2 types ──
+
+export interface JupiterPriceData {
+  id: string;
+  type: string;
+  price: string;
+}
+
+export interface JupiterPriceResponse {
+  data: Record<string, JupiterPriceData>;
+  timeTaken: number;
 }
 
 export interface CacheWrapper<T> {

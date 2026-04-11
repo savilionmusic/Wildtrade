@@ -1,6 +1,7 @@
 import { Connection, PublicKey } from '@solana/web3.js';
 import { selectPrimaryHttpRpcEndpoint } from '@wildtrade/shared';
 import type { SolanaService } from '@wildtrade/plugin-solana-compat';
+import { schedule } from '@wildtrade/plugin-solana-compat';
 
 export interface TokenRiskSnapshot {
   mintAddress: string;
@@ -70,6 +71,7 @@ async function getSupplyMetrics(mintAddress: string, connection: Connection): Pr
   let totalSupply: number | null = null;
 
   try {
+    await schedule('read');
     const supplyResponse = await connection.getTokenSupply(new PublicKey(mintAddress), 'confirmed');
     totalSupply = toFiniteNumber(supplyResponse.value.uiAmount);
   } catch {
@@ -131,6 +133,7 @@ export async function getTokenRiskSnapshot(params: {
   }
 
   try {
+    await schedule('read');
     const largestAccounts = await connection.getTokenLargestAccounts(mint, 'confirmed');
     const nonZeroAccounts = largestAccounts.value.filter((account) => Number(account.uiAmount ?? 0) > 0);
     holderCountTop20 = nonZeroAccounts.length;

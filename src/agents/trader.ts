@@ -19,7 +19,6 @@ export async function createTraderRuntime(token: string, databaseAdapter: IDatab
     WALLET_PUBLIC_KEY: process.env.WALLET_PUBLIC_KEY || process.env.SOLANA_PUBLIC_KEY || '',
     WALLET_PRIVATE_KEY: process.env.WALLET_PRIVATE_KEY || process.env.SOLANA_PRIVATE_KEY || '',
     HELIUS_API_KEY: process.env.HELIUS_API_KEY || '',
-    BIRDEYE_API_KEY: process.env.BIRDEYE_API_KEY || '',
     SLIPPAGE: process.env.SLIPPAGE || process.env.JUPITER_SLIPPAGE_BPS || '50',
     SOL_ADDRESS: process.env.SOL_ADDRESS || 'So11111111111111111111111111111111111111112',
   };

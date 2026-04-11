@@ -21,11 +21,13 @@ import nacl from 'tweetnacl';
 
 import { PROVIDER_CONFIG, SOLANA_SERVICE_NAME, SOLANA_WALLET_DATA_CACHE_KEY } from './constants.js';
 import { getWalletKey } from './keypair-utils.js';
+import { schedule } from './rpc-scheduler.js';
 import type {
-  BirdeyePriceResponse,
-  BirdeyeWalletTokenListResponse,
   CacheWrapper,
+  DexScreenerPair,
+  DexScreenerTokenResponse,
   Item,
+  JupiterPriceResponse,
   MintBalance,
   Prices,
   TokenAccountEntry,
@@ -55,7 +57,7 @@ export class SolanaService extends Service {
   }
 
   public readonly capabilityDescription =
-    'Interact with the Solana blockchain, access wallet data, Birdeye prices, portfolio tracking';
+    'Interact with the Solana blockchain via Constant-K RPC, DexScreener prices, wallet portfolio, Token-2022, batch RPC, WebSocket subscriptions';
 
   private runtime!: IAgentRuntime;
   private lastUpdate = 0;
@@ -89,22 +91,30 @@ export class SolanaService extends Service {
     const rpcUrl = this.resolveRpcUrl();
     this.connection = new Connection(rpcUrl, { commitment: 'confirmed' });
     elizaLogger.info(
-      `[SolanaService] RPC: ${rpcUrl.substring(0, 50)}${rpcUrl.length > 50 ? '...' : ''}`,
+      `[SolanaService] RPC: ${rpcUrl.substring(0, 50)}${rpcUrl.length > 50 ? '...' : ''} (Constant-K optimized, rate-limited)`,
     );
   }
 
   // ── RPC Resolution ──────────────────────────────────────────────────────
+  // Priority: SOLANA_RPC_URL > SOLANA_RPC_HTTP > SOLANA_RPC_CONSTANTK > default
 
   private resolveRpcUrl(): string {
     const explicit = this.runtime.getSetting('SOLANA_RPC_URL');
     if (typeof explicit === 'string' && explicit.startsWith('http')) return explicit;
 
-    const heliusKey = this.runtime.getSetting('HELIUS_API_KEY');
-    if (typeof heliusKey === 'string' && heliusKey.length > 8) {
-      return `https://mainnet.helius-rpc.com/?api-key=${heliusKey}`;
-    }
+    // Check env directly for Constant-K variants (set via .env, not character secrets)
+    const constantK = process.env.SOLANA_RPC_HTTP || process.env.SOLANA_RPC_CONSTANTK;
+    if (typeof constantK === 'string' && constantK.startsWith('http')) return constantK;
 
     return PROVIDER_CONFIG.DEFAULT_RPC;
+  }
+
+  /**
+   * Reconnect to a different RPC endpoint (e.g., after RPC rotation).
+   */
+  public reconnect(rpcUrl: string): void {
+    this.connection = new Connection(rpcUrl, { commitment: 'confirmed' });
+    elizaLogger.info(`[SolanaService] Reconnected to ${rpcUrl.substring(0, 50)}...`);
   }
 
   public getConnection(): Connection {
@@ -169,7 +179,7 @@ export class SolanaService extends Service {
     this._keypairPromise = null;
   }
 
-  // ── Batch RPC ───────────────────────────────────────────────────────────
+  // ── Batch RPC (rate-limited for Constant-K) ─────────────────────────────
 
   async batchGetMultipleAccountsInfo(
     pubkeys: PublicKey[],
@@ -180,6 +190,7 @@ export class SolanaService extends Service {
 
     for (let i = 0; i < pubkeys.length; i += CHUNK) {
       const chunk = pubkeys.slice(i, i + CHUNK);
+      await schedule('getMultipleAccounts');
       const infos = await this.connection.getMultipleAccountsInfo(chunk);
       results.push(...infos);
     }
@@ -258,6 +269,7 @@ export class SolanaService extends Service {
     const cached = this.decimalsCache.get(mint.toBase58());
     if (cached !== undefined) return cached;
 
+    await schedule('read');
     const info = await this.connection.getAccountInfo(mint);
     if (!info?.data) return 0;
 
@@ -271,6 +283,7 @@ export class SolanaService extends Service {
 
   async getCirculatingSupply(mint: string): Promise<number> {
     const pk = new PublicKey(mint);
+    await schedule('read');
     const largestAccounts = await this.connection.getTokenLargestAccounts(pk, 'confirmed');
 
     let circulating = 0;
@@ -295,64 +308,118 @@ export class SolanaService extends Service {
     return out;
   }
 
-  // ── Birdeye ─────────────────────────────────────────────────────────────
+  // ── DexScreener Price Fetching (no API key required) ──────────────────
 
-  private getBirdeyeConfig(): { baseUrl: string; headers: Record<string, string> } {
-    const apiKey = this.runtime.getSetting('BIRDEYE_API_KEY');
-    return {
-      baseUrl: PROVIDER_CONFIG.BIRDEYE_API,
-      headers: {
-        Accept: 'application/json',
-        'x-chain': 'solana',
-        ...(typeof apiKey === 'string' && apiKey.length > 0 ? { 'X-API-KEY': apiKey } : {}),
-      },
-    };
+  private priceFetchLock = false;
+  private priceCache = new Map<string, { price: number; ts: number }>();
+
+  /**
+   * Fetch token price via DexScreener (free, no API key).
+   * Falls back to Jupiter Price API v2 if DexScreener misses.
+   */
+  async fetchTokenPrice(mintAddress: string): Promise<number | null> {
+    // Check in-memory price cache first (30s TTL)
+    const cached = this.priceCache.get(mintAddress);
+    if (cached && Date.now() - cached.ts < PROVIDER_CONFIG.PRICE_CACHE_TTL_MS) {
+      return cached.price;
+    }
+
+    // Try DexScreener first
+    try {
+      const res = await fetch(
+        `${PROVIDER_CONFIG.DEXSCREENER_API}/latest/dex/tokens/${mintAddress}`,
+        { headers: { Accept: 'application/json' } },
+      );
+      if (res.ok) {
+        const data = (await res.json()) as DexScreenerTokenResponse;
+        const solanaPairs = (data.pairs ?? []).filter((p: DexScreenerPair) => p.chainId === 'solana');
+        if (solanaPairs.length > 0) {
+          // Pick highest liquidity pair for most accurate price
+          const bestPair = solanaPairs.reduce((a: DexScreenerPair, b: DexScreenerPair) =>
+            (b.liquidity?.usd ?? 0) > (a.liquidity?.usd ?? 0) ? b : a, solanaPairs[0]!);
+          const price = parseFloat(bestPair.priceUsd);
+          if (!isNaN(price) && price > 0) {
+            this.priceCache.set(mintAddress, { price, ts: Date.now() });
+            return price;
+          }
+        }
+      }
+    } catch (e) {
+      elizaLogger.warn(`[SolanaService] DexScreener price error for ${mintAddress}: ${e}`);
+    }
+
+    // Fallback: Jupiter Price API v2 (free, no key)
+    try {
+      const res = await fetch(
+        `${PROVIDER_CONFIG.JUPITER_PRICE_API}?ids=${mintAddress}`,
+        { headers: { Accept: 'application/json' } },
+      );
+      if (res.ok) {
+        const data = (await res.json()) as JupiterPriceResponse;
+        const entry = data.data?.[mintAddress];
+        if (entry?.price) {
+          const price = parseFloat(entry.price);
+          if (!isNaN(price) && price > 0) {
+            this.priceCache.set(mintAddress, { price, ts: Date.now() });
+            return price;
+          }
+        }
+      }
+    } catch (e) {
+      elizaLogger.warn(`[SolanaService] Jupiter price error for ${mintAddress}: ${e}`);
+    }
+
+    return null;
   }
 
-  private async birdeyeFetchWithRetry(
-    url: string,
-    options: RequestInit = {},
-  ): Promise<BirdeyeWalletTokenListResponse | BirdeyePriceResponse> {
-    let lastError: Error | undefined;
-    const birdeyeConfig = this.getBirdeyeConfig();
+  /**
+   * Batch fetch prices for multiple mints via Jupiter Price API v2.
+   * Much more efficient than individual DexScreener calls.
+   */
+  async fetchTokenPrices(mintAddresses: string[]): Promise<Record<string, number>> {
+    const out: Record<string, number> = {};
+    const uncached: string[] = [];
 
-    for (let i = 0; i < PROVIDER_CONFIG.MAX_RETRIES; i++) {
-      try {
-        const response = await fetch(url, {
-          ...options,
-          headers: { ...birdeyeConfig.headers, ...(options.headers as Record<string, string> || {}) },
-        });
-
-        if (!response.ok) {
-          const errorText = await response.text();
-          throw new Error(`HTTP error! status: ${response.status}, message: ${errorText}`);
-        }
-
-        return await response.json();
-      } catch (error) {
-        elizaLogger.error(`Birdeye attempt ${i + 1} failed:`, error);
-        lastError = error instanceof Error ? error : new Error(String(error));
-        if (i < PROVIDER_CONFIG.MAX_RETRIES - 1) {
-          await new Promise((resolve) => setTimeout(resolve, PROVIDER_CONFIG.RETRY_DELAY * 2 ** i));
-        }
+    // Check cache first
+    for (const mint of mintAddresses) {
+      const cached = this.priceCache.get(mint);
+      if (cached && Date.now() - cached.ts < PROVIDER_CONFIG.PRICE_CACHE_TTL_MS) {
+        out[mint] = cached.price;
+      } else {
+        uncached.push(mint);
       }
     }
 
-    throw lastError ?? new Error(`Failed to fetch ${url} after ${PROVIDER_CONFIG.MAX_RETRIES} retries`);
-  }
+    if (uncached.length === 0) return out;
 
-  async fetchBirdeyePrice(mintAddress: string): Promise<number | null> {
-    const apiKey = this.runtime.getSetting('BIRDEYE_API_KEY');
-    if (typeof apiKey !== 'string' || apiKey.length === 0) return null;
-
+    // Jupiter supports batch: ?ids=mint1,mint2,mint3
     try {
-      const data = (await this.birdeyeFetchWithRetry(
-        `${PROVIDER_CONFIG.BIRDEYE_API}/defi/price?address=${mintAddress}`,
-      )) as BirdeyePriceResponse;
-      return data?.success ? data.data.value : null;
-    } catch {
-      return null;
+      const batchSize = 50; // Jupiter batch limit
+      for (let i = 0; i < uncached.length; i += batchSize) {
+        const batch = uncached.slice(i, i + batchSize);
+        const res = await fetch(
+          `${PROVIDER_CONFIG.JUPITER_PRICE_API}?ids=${batch.join(',')}`,
+          { headers: { Accept: 'application/json' } },
+        );
+        if (res.ok) {
+          const data = (await res.json()) as JupiterPriceResponse;
+          for (const mint of batch) {
+            const entry = data.data?.[mint];
+            if (entry?.price) {
+              const price = parseFloat(entry.price);
+              if (!isNaN(price) && price > 0) {
+                out[mint] = price;
+                this.priceCache.set(mint, { price, ts: Date.now() });
+              }
+            }
+          }
+        }
+      }
+    } catch (e) {
+      elizaLogger.warn(`[SolanaService] Jupiter batch price error: ${e}`);
     }
+
+    return out;
   }
 
   private async fetchPrices(): Promise<Prices> {
@@ -366,15 +433,18 @@ export class SolanaService extends Service {
       ethereum: { usd: '0' },
     };
 
-    const tokens: Array<[string, keyof Prices]> = [
-      [PROVIDER_CONFIG.TOKEN_ADDRESSES.SOL, 'solana'],
-      [PROVIDER_CONFIG.TOKEN_ADDRESSES.BTC, 'bitcoin'],
-      [PROVIDER_CONFIG.TOKEN_ADDRESSES.ETH, 'ethereum'],
+    const mints = [
+      PROVIDER_CONFIG.TOKEN_ADDRESSES.SOL,
+      PROVIDER_CONFIG.TOKEN_ADDRESSES.BTC,
+      PROVIDER_CONFIG.TOKEN_ADDRESSES.ETH,
     ];
+    const keys: Array<keyof Prices> = ['solana', 'bitcoin', 'ethereum'];
 
-    for (const [addr, key] of tokens) {
-      const price = await this.fetchBirdeyePrice(addr);
-      if (price !== null) prices[key].usd = price.toString();
+    // Batch fetch all three at once via Jupiter
+    const priceMap = await this.fetchTokenPrices(mints);
+    for (let i = 0; i < mints.length; i++) {
+      const price = priceMap[mints[i]!];
+      if (price !== undefined) prices[keys[i]!].usd = price.toString();
     }
 
     await this.runtime.cacheManager.set<Prices>(cacheKey, prices);
@@ -399,8 +469,10 @@ export class SolanaService extends Service {
 
     const [accounts, token2022s]: [ParsedTokenAccountsResponse, ParsedTokenAccountsResponse] =
       await Promise.all([
-        this.connection.getParsedTokenAccountsByOwner(walletAddress, { programId: TOKEN_PROGRAM_ID }),
-        this.connection.getParsedTokenAccountsByOwner(walletAddress, { programId: TOKEN_2022_PROGRAM_ID }),
+        schedule('read').then(() =>
+          this.connection.getParsedTokenAccountsByOwner(walletAddress, { programId: TOKEN_PROGRAM_ID })),
+        schedule('read').then(() =>
+          this.connection.getParsedTokenAccountsByOwner(walletAddress, { programId: TOKEN_2022_PROGRAM_ID })),
       ]);
 
     const allTokens: KeyedParsedTokenAccount[] = [...token2022s.value, ...accounts.value];
@@ -576,70 +648,93 @@ export class SolanaService extends Service {
     }
 
     try {
-      const birdeyeApiKey = this.runtime.getSetting('BIRDEYE_API_KEY');
-      if (typeof birdeyeApiKey === 'string' && birdeyeApiKey.length > 0) {
-        try {
-          const walletData = (await this.birdeyeFetchWithRetry(
-            `${PROVIDER_CONFIG.BIRDEYE_API}/v1/wallet/token_list?wallet=${publicKey.toBase58()}`,
-          )) as BirdeyeWalletTokenListResponse;
-
-          if (walletData?.success && walletData?.data) {
-            const solPrice = await this.fetchBirdeyePrice(PROVIDER_CONFIG.TOKEN_ADDRESSES.SOL);
-            const solPriceInUSD = solPrice ?? 0;
-
-            const data = walletData.data;
-            const portfolio: WalletPortfolio = {
-              totalUsd: String(data.totalUsd ?? '0'),
-              totalSol: solPriceInUSD > 0
-                ? new BigNumber(data.totalUsd ?? 0).div(solPriceInUSD).toFixed(6)
-                : '0',
-              items: (data.items || []).map((item) => ({
-                name: item.name || 'Unknown',
-                address: item.address,
-                symbol: item.symbol || 'Unknown',
-                decimals: item.decimals ?? 0,
-                balance: item.balance ?? '0',
-                uiAmount: item.uiAmount ?? '0',
-                priceUsd: item.priceUsd ?? '0',
-                valueUsd: item.valueUsd ?? '0',
-                valueSol: solPriceInUSD > 0
-                  ? new BigNumber(item.valueUsd || 0).div(solPriceInUSD).toFixed(6)
-                  : '0',
-              })),
-            };
-
-            await this.runtime.cacheManager.set<WalletPortfolio>(SOLANA_WALLET_DATA_CACHE_KEY, portfolio);
-            this.lastUpdate = now;
-            return portfolio;
-          }
-        } catch (e) {
-          elizaLogger.error('solana::updateWalletData - Birdeye exception:', e);
-        }
-      }
-
-      // RPC fallback
-      elizaLogger.info('Using RPC fallback for wallet data (no Birdeye)');
+      // Pure RPC + DexScreener/Jupiter approach (no Birdeye/Helius needed)
       const accounts = await this.getTokenAccounts();
       if (!accounts || accounts.length === 0) {
-        const emptyPortfolio: WalletPortfolio = { totalUsd: '0', totalSol: '0', items: [] };
-        await this.runtime.cacheManager.set<WalletPortfolio>(SOLANA_WALLET_DATA_CACHE_KEY, emptyPortfolio);
+        // Still get SOL balance
+        await schedule('read');
+        const solBalance = await this.connection.getBalance(publicKey);
+        const solUi = solBalance / LAMPORTS_PER_SOL;
+        const solPrice = await this.fetchTokenPrice(PROVIDER_CONFIG.TOKEN_ADDRESSES.SOL);
+        const solValueUsd = solPrice ? new BigNumber(solUi).times(solPrice).toFixed(2) : '0';
+
+        const portfolio: WalletPortfolio = {
+          totalUsd: solValueUsd,
+          totalSol: solUi.toFixed(6),
+          items: [{
+            name: 'SOL',
+            address: PROVIDER_CONFIG.TOKEN_ADDRESSES.SOL,
+            symbol: 'SOL',
+            decimals: 9,
+            balance: solBalance.toString(),
+            uiAmount: solUi.toFixed(6),
+            priceUsd: solPrice?.toString() ?? '0',
+            valueUsd: solValueUsd,
+            valueSol: solUi.toFixed(6),
+          }],
+        };
+        await this.runtime.cacheManager.set<WalletPortfolio>(SOLANA_WALLET_DATA_CACHE_KEY, portfolio);
         this.lastUpdate = now;
-        return emptyPortfolio;
+        return portfolio;
       }
 
-      const items: Item[] = accounts.map((acc) => ({
-        name: '',
-        address: acc.account.data.parsed.info.mint,
-        symbol: '',
-        decimals: acc.account.data.parsed.info.tokenAmount.decimals,
-        balance: acc.account.data.parsed.info.tokenAmount.amount,
-        uiAmount: acc.account.data.parsed.info.tokenAmount.uiAmount?.toString() ?? '0',
-        priceUsd: '0',
-        valueUsd: '0',
-        valueSol: '0',
-      }));
+      // Collect all mints for batch price fetch
+      const mintAddresses = accounts.map((acc) => acc.account.data.parsed.info.mint);
+      mintAddresses.push(PROVIDER_CONFIG.TOKEN_ADDRESSES.SOL);
 
-      const portfolio: WalletPortfolio = { totalUsd: '0', totalSol: '0', items };
+      // Batch price fetch via Jupiter (1 request for all tokens!)
+      const priceMap = await this.fetchTokenPrices(mintAddresses);
+      const solPrice = priceMap[PROVIDER_CONFIG.TOKEN_ADDRESSES.SOL] ?? 0;
+
+      // Get SOL balance
+      await schedule('read');
+      const solBalance = await this.connection.getBalance(publicKey);
+      const solUi = solBalance / LAMPORTS_PER_SOL;
+      const solValueUsd = new BigNumber(solUi).times(solPrice);
+
+      // Get token symbols for better display
+      const symbols = await this.getTokensSymbols(mintAddresses.filter(m => m !== PROVIDER_CONFIG.TOKEN_ADDRESSES.SOL));
+
+      let totalUsd = solValueUsd;
+      const items: Item[] = [{
+        name: 'SOL',
+        address: PROVIDER_CONFIG.TOKEN_ADDRESSES.SOL,
+        symbol: 'SOL',
+        decimals: 9,
+        balance: solBalance.toString(),
+        uiAmount: solUi.toFixed(6),
+        priceUsd: solPrice.toString(),
+        valueUsd: solValueUsd.toFixed(2),
+        valueSol: solUi.toFixed(6),
+      }];
+
+      for (const acc of accounts) {
+        const info = acc.account.data.parsed.info;
+        const mint = info.mint;
+        const uiAmount = info.tokenAmount.uiAmount ?? 0;
+        const price = priceMap[mint] ?? 0;
+        const valueUsd = new BigNumber(uiAmount).times(price);
+        totalUsd = totalUsd.plus(valueUsd);
+
+        items.push({
+          name: symbols[mint] || '',
+          address: mint,
+          symbol: symbols[mint] || '',
+          decimals: info.tokenAmount.decimals,
+          balance: info.tokenAmount.amount,
+          uiAmount: (uiAmount).toString(),
+          priceUsd: price.toString(),
+          valueUsd: valueUsd.toFixed(2),
+          valueSol: solPrice > 0 ? valueUsd.div(solPrice).toFixed(6) : '0',
+        });
+      }
+
+      const portfolio: WalletPortfolio = {
+        totalUsd: totalUsd.toFixed(2),
+        totalSol: solPrice > 0 ? totalUsd.div(solPrice).toFixed(6) : solUi.toFixed(6),
+        items,
+      };
+
       await this.runtime.cacheManager.set<WalletPortfolio>(SOLANA_WALLET_DATA_CACHE_KEY, portfolio);
       this.lastUpdate = now;
       return portfolio;

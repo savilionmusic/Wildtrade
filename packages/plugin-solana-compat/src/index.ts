@@ -5,7 +5,7 @@ import { SolanaService } from './service.js';
 
 export const pluginSolanaCompat: Plugin = {
   name: SOLANA_SERVICE_NAME,
-  description: 'Solana blockchain plugin - Birdeye prices, wallet portfolio, Token-2022, batch RPC, WebSocket subscriptions',
+  description: 'Solana blockchain plugin — Constant-K RPC optimized, DexScreener/Jupiter prices, rate-limited, no Birdeye/Helius required',
   services: [SolanaService.getInstance()],
   providers: [walletProvider],
 };
@@ -14,12 +14,15 @@ export default pluginSolanaCompat;
 
 export { SolanaService } from './service.js';
 export { SOLANA_SERVICE_NAME, SOLANA_WALLET_DATA_CACHE_KEY } from './constants.js';
+export { schedule, classifyMethod, getSchedulerStats } from './rpc-scheduler.js';
+export type { RpcCategory } from './rpc-scheduler.js';
 export type {
-  BirdeyePriceResponse,
-  BirdeyeWalletTokenItem,
-  BirdeyeWalletTokenListResponse,
   CacheWrapper,
+  DexScreenerPair,
+  DexScreenerTokenResponse,
   Item,
+  JupiterPriceData,
+  JupiterPriceResponse,
   MintBalance,
   Prices,
   TokenAccountEntry,

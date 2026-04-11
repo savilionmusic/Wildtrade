@@ -207,42 +207,95 @@ Respond with JSON: {"approval": true} or {"approval": false}
 
 export type AiTradeAction = 'HOLD' | 'EXIT' | 'DCA_IN' | 'TAKE_PROFIT' | 'MOON_BAG';
 
+export interface ActivePositionAiContext {
+  mint: string;
+  symbol: string;
+  initialSol: number;
+  currentSol: number;
+  multiplier: number;
+  holdMins: number;
+  marketCap: number;
+  liquidityUsd: number;
+  volume1h: number;
+  currentStopMultiplier: number;
+  highWaterMark: number;
+  priceChange5m: number;
+  priceChange15m: number;
+  priceChange1h: number;
+  trendLabel: string;
+  topHolderPct: number;
+  top10HolderPct: number;
+  holderCountTop20: number;
+  trustScore: number;
+  riskScore: number;
+  rewardScore: number;
+  riskFlags: string[];
+  strengthSignals: string[];
+}
+
+export interface AiPositionAnalysis {
+  action: AiTradeAction;
+  confidence: number;
+  reason: string;
+  expectedUpsidePct: number;
+  expectedDownsidePct: number;
+}
+
 export async function runAiActivePositionAnalyzer(
-  mint: string,
-  symbol: string,
-  initialSol: number,
-  currentSol: number,
-  multiplier: number,
-  holdMins: number,
-  marketCap: number,
-  volume1h: number,
-  topHoldersPercent: number, // percentage of supply held by top 10
-): Promise<{ action: AiTradeAction; confidence: number; reason: string }> {
+  context: ActivePositionAiContext,
+): Promise<AiPositionAnalysis> {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) {
-    return { action: 'HOLD', confidence: 0, reason: 'No AI key' };
+    return {
+      action: 'HOLD',
+      confidence: 0,
+      reason: 'No AI key',
+      expectedUpsidePct: 0,
+      expectedDownsidePct: 0,
+    };
   }
 
   try {
     const prompt = `
 You are an expert Solana memecoin portfolio manager and day trader AI.
-You are monitoring an ACTIVE HOLDING for the token: ${symbol} (${mint}).
+You are monitoring an ACTIVE HOLDING for the token: ${context.symbol} (${context.mint}).
 
 Current Trade Status:
-  - Return: ${multiplier.toFixed(2)}x (Initial size: ${initialSol.toFixed(2)} SOL)
-  - Hold Time: ${Math.round(holdMins)} minutes
-  - Market Cap: $${marketCap.toLocaleString()}
-  - 1hr Volume: $${volume1h.toLocaleString()}
-  - Top 10 Holders Own: ${topHoldersPercent.toFixed(1)}% of supply
+  - Return: ${context.multiplier.toFixed(2)}x (Initial size: ${context.initialSol.toFixed(2)} SOL, current value: ${context.currentSol.toFixed(2)} SOL)
+  - Hold Time: ${Math.round(context.holdMins)} minutes
+  - Market Cap: $${context.marketCap.toLocaleString()}
+  - Liquidity: $${context.liquidityUsd.toLocaleString()}
+  - 1hr Volume: $${context.volume1h.toLocaleString()}
+  - Current trailing stop floor: ${context.currentStopMultiplier.toFixed(2)}x
+  - High-water mark: ${context.highWaterMark.toFixed(2)}x
+
+Short-Term Chart Read:
+  - 5m change: ${context.priceChange5m >= 0 ? '+' : ''}${context.priceChange5m.toFixed(1)}%
+  - 15m change: ${context.priceChange15m >= 0 ? '+' : ''}${context.priceChange15m.toFixed(1)}%
+  - 1h change: ${context.priceChange1h >= 0 ? '+' : ''}${context.priceChange1h.toFixed(1)}%
+  - Trend label: ${context.trendLabel}
+
+On-Chain Risk Read:
+  - Largest holder: ${context.topHolderPct.toFixed(1)}% of supply
+  - Top 10 holders: ${context.top10HolderPct.toFixed(1)}% of supply
+  - Top 20 holder count detected: ${context.holderCountTop20}
+  - Trust score: ${context.trustScore}/100
+  - Risk score: ${context.riskScore}/100
+  - Reward score: ${context.rewardScore}/100
+  - Risk flags: ${context.riskFlags.length > 0 ? context.riskFlags.join(', ') : 'none'}
+  - Strength signals: ${context.strengthSignals.length > 0 ? context.strengthSignals.join(', ') : 'none'}
 
 Context for Memecoins:
   - Under 30 mins hold is very fresh.
   - Multiplier > 2x is highly profitable.
   - Multiplier < 0.6x is a deep drawdown.
-  - Top 10 Holders > 40% is extremely risky (insider cabal risk).
+  - Rising volume with good liquidity can justify patience.
+  - High concentration + fading momentum means protect capital fast.
   - High volume on low market cap = sustained hype. Lower volume = dying trend.
 
-Your job is to recommend the single best Action for this trade right now.
+Your job is to act like a ruthless professional trader and recommend the single best Action for this trade right now.
+You must compare expected upside over the next 15-30 minutes versus realistic downside if momentum fails.
+
 Possible Actions:
   - "HOLD": Wait for further development.
   - "EXIT": The pump is dead, volume is dropping, or cabal risk is too high. Sell the entire bag.
@@ -250,7 +303,13 @@ Possible Actions:
   - "TAKE_PROFIT": We hit 1.5x - 3x. Sell 50-80% to lock gains.
   - "MOON_BAG": We are up significantly (3x+). Sell most to secure profit, but leave 10% running forever.
 
-Output strictly valid JSON: {"action": "HOLD|EXIT|DCA_IN|TAKE_PROFIT|MOON_BAG", "confidence": number 0-100, "reason": "short explanation"}
+Rules:
+  - Do not recommend DCA_IN if risk score is above 60.
+  - Prefer TAKE_PROFIT over HOLD when downside is larger than upside and the trade is already green.
+  - Prefer EXIT when concentration risk is high and momentum is breaking.
+  - Prefer MOON_BAG only when reward score is strong and risk is controlled.
+
+Output strictly valid JSON: {"action": "HOLD|EXIT|DCA_IN|TAKE_PROFIT|MOON_BAG", "confidence": number 0-100, "reason": "short explanation", "expectedUpsidePct": number, "expectedDownsidePct": number}
     `.trim();
 
     const result = await requestAiJson(
@@ -260,17 +319,31 @@ Output strictly valid JSON: {"action": "HOLD|EXIT|DCA_IN|TAKE_PROFIT|MOON_BAG", 
     );
 
     if (!result) {
-      return { action: 'HOLD', confidence: 0, reason: 'AI unavailable after retries' };
+      return {
+        action: 'HOLD',
+        confidence: 0,
+        reason: 'AI unavailable after retries',
+        expectedUpsidePct: 0,
+        expectedDownsidePct: 0,
+      };
     }
 
     return {
       action: normalizeTradeAction(result.action),
       confidence: Number.isFinite(Number(result.confidence)) ? Number(result.confidence) : 50,
-      reason: result.reason || 'AI evaluation complete'
+      reason: result.reason || 'AI evaluation complete',
+      expectedUpsidePct: Number.isFinite(Number(result.expectedUpsidePct)) ? Number(result.expectedUpsidePct) : 0,
+      expectedDownsidePct: Number.isFinite(Number(result.expectedDownsidePct)) ? Number(result.expectedDownsidePct) : 0,
     };
   } catch (err) {
     console.error('[AI Portfolio Manager] Error analyzing trade:', err);
-    return { action: 'HOLD', confidence: 0, reason: 'Exception in AI evaluation' };
+    return {
+      action: 'HOLD',
+      confidence: 0,
+      reason: 'Exception in AI evaluation',
+      expectedUpsidePct: 0,
+      expectedDownsidePct: 0,
+    };
   }
 }
 

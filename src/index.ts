@@ -370,7 +370,7 @@ async function main(): Promise<void> {
   await finder.initialize();
 
   console.log('[boot] Creating Trader agent (Executioner)...');
-  const trader = createTraderRuntime(token, elizaAdapter);
+  const trader = await createTraderRuntime(token, elizaAdapter);
   await trader.initialize();
 
   console.log('[boot] All agents initialized.');
@@ -640,6 +640,7 @@ async function main(): Promise<void> {
   // Phase 6e: Autonomous Trader
   console.log('[boot] Starting autonomous trader...');
   startAutonomousTrader({
+    runtime: trader,
     onLog: (msg) => {
       console.log(`[trader] ${msg}`);
       // Feed trade events to proactive alerts + parent + telegram

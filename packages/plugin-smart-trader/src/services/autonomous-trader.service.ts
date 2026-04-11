@@ -20,8 +20,14 @@ import type { AlphaSignal, InterAgentMessage } from '@wildtrade/shared';
 import { v4 as uuidv4 } from 'uuid';
 import { executeFullSwap } from './jupiter.service.js';
 import { runAiPreTradeConvictionCheck, runAiActivePositionAnalyzer, type AiTradeAction } from './ai-approval.service.js';
+import type { IAgentRuntime } from '@elizaos/core';
 import { Keypair } from '@solana/web3.js';
 import bs58 from 'bs58';
+import {
+  getTokenRiskSnapshot,
+  setSmartTraderRuntime,
+  type TokenRiskSnapshot,
+} from './chain-risk.service.js';
 
 // ── Config ──
 const POLL_INTERVAL_MS = 15_000;
@@ -127,6 +133,9 @@ interface Position {
   reason?: string;          // Why it was bought
   kolStrategy?: 'flip' | 'conviction'; // KOL trade profile (flip = quick exit, conviction = hold)
   lastAiAnalysisAt?: number; // Store timestamp of last deepseek evaluation
+  lastRiskCheckAt?: number;
+  lastRiskSnapshot?: TokenRiskSnapshot;
+  priceSamples?: Array<{ timestamp: number; price: number }>;
 }
 
 // ── Deep Trade Memory ──
@@ -207,6 +216,7 @@ let alertCb: ((type: string, msg: string) => void) | null = null;
 
 // ── Wallet Keypair (for live trading) ──
 let walletKeypair: Keypair | null = null;
+let traderRuntime: IAgentRuntime | null = null;
 
 function getWalletKeypair(): Keypair | null {
   if (walletKeypair) return walletKeypair;
@@ -596,6 +606,64 @@ function canTrade(): { allowed: boolean; reason?: string } {
   return { allowed: true };
 }
 
+function recordPriceSample(position: Position, price: number): void {
+  if (!Number.isFinite(price) || price <= 0) return;
+
+  const now = Date.now();
+  const samples = position.priceSamples ?? (position.priceSamples = []);
+  const lastSample = samples[samples.length - 1];
+
+  if (lastSample && now - lastSample.timestamp < 60_000) {
+    lastSample.timestamp = now;
+    lastSample.price = price;
+  } else {
+    samples.push({ timestamp: now, price });
+  }
+
+  while (samples.length > 20) {
+    samples.shift();
+  }
+}
+
+function calculatePriceChange(samples: Array<{ timestamp: number; price: number }>, currentPrice: number, lookbackMs: number): number {
+  if (samples.length === 0 || currentPrice <= 0) return 0;
+
+  const targetTime = Date.now() - lookbackMs;
+  let reference = samples[0];
+
+  for (let index = samples.length - 1; index >= 0; index--) {
+    const sample = samples[index];
+    if (sample && sample.timestamp <= targetTime) {
+      reference = sample;
+      break;
+    }
+  }
+
+  if (!reference || reference.price <= 0) return 0;
+  return ((currentPrice - reference.price) / reference.price) * 100;
+}
+
+function getTrendSnapshot(position: Position, currentPrice: number): { change5m: number; change15m: number; trendLabel: string } {
+  const samples = position.priceSamples ?? [];
+  const change5m = calculatePriceChange(samples, currentPrice, 5 * 60_000);
+  const change15m = calculatePriceChange(samples, currentPrice, 15 * 60_000);
+
+  let trendLabel = 'sideways';
+  if (change5m <= -12 && change15m <= -15) {
+    trendLabel = 'waterfall';
+  } else if (change5m <= -5 && change15m < 0) {
+    trendLabel = 'bleeding';
+  } else if (change5m >= 8 && change15m >= 12) {
+    trendLabel = 'expanding';
+  } else if (change5m >= 4 && change15m >= 0) {
+    trendLabel = 'uptrend';
+  } else if (change5m >= 3 && change15m < 0) {
+    trendLabel = 'bounce_attempt';
+  }
+
+  return { change5m, change15m, trendLabel };
+}
+
 // ── Public API ──
 
 let lastRugCheckTime = 0;
@@ -716,11 +784,14 @@ export async function triggerInstantSnipe(mintAddress: string, symbol: string): 
 export async function startAutonomousTrader(opts: {
   onLog?: TradingLogCb;
   onAlert?: (type: string, msg: string) => void;
+  runtime?: IAgentRuntime;
 }): Promise<void> {
   if (running) return;
   running = true;
   if (opts.onLog) log = opts.onLog;
   if (opts.onAlert) alertCb = opts.onAlert;
+  traderRuntime = opts.runtime ?? null;
+  setSmartTraderRuntime(traderRuntime);
 
   totalBudgetSol = parseFloat(process.env.TOTAL_BUDGET_SOL || '1.0');
 
@@ -770,6 +841,8 @@ export async function startAutonomousTrader(opts: {
 
 export async function stopAutonomousTrader(): Promise<void> {
   running = false;
+  traderRuntime = null;
+  setSmartTraderRuntime(null);
   await saveState(); // Save before stopping
   if (signalPollTimer) clearInterval(signalPollTimer);
   if (priceCheckTimer) clearInterval(priceCheckTimer);
@@ -1375,10 +1448,12 @@ async function checkPricesAndExits(): Promise<void> {
 
   for (const position of openPositions) {
     try {
-      const price = await getTokenPrice(position.mintAddress);
+      const market = await getMarketData(position.mintAddress);
+      const price = market.price;
       if (!price || price <= 0) continue;
 
       position.currentPrice = price;
+      recordPriceSample(position, price);
       const multiplier = price / position.entryPrice;
       const holdTimeMs = Date.now() - position.openedAt;
       const holdMins = holdTimeMs / 60_000;
@@ -1435,27 +1510,55 @@ async function checkPricesAndExits(): Promise<void> {
       } else if (hwm >= 2.0) {
         trailingStop = 1.50;  // Lock in 50% gain
       } else if (hwm >= 1.5) {
-        trailingStop = 1.15;  // Lock in 15% gain
+        trailingStop = 1.25;  // Raised from 1.15 to lock in more profit
       } else if (hwm >= 1.2) {
-        trailingStop = 0.95;  // Lock in max 5% loss
+        trailingStop = 1.05;  // Raised from 0.95 to guarantee breakeven/slight profit
+      } else if (hwm >= 1.1) {
+        trailingStop = 0.95;  // Tighten stop on small pumps
+      }
+
+      let riskSnapshot = position.lastRiskSnapshot;
+      if (!riskSnapshot || Date.now() - (position.lastRiskCheckAt || 0) > 120_000) {
+        riskSnapshot = await getTokenRiskSnapshot({
+          mintAddress: position.mintAddress,
+          liquidityUsd: market.liquidity,
+          volume1h: market.volume1h,
+          marketCapUsd: market.marketCap,
+          priceChange5m: market.priceChange5m,
+          priceChange1h: market.priceChange1h,
+        });
+        position.lastRiskSnapshot = riskSnapshot;
+        position.lastRiskCheckAt = Date.now();
+      }
+
+      if (riskSnapshot) {
+        if (riskSnapshot.riskScore >= 85 && hwm >= 1.2) {
+          trailingStop = Math.max(trailingStop, 1.10);
+        } else if (riskSnapshot.riskScore >= 75 && hwm >= 1.1) {
+          trailingStop = Math.max(trailingStop, 1.00);
+        }
+
+        if (riskSnapshot.riskScore >= 90 && riskSnapshot.topHolderPct >= 35 && multiplier >= 1.05) {
+          log(`[RISK EXIT] ${position.symbol} on-chain concentration risk spiked (top holder ${riskSnapshot.topHolderPct.toFixed(1)}%, risk ${riskSnapshot.riskScore}/100)`);
+          await executeSell(position, 1.0, 'onchain_risk_exit');
+          continue;
+        }
       }
 
       // Context-Aware Stop-Loss Overhaul
       // If we are at the edge of getting stopped out (or below), check momentum to survive dips
       if (multiplier <= trailingStop) {
-        // Fetch fresh volume data
-        const market = await getMarketData(position.mintAddress);
-        
         const isHighVolumeDump = market.volume1h > 50000 && multiplier < 0.6; // Heavy dumping
         const isHealthyDip = market.volume1h > 100000 && multiplier > 0.55 && hwm < 1.5; // Big volume + price holding around -40%
         
         let dynamicStop = trailingStop;
 
-        if (isHealthyDip && trailingStop === STOP_LOSS_MULTIPLIER) {
+        // If we've already secured profits (hwm > 1.2), don't widen the stop loss back down to 0.55
+        if (isHealthyDip && trailingStop === STOP_LOSS_MULTIPLIER && hwm < 1.2) {
           dynamicStop = 0.55; // Widen stop to -45% to survive healthy dip
           log(`[SMART EXIT] ${position.symbol} hit -30% but volume is surging ($${market.volume1h}/hr). Widening stop to -45% to survive dip.`);
-        } else if (isHighVolumeDump && hwm > 1.2) {
-          dynamicStop = Math.max(trailingStop, multiplier + 0.1); // tighten stop instantly
+        } else if ((isHighVolumeDump && hwm > 1.1) || (multiplier < 0.85 && holdMins > 15 && hwm < 1.1)) {
+          dynamicStop = Math.max(trailingStop, multiplier + 0.05); // tighten stop instantly if momentum dying
           log(`[SMART EXIT] ${position.symbol} momentum dying rapidly. Tightening exit.`);
         }
 
@@ -1519,17 +1622,52 @@ async function checkPricesAndExits(): Promise<void> {
       // Run every 5 minutes to get intelligent entry/exit and moon-bag evaluation
       if (Date.now() - (position.lastAiAnalysisAt || 0) > 300_000) {
         position.lastAiAnalysisAt = Date.now();
-        const market = await getMarketData(position.mintAddress);
-        const topHoldersPercent = 35.0; // Simulated RPC placeholder for cabal check
+        const trend = getTrendSnapshot(position, price);
+        const onchainRisk = position.lastRiskSnapshot ?? await getTokenRiskSnapshot({
+          mintAddress: position.mintAddress,
+          liquidityUsd: market.liquidity,
+          volume1h: market.volume1h,
+          marketCapUsd: market.marketCap,
+          priceChange5m: market.priceChange5m,
+          priceChange1h: market.priceChange1h,
+          force: true,
+        });
+
+        position.lastRiskSnapshot = onchainRisk;
+        position.lastRiskCheckAt = Date.now();
 
         log(`[AI Portfolio] Asking DeepSeek to evaluate open trade: ${position.symbol} (${multiplier.toFixed(2)}x)...`);
-        const analysis = await runAiActivePositionAnalyzer(
-          position.mintAddress, position.symbol, position.solDeployed, 
-          position.solDeployed * multiplier, multiplier, holdMins, 
-          market.liquidity > 0 ? market.liquidity * 5 : 50000, market.volume1h, topHoldersPercent
-        );
+        const analysis = await runAiActivePositionAnalyzer({
+          mint: position.mintAddress,
+          symbol: position.symbol,
+          initialSol: position.solDeployed,
+          currentSol: position.solDeployed * multiplier,
+          multiplier,
+          holdMins,
+          marketCap: market.marketCap > 0 ? market.marketCap : (market.liquidity > 0 ? market.liquidity * 5 : 50_000),
+          liquidityUsd: market.liquidity,
+          volume1h: market.volume1h,
+          currentStopMultiplier: trailingStop,
+          highWaterMark: hwm,
+          priceChange5m: trend.change5m,
+          priceChange15m: trend.change15m,
+          priceChange1h: market.priceChange1h,
+          trendLabel: trend.trendLabel,
+          topHolderPct: onchainRisk.topHolderPct,
+          top10HolderPct: onchainRisk.top10HolderPct,
+          holderCountTop20: onchainRisk.holderCountTop20,
+          trustScore: onchainRisk.trustScore,
+          riskScore: onchainRisk.riskScore,
+          rewardScore: onchainRisk.rewardScore,
+          riskFlags: onchainRisk.riskFlags,
+          strengthSignals: onchainRisk.strengthSignals,
+        });
 
-        log(`[AI Portfolio] ${position.symbol} analysis: ${analysis.action} (Confidence: ${analysis.confidence}%) | ${analysis.reason}`);
+        log(
+          `[AI Portfolio] ${position.symbol} analysis: ${analysis.action} ` +
+          `(Confidence: ${analysis.confidence}% | Upside: ${analysis.expectedUpsidePct.toFixed(0)}% | ` +
+          `Downside: ${analysis.expectedDownsidePct.toFixed(0)}%) | ${analysis.reason}`,
+        );
 
         if (analysis.confidence >= 65) {
           if (analysis.action === 'EXIT') {
@@ -1595,25 +1733,43 @@ async function getSolPrice(): Promise<number> {
   return cachedSolPrice || 150; // Fallback estimate
 }
 
-async function getMarketData(mintAddress: string): Promise<{ price: number, volume1h: number, liquidity: number }> {
+async function getMarketData(mintAddress: string): Promise<{
+  price: number;
+  volume1h: number;
+  liquidity: number;
+  marketCap: number;
+  priceChange5m: number;
+  priceChange1h: number;
+}> {
   try {
     const res = await fetch(
       `https://api.dexscreener.com/latest/dex/tokens/${mintAddress}`,
       { headers: { 'Accept': 'application/json' } },
     );
 
-    if (!res.ok) return { price: 0, volume1h: 0, liquidity: 0 };
+    if (!res.ok) {
+      return { price: 0, volume1h: 0, liquidity: 0, marketCap: 0, priceChange5m: 0, priceChange1h: 0 };
+    }
 
     const data = await res.json() as any;
-    const pair = data.pairs?.[0];
-    if (!pair) return { price: 0, volume1h: 0, liquidity: 0 };
+    const pairs = Array.isArray(data.pairs) ? data.pairs : [];
+    const pair = pairs.sort(
+      (left: any, right: any) => Number(right?.liquidity?.usd ?? 0) - Number(left?.liquidity?.usd ?? 0),
+    )[0];
+    if (!pair) {
+      return { price: 0, volume1h: 0, liquidity: 0, marketCap: 0, priceChange5m: 0, priceChange1h: 0 };
+    }
+
     return {
       price: parseFloat(pair.priceUsd ?? '0'),
       volume1h: parseFloat(pair.volume?.h1 ?? '0'),
-      liquidity: parseFloat(pair.liquidity?.usd ?? '0')
+      liquidity: parseFloat(pair.liquidity?.usd ?? '0'),
+      marketCap: parseFloat(pair.marketCap ?? pair.fdv ?? '0'),
+      priceChange5m: parseFloat(pair.priceChange?.m5 ?? '0'),
+      priceChange1h: parseFloat(pair.priceChange?.h1 ?? '0'),
     };
   } catch {
-    return { price: 0, volume1h: 0, liquidity: 0 };
+    return { price: 0, volume1h: 0, liquidity: 0, marketCap: 0, priceChange5m: 0, priceChange1h: 0 };
   }
 }
 

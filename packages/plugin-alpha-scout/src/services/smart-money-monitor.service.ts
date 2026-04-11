@@ -57,6 +57,11 @@ function isRpcUpgradeRequiredError(error: unknown): boolean {
   return message.includes('426') || message.toLowerCase().includes('upgrade required');
 }
 
+function isHttpPollingDisabledError(error: unknown): boolean {
+  const message = String((error as { message?: string })?.message ?? error ?? '');
+  return message.includes('Smart money HTTP polling is temporarily disabled');
+}
+
 // ── Config ──
 
 const CONFIG = {
@@ -273,6 +278,7 @@ async function withHttpRpcFallback<T>(operation: (rpcConnection: Connection) => 
       }
 
       disableHttpPolling('primary RPC returned HTTP 426 Upgrade Required and no private HTTP fallback is configured');
+      throw new Error('Smart money HTTP polling is temporarily disabled');
     }
 
     throw error;
@@ -560,6 +566,10 @@ async function pollRecentTxFromRpc(): Promise<void> {
         }).catch(() => {});
       }
     } catch (err: any) {
+      if (isHttpPollingDisabled() || isHttpPollingDisabledError(err)) {
+        break;
+      }
+
       if (!err?.message?.includes('429')) {
         console.log(`[smart-money] RPC poll error for ${wallet.address.slice(0, 8)}: ${String(err)}`);
       }

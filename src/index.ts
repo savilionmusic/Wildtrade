@@ -7,43 +7,201 @@ import { getElizaAdapter } from './db-adapter.js';
 // --- Smart Fetch Interceptor (Self-Healing 429 handler) ---
 const originalFetch = global.fetch;
 const domainCooldowns = new Map<string, number>();
+const CONSTANT_K_DOMAIN_SUFFIX = 'constant-k.com';
+const CONSTANT_K_GLOBAL_REQUESTS_PER_SECOND = 50;
+const CONSTANT_K_GLOBAL_REQUEST_SPACING_MS = Math.ceil(1000 / CONSTANT_K_GLOBAL_REQUESTS_PER_SECOND);
 
-global.fetch = async (...args) => {
+const CONSTANT_K_METHOD_LIMITS = new Map<string, number>([
+  ['sendtransaction', 5],
+  ['simulatetransaction', 1],
+  ['getmultipleaccounts', 5],
+  ['simulatebundle', 5],
+]);
+
+interface ConstantKRequestPlan {
+  totalUnits: number;
+  methodCounts: Map<string, number>;
+}
+
+interface DomainThrottleState {
+  active: boolean;
+  nextGlobalAvailableAt: number;
+  nextMethodAvailableAt: Map<string, number>;
+  queue: Array<() => void>;
+}
+
+const domainThrottleStates = new Map<string, DomainThrottleState>();
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isConstantKDomain(domain: string): boolean {
+  return domain === CONSTANT_K_DOMAIN_SUFFIX || domain.endsWith(`.${CONSTANT_K_DOMAIN_SUFFIX}`);
+}
+
+function getMethodThrottleKey(method: unknown): string | null {
+  const normalized = String(method ?? '').trim().toLowerCase();
+  if (!normalized) return null;
+
+  if (normalized.includes('sendtransaction')) return 'sendtransaction';
+  if (normalized.includes('simulatetransaction')) return 'simulatetransaction';
+  if (normalized.includes('getmultipleaccounts')) return 'getmultipleaccounts';
+  if (normalized.includes('simulatebundle')) return 'simulatebundle';
+  return null;
+}
+
+async function getRequestBodyText(args: Parameters<typeof fetch>): Promise<string | null> {
+  const init = args[1] as RequestInit | undefined;
+  if (typeof init?.body === 'string') return init.body;
+
+  if (typeof Request !== 'undefined' && args[0] instanceof Request) {
+    try {
+      return await args[0].clone().text();
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
+}
+
+function buildConstantKRequestPlan(bodyText: string | null): ConstantKRequestPlan {
+  const plan: ConstantKRequestPlan = {
+    totalUnits: 1,
+    methodCounts: new Map<string, number>(),
+  };
+
+  if (!bodyText) return plan;
+
+  try {
+    const parsed = JSON.parse(bodyText) as unknown;
+    const requests = Array.isArray(parsed) ? parsed : [parsed];
+    plan.totalUnits = Math.max(requests.length, 1);
+
+    for (const request of requests) {
+      if (!request || typeof request !== 'object') continue;
+      const key = getMethodThrottleKey((request as { method?: unknown }).method);
+      if (!key) continue;
+      plan.methodCounts.set(key, (plan.methodCounts.get(key) ?? 0) + 1);
+    }
+  } catch {
+    return plan;
+  }
+
+  return plan;
+}
+
+async function acquireDomainThrottle(domain: string, requestPlan: ConstantKRequestPlan): Promise<() => void> {
+  const state = domainThrottleStates.get(domain) ?? {
+    active: false,
+    nextGlobalAvailableAt: 0,
+    nextMethodAvailableAt: new Map<string, number>(),
+    queue: [],
+  };
+  domainThrottleStates.set(domain, state);
+
+  return new Promise((resolve) => {
+    const run = () => {
+      state.active = true;
+
+      void (async () => {
+        const now = Date.now();
+        const methodWaitTime = [...requestPlan.methodCounts.keys()].reduce((maxWait, methodKey) => {
+          const nextAvailableAt = state.nextMethodAvailableAt.get(methodKey) ?? 0;
+          return Math.max(maxWait, nextAvailableAt - now);
+        }, 0);
+
+        const waitTime = Math.max(0, state.nextGlobalAvailableAt - now, methodWaitTime);
+        if (waitTime > 0) {
+          await sleep(waitTime);
+        }
+
+        const startAt = Date.now();
+        state.nextGlobalAvailableAt = Math.max(state.nextGlobalAvailableAt, startAt)
+          + (CONSTANT_K_GLOBAL_REQUEST_SPACING_MS * Math.max(requestPlan.totalUnits, 1));
+
+        for (const [methodKey, count] of requestPlan.methodCounts) {
+          const limit = CONSTANT_K_METHOD_LIMITS.get(methodKey);
+          if (!limit) continue;
+
+          const spacingMs = Math.ceil(1000 / limit);
+          const nextMethodAt = Math.max(state.nextMethodAvailableAt.get(methodKey) ?? 0, startAt)
+            + (spacingMs * Math.max(count, 1));
+          state.nextMethodAvailableAt.set(methodKey, nextMethodAt);
+        }
+
+        resolve(() => {
+          state.active = false;
+          const next = state.queue.shift();
+          if (next) next();
+        });
+      })().catch(() => {
+        state.active = false;
+        const next = state.queue.shift();
+        if (next) next();
+        resolve(() => {});
+      });
+    };
+
+    if (state.active) {
+      state.queue.push(run);
+    } else {
+      run();
+    }
+  });
+}
+
+global.fetch = async (...args: Parameters<typeof fetch>): Promise<Response> => {
   const urlObj = typeof args[0] === 'string' ? new URL(args[0]) : args[0] instanceof URL ? args[0] : null;
   const domain = urlObj ? urlObj.hostname : 'unknown';
-  
-  if (domain !== 'unknown') {
-    const cooldownEnds = domainCooldowns.get(domain);
-    if (cooldownEnds && Date.now() < cooldownEnds) {
-      const waitTime = cooldownEnds - Date.now();
-      console.warn(`[self-healer] ⚠️ Circuit breaker ACTIVE for ${domain}. Delayed request by ${Math.ceil(waitTime/1000)}s.`);
-      await new Promise(r => setTimeout(r, waitTime));
-    }
-  }
+
+  const requestBodyText = domain !== 'unknown' && isConstantKDomain(domain)
+    ? await getRequestBodyText(args)
+    : null;
+  const requestPlan = domain !== 'unknown' && isConstantKDomain(domain)
+    ? buildConstantKRequestPlan(requestBodyText)
+    : { totalUnits: 1, methodCounts: new Map<string, number>() };
+  const releaseThrottle = domain !== 'unknown' && isConstantKDomain(domain)
+    ? await acquireDomainThrottle(domain, requestPlan)
+    : null;
 
   let attempt = 0;
-  while (attempt < 3) {
-    try {
-      const response = await originalFetch(...args);
-      if (response.status === 429) {
-        console.warn(`[self-healer] 🛑 429 Too Many Requests from ${domain}. Engaging circuit breaker for 30 seconds...`);
-        if (domain === 'api.mainnet-beta.solana.com') {
-          console.warn(`[self-healer] ⚠️ CRITICAL: The public Solana RPC (api.mainnet-beta.solana.com) cannot handle bot traffic. You MUST configure your Constant-K RPC URL in the app's Settings to stop these errors.`);
+  try {
+    while (attempt < 3) {
+      try {
+        if (domain !== 'unknown') {
+          const cooldownEnds = domainCooldowns.get(domain);
+          if (cooldownEnds && Date.now() < cooldownEnds) {
+            const waitTime = cooldownEnds - Date.now();
+            console.warn(`[self-healer] ⚠️ Circuit breaker ACTIVE for ${domain}. Delayed request by ${Math.ceil(waitTime/1000)}s.`);
+            await sleep(waitTime);
+          }
         }
-        domainCooldowns.set(domain, Date.now() + 30000);
-        await new Promise(r => setTimeout(r, 30000));
+
+        const response = await originalFetch(...args);
+        if (response.status === 429) {
+          console.warn(`[self-healer] 🛑 429 Too Many Requests from ${domain}. Engaging circuit breaker for 30 seconds...`);
+          if (domain === 'api.mainnet-beta.solana.com') {
+            console.warn(`[self-healer] ⚠️ CRITICAL: The public Solana RPC (api.mainnet-beta.solana.com) cannot handle bot traffic. You MUST configure your Constant-K RPC URL in the app's Settings to stop these errors.`);
+          }
+          domainCooldowns.set(domain, Date.now() + 30000);
+          await sleep(30000);
+          attempt++;
+          continue;
+        }
+        return response;
+      } catch (err: any) {
+        if (attempt === 2) throw err;
+        console.warn(`[self-healer] Network error to ${domain}: ${err.message}. Retrying in 5s...`);
+        await sleep(5000);
         attempt++;
-        continue;
       }
-      return response;
-    } catch (err: any) {
-      if (attempt === 2) throw err;
-      console.warn(`[self-healer] Network error to ${domain}: ${err.message}. Retrying in 5s...`);
-      await new Promise(r => setTimeout(r, 5000));
-      attempt++;
     }
+    throw new Error(`[self-healer] Exhausted retries for ${domain}`);
+  } finally {
+    releaseThrottle?.();
   }
-  throw new Error(`[self-healer] Exhausted retries for ${domain}`);
 };
 // ------------------------------------------------------------
 

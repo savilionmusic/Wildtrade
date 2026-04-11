@@ -249,6 +249,16 @@ export interface ActivePositionAiContext {
   rewardScore: number;
   riskFlags: string[];
   strengthSignals: string[];
+  // ── Live health signals ──
+  entryLiquidity?: number;       // Liquidity at entry
+  liquidityChangePct?: number;   // % change from entry
+  entryVolume1h?: number;        // Volume at entry
+  volumeDecayPct?: number;       // % decay from peak
+  buys1h?: number;               // 1h buy transactions
+  sells1h?: number;              // 1h sell transactions
+  devWalletStatus?: 'holding' | 'sold_all' | 'unknown';  // Creator wallet status
+  topHolderDeltaPct?: number;    // Top holder % change from entry (+ = accumulating, - = dumping)
+  top10DeltaPct?: number;        // Top-10 holder % change from entry
 }
 
 export interface AiPositionAnalysis {
@@ -303,6 +313,14 @@ On-Chain Risk Read:
   - Risk flags: ${context.riskFlags.length > 0 ? context.riskFlags.join(', ') : 'none'}
   - Strength signals: ${context.strengthSignals.length > 0 ? context.strengthSignals.join(', ') : 'none'}
 
+Live Position Health:
+  - Liquidity change from entry: ${context.liquidityChangePct != null ? (context.liquidityChangePct >= 0 ? '+' : '') + context.liquidityChangePct.toFixed(1) + '%' : 'unknown'}${context.entryLiquidity ? ` (entry: $${context.entryLiquidity.toLocaleString()}, now: $${context.liquidityUsd.toLocaleString()})` : ''}
+  - Volume decay from peak: ${context.volumeDecayPct != null ? context.volumeDecayPct.toFixed(1) + '% decayed' : 'unknown'}
+  - 1h Transactions: ${context.buys1h ?? '?'} buys / ${context.sells1h ?? '?'} sells${context.buys1h && context.sells1h && context.buys1h > 0 ? ` (ratio: ${(context.sells1h / context.buys1h).toFixed(1)} sells per buy)` : ''}
+  - Dev/Creator wallet: ${context.devWalletStatus === 'sold_all' ? '⚠️ SOLD ALL TOKENS (critical red flag)' : context.devWalletStatus === 'holding' ? 'still holding' : 'unknown'}
+  - Top holder change from entry: ${context.topHolderDeltaPct != null ? (context.topHolderDeltaPct >= 0 ? '+' : '') + context.topHolderDeltaPct.toFixed(1) + 'pp' : 'unknown'}${context.topHolderDeltaPct != null && context.topHolderDeltaPct >= 10 ? ' ⚠️ ACCUMULATING' : context.topHolderDeltaPct != null && context.topHolderDeltaPct <= -10 ? ' ⚠️ DUMPING' : ''}
+  - Top-10 holders change from entry: ${context.top10DeltaPct != null ? (context.top10DeltaPct >= 0 ? '+' : '') + context.top10DeltaPct.toFixed(1) + 'pp' : 'unknown'}
+
 Context for Memecoins:
   - Under 30 mins hold is very fresh.
   - Multiplier > 2x is highly profitable.
@@ -323,6 +341,14 @@ Possible Actions:
 
 Rules:
   - Do not recommend DCA_IN if risk score is above 60.
+  - Do not recommend DCA_IN if liquidity dropped more than 30% from entry or volume decayed more than 60%.
+  - If dev/creator wallet sold all tokens, strongly prefer EXIT — this is the #1 rug signal on memecoins.
+  - If top holder concentration spiked 10%+ from entry, a whale is accumulating — likely setting up a dump. Prefer TAKE_PROFIT or EXIT.
+  - If top-10 holders are spiking 15%+ while price is rising, it's a cabal setup — lock profits early with TAKE_PROFIT.
+  - If top-10 concentration dropped 10%+ with falling price, large holders are exiting — prefer EXIT.
+  - If liquidity dropped 30%+ from entry while price hasn't recovered, prefer EXIT — LP removal in progress.
+  - If sells outnumber buys 3:1 or more, treat as heavy distribution — prefer TAKE_PROFIT or EXIT.
+  - If volume decayed 70%+ from peak and trend is negative, the pump is dead — prefer EXIT.
   - Prefer TAKE_PROFIT over HOLD when downside is larger than upside and the trade is already green.
   - Prefer EXIT when concentration risk is high and momentum is breaking.
   - Prefer MOON_BAG only when reward score is strong and risk is controlled.

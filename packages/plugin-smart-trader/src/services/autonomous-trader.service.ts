@@ -26,6 +26,7 @@ import { Keypair } from '@solana/web3.js';
 import bs58 from 'bs58';
 import {
   getTokenRiskSnapshot,
+  getCreatorTokenBalance,
   resetRpcConnection,
   setSolanaService,
   type TokenRiskSnapshot,
@@ -138,6 +139,16 @@ interface Position {
   lastRiskCheckAt?: number;
   lastRiskSnapshot?: TokenRiskSnapshot;
   priceSamples?: Array<{ timestamp: number; price: number }>;
+  // ── Live position health tracking ──
+  entryLiquidity?: number;     // Liquidity at time of entry (USD)
+  entryVolume1h?: number;      // 1h volume at time of entry
+  peakLiquidity?: number;      // Highest liquidity seen
+  peakVolume1h?: number;       // Highest 1h volume seen
+  creatorAddress?: string;     // Token deployer wallet (for dev sell detection)
+  lastBuys1h?: number;         // Last observed 1h buy count
+  lastSells1h?: number;        // Last observed 1h sell count
+  entryTopHolderPct?: number;  // Top holder % at entry (baseline for delta)
+  entryTop10HolderPct?: number; // Top-10 holder % at entry
 }
 
 // ── Deep Trade Memory ──
@@ -1233,6 +1244,42 @@ async function openPosition(
     kolStrategy,
   };
 
+  // Capture entry-time market baselines for live health tracking
+  try {
+    const entryMarket = await getMarketData(mintAddress);
+    if (entryMarket.liquidity > 0) position.entryLiquidity = entryMarket.liquidity;
+    if (entryMarket.volume1h > 0) position.entryVolume1h = entryMarket.volume1h;
+    position.peakLiquidity = entryMarket.liquidity;
+    position.peakVolume1h = entryMarket.volume1h;
+    position.lastBuys1h = entryMarket.buys1h;
+    position.lastSells1h = entryMarket.sells1h;
+  } catch { /* not fatal */ }
+
+  // Try to get creator address from signal for dev-wallet monitoring
+  try {
+    const db = await getDb();
+    const sigRow = await db.query<{ creator_address?: string }>(
+      `SELECT creator_address FROM signals WHERE mint = $1 ORDER BY discovered_at DESC LIMIT 1`,
+      [mintAddress],
+    );
+    const creator = sigRow.rows?.[0]?.creator_address;
+    if (creator && creator.length > 30) position.creatorAddress = creator;
+  } catch { /* not fatal */ }
+
+  // Capture entry-time top holder baselines for delta tracking
+  try {
+    const entryRisk = await getTokenRiskSnapshot({
+      mintAddress,
+      liquidityUsd: position.entryLiquidity ?? 0,
+      volume1h: position.entryVolume1h ?? 0,
+      marketCapUsd: marketCap,
+    });
+    position.entryTopHolderPct = entryRisk.topHolderPct;
+    position.entryTop10HolderPct = entryRisk.top10HolderPct;
+    position.lastRiskSnapshot = entryRisk;
+    position.lastRiskCheckAt = Date.now();
+  } catch { /* not fatal */ }
+
   positions.set(position.id, position);
   
   // Make sure to add it to the open positions list immediately for portfolio tracking
@@ -1529,6 +1576,13 @@ async function checkPricesAndExits(): Promise<void> {
 
       position.currentPrice = price;
       recordPriceSample(position, price);
+
+      // ── Update live health tracking ──
+      position.lastBuys1h = market.buys1h;
+      position.lastSells1h = market.sells1h;
+      if (market.liquidity > (position.peakLiquidity ?? 0)) position.peakLiquidity = market.liquidity;
+      if (market.volume1h > (position.peakVolume1h ?? 0)) position.peakVolume1h = market.volume1h;
+
       const multiplier = price / position.entryPrice;
       const holdTimeMs = Date.now() - position.openedAt;
       const holdMins = holdTimeMs / 60_000;
@@ -1620,6 +1674,91 @@ async function checkPricesAndExits(): Promise<void> {
         }
       }
 
+      // ── LIQUIDITY DRAIN DETECTION ──
+      // LP removal is the #1 rug mechanism — if liquidity drops >50% from entry, emergency exit
+      if (position.entryLiquidity && position.entryLiquidity > 0 && market.liquidity > 0) {
+        const liqDropFromEntry = 1 - (market.liquidity / position.entryLiquidity);
+        const liqDropFromPeak = position.peakLiquidity && position.peakLiquidity > 0
+          ? 1 - (market.liquidity / position.peakLiquidity)
+          : 0;
+
+        if (liqDropFromEntry >= 0.50) {
+          log(`[LP DRAIN EXIT] ${position.symbol} liquidity dropped ${(liqDropFromEntry * 100).toFixed(0)}% from entry ($${position.entryLiquidity.toFixed(0)} → $${market.liquidity.toFixed(0)}) — likely rug`);
+          await executeSell(position, 1.0, `lp_drain_exit (liq -${(liqDropFromEntry * 100).toFixed(0)}%)`);
+          continue;
+        }
+        if (liqDropFromPeak >= 0.40 && liqDropFromEntry >= 0.30) {
+          log(`[LP WARNING] ${position.symbol} liquidity dropped ${(liqDropFromPeak * 100).toFixed(0)}% from peak — tightening stop`);
+          trailingStop = Math.max(trailingStop, multiplier * 0.92); // Tighten to -8% from current
+        }
+      }
+
+      // ── VOLUME DECAY DETECTION ──
+      // Dying volume on micro-caps = trend is over. Tighten stops aggressively.
+      if (position.peakVolume1h && position.peakVolume1h > 0 && market.volume1h > 0) {
+        const volDecay = 1 - (market.volume1h / position.peakVolume1h);
+        if (volDecay >= 0.80 && holdMins >= 15) {
+          // Volume collapsed 80%+ from peak — trend is dead
+          log(`[VOL DECAY] ${position.symbol} volume collapsed ${(volDecay * 100).toFixed(0)}% from peak — tightening exit`);
+          trailingStop = Math.max(trailingStop, multiplier * 0.95); // Tighten to -5% from current
+        } else if (volDecay >= 0.60 && holdMins >= 10) {
+          trailingStop = Math.max(trailingStop, multiplier * 0.90); // Moderate tightening
+        }
+      }
+
+      // ── BUY/SELL RATIO MONITORING ──
+      // Sells heavily outweighing buys = distribution phase — smart money exiting
+      const buys1h = market.buys1h || 0;
+      const sells1h = market.sells1h || 0;
+      if (sells1h > 0 && buys1h > 0) {
+        const sellRatio = sells1h / buys1h;
+        if (sellRatio >= 3.0 && holdMins >= 5) {
+          // Sells outnumber buys 3:1 — heavy distribution
+          log(`[SELL PRESSURE] ${position.symbol} sell/buy ratio ${sellRatio.toFixed(1)}:1 (${sells1h} sells vs ${buys1h} buys) — tightening stop`);
+          trailingStop = Math.max(trailingStop, multiplier * 0.93);
+        }
+      }
+
+      // ── DEV WALLET SELL DETECTION ──
+      // If we know the token creator, check if they're dumping their bag
+      if (position.creatorAddress && holdMins >= 2) {
+        try {
+          const devBalance = await getCreatorTokenBalance(position.creatorAddress, position.mintAddress);
+          if (devBalance !== null && devBalance <= 0) {
+            // Dev has zero tokens — they've dumped everything
+            log(`[DEV DUMP EXIT] ${position.symbol} creator wallet ${position.creatorAddress.slice(0, 8)}... sold ALL tokens — emergency exit`);
+            await executeSell(position, 1.0, 'dev_dump_exit');
+            continue;
+          }
+        } catch { /* RPC failure — proceed without dev check */ }
+      }
+
+      // ── TOP HOLDER DELTA MONITORING ──
+      // Track whether top holders are accumulating (rug setup) or dumping
+      if (riskSnapshot && position.entryTopHolderPct != null && position.entryTopHolderPct > 0) {
+        const topHolderDelta = riskSnapshot.topHolderPct - position.entryTopHolderPct;
+        const top10Delta = riskSnapshot.top10HolderPct - (position.entryTop10HolderPct ?? 0);
+
+        // Single wallet spiked 15%+ since entry = accumulation / potential rug setup
+        if (topHolderDelta >= 15 && riskSnapshot.topHolderPct >= 30) {
+          log(`[HOLDER SPIKE EXIT] ${position.symbol} top holder surged from ${position.entryTopHolderPct.toFixed(1)}% → ${riskSnapshot.topHolderPct.toFixed(1)}% (+${topHolderDelta.toFixed(1)}pp) — likely accumulating for dump`);
+          await executeSell(position, 1.0, `holder_spike_exit (top1 +${topHolderDelta.toFixed(1)}pp)`);
+          continue;
+        }
+
+        // Top-10 spiked 20%+ = cabal forming
+        if (top10Delta >= 20 && riskSnapshot.top10HolderPct >= 60) {
+          log(`[CABAL FORMING] ${position.symbol} top-10 holders surged from ${(position.entryTop10HolderPct ?? 0).toFixed(1)}% → ${riskSnapshot.top10HolderPct.toFixed(1)}% — tightening stop`);
+          trailingStop = Math.max(trailingStop, multiplier * 0.93);
+        }
+
+        // Top-10 dropped fast (holders dumping) while price is also falling = coordinated dump
+        if (top10Delta <= -15 && multiplier < 0.85) {
+          log(`[HOLDER DUMP] ${position.symbol} top-10 dropped ${Math.abs(top10Delta).toFixed(1)}pp while price at ${multiplier.toFixed(2)}x — large holders exiting`);
+          trailingStop = Math.max(trailingStop, multiplier * 0.95);
+        }
+      }
+
       // Context-Aware Stop-Loss Overhaul
       // If we are at the edge of getting stopped out (or below), check momentum to survive dips
       if (multiplier <= trailingStop) {
@@ -1665,20 +1804,31 @@ async function checkPricesAndExits(): Promise<void> {
 
       // ── Recovery DCA: only if price bounced back above 0.9x after dipping ──
       // (Never DCA into a falling knife — only on recovery signals. Not for flip positions.)
+      // Now also checks on-chain risk — don't double down on deteriorating tokens.
       if (!position.kolStrategy && multiplier >= 0.88 && multiplier <= 0.95 && hwm >= 1.0 && holdMins <= 20 && position.dcaLegsExecuted < 3) {
-        const phase = getCurrentPhase();
-        const available = totalBudgetSol - deployedSol + realizedPnlSol;
-        const dcaAmount = Math.min(phase.positionSizeMin * 0.5, available * 0.10) * learnedDcaAggression;
-        if (dcaAmount >= 0.01) {
-          // Cancel any remaining scheduled DCA legs for this position to prevent duplicate buys
-          const cancelledCount = pendingDcaLegs.filter(l => l.positionId === position.id).length;
-          pendingDcaLegs = pendingDcaLegs.filter(l => l.positionId !== position.id);
-          if (cancelledCount > 0) {
-            log(`RECOVERY DCA: Cancelled ${cancelledCount} pending scheduled leg(s) for ${position.symbol}`);
+        // Block recovery DCA if on-chain health has degraded
+        const currentRisk = riskSnapshot?.riskScore ?? 0;
+        const liqStillHealthy = !position.entryLiquidity || market.liquidity >= position.entryLiquidity * 0.70;
+        const volumeStillAlive = !position.peakVolume1h || market.volume1h >= position.peakVolume1h * 0.30;
+        const riskOk = currentRisk < 60;
+
+        if (riskOk && liqStillHealthy && volumeStillAlive) {
+          const phase = getCurrentPhase();
+          const available = totalBudgetSol - deployedSol + realizedPnlSol;
+          const dcaAmount = Math.min(phase.positionSizeMin * 0.5, available * 0.10) * learnedDcaAggression;
+          if (dcaAmount >= 0.01) {
+            // Cancel any remaining scheduled DCA legs for this position to prevent duplicate buys
+            const cancelledCount = pendingDcaLegs.filter(l => l.positionId === position.id).length;
+            pendingDcaLegs = pendingDcaLegs.filter(l => l.positionId !== position.id);
+            if (cancelledCount > 0) {
+              log(`RECOVERY DCA: Cancelled ${cancelledCount} pending scheduled leg(s) for ${position.symbol}`);
+            }
+            log(`RECOVERY DCA: ${position.symbol} bounced to ${multiplier.toFixed(2)}x — adding ${dcaAmount.toFixed(4)} SOL`);
+            alert('dca_entry', `Recovery DCA: ${position.symbol} at ${multiplier.toFixed(2)}x — adding ${dcaAmount.toFixed(4)} SOL`);
+            await executeBuy(position, dcaAmount, position.dcaLegsExecuted + 1);
           }
-          log(`RECOVERY DCA: ${position.symbol} bounced to ${multiplier.toFixed(2)}x — adding ${dcaAmount.toFixed(4)} SOL`);
-          alert('dca_entry', `Recovery DCA: ${position.symbol} at ${multiplier.toFixed(2)}x — adding ${dcaAmount.toFixed(4)} SOL`);
-          await executeBuy(position, dcaAmount, position.dcaLegsExecuted + 1);
+        } else {
+          log(`RECOVERY DCA BLOCKED: ${position.symbol} — risk:${currentRisk} liqOk:${liqStillHealthy} volOk:${volumeStillAlive}`);
         }
       }
 
@@ -1712,6 +1862,24 @@ async function checkPricesAndExits(): Promise<void> {
         position.lastRiskCheckAt = Date.now();
 
         log(`[AI Portfolio] Asking DeepSeek to evaluate open trade: ${position.symbol} (${multiplier.toFixed(2)}x)...`);
+
+        // Compute live health metrics for AI context
+        const liquidityChangePct = position.entryLiquidity && position.entryLiquidity > 0
+          ? ((market.liquidity - position.entryLiquidity) / position.entryLiquidity) * 100
+          : undefined;
+        const volumeDecayPct = position.peakVolume1h && position.peakVolume1h > 0
+          ? ((1 - (market.volume1h / position.peakVolume1h)) * 100)
+          : undefined;
+
+        // Check dev wallet status for AI context
+        let devWalletStatus: 'holding' | 'sold_all' | 'unknown' = 'unknown';
+        if (position.creatorAddress) {
+          try {
+            const devBal = await getCreatorTokenBalance(position.creatorAddress, position.mintAddress);
+            if (devBal !== null) devWalletStatus = devBal <= 0 ? 'sold_all' : 'holding';
+          } catch { /* unknown */ }
+        }
+
         const analysis = await runAiActivePositionAnalyzer({
           mint: position.mintAddress,
           symbol: position.symbol,
@@ -1736,6 +1904,20 @@ async function checkPricesAndExits(): Promise<void> {
           rewardScore: onchainRisk.rewardScore,
           riskFlags: onchainRisk.riskFlags,
           strengthSignals: onchainRisk.strengthSignals,
+          // Live health signals
+          entryLiquidity: position.entryLiquidity,
+          liquidityChangePct,
+          entryVolume1h: position.entryVolume1h,
+          volumeDecayPct,
+          buys1h: market.buys1h,
+          sells1h: market.sells1h,
+          devWalletStatus,
+          topHolderDeltaPct: position.entryTopHolderPct != null
+            ? onchainRisk.topHolderPct - position.entryTopHolderPct
+            : undefined,
+          top10DeltaPct: position.entryTop10HolderPct != null
+            ? onchainRisk.top10HolderPct - position.entryTop10HolderPct
+            : undefined,
         });
 
         log(
@@ -1815,6 +1997,8 @@ async function getMarketData(mintAddress: string): Promise<{
   marketCap: number;
   priceChange5m: number;
   priceChange1h: number;
+  buys1h: number;
+  sells1h: number;
 }> {
   try {
     const res = await fetch(
@@ -1823,7 +2007,7 @@ async function getMarketData(mintAddress: string): Promise<{
     );
 
     if (!res.ok) {
-      return { price: 0, volume1h: 0, liquidity: 0, marketCap: 0, priceChange5m: 0, priceChange1h: 0 };
+      return { price: 0, volume1h: 0, liquidity: 0, marketCap: 0, priceChange5m: 0, priceChange1h: 0, buys1h: 0, sells1h: 0 };
     }
 
     const data = await res.json() as any;
@@ -1832,7 +2016,7 @@ async function getMarketData(mintAddress: string): Promise<{
       (left: any, right: any) => Number(right?.liquidity?.usd ?? 0) - Number(left?.liquidity?.usd ?? 0),
     )[0];
     if (!pair) {
-      return { price: 0, volume1h: 0, liquidity: 0, marketCap: 0, priceChange5m: 0, priceChange1h: 0 };
+      return { price: 0, volume1h: 0, liquidity: 0, marketCap: 0, priceChange5m: 0, priceChange1h: 0, buys1h: 0, sells1h: 0 };
     }
 
     return {
@@ -1842,9 +2026,11 @@ async function getMarketData(mintAddress: string): Promise<{
       marketCap: parseFloat(pair.marketCap ?? pair.fdv ?? '0'),
       priceChange5m: parseFloat(pair.priceChange?.m5 ?? '0'),
       priceChange1h: parseFloat(pair.priceChange?.h1 ?? '0'),
+      buys1h: parseInt(pair.txns?.h1?.buys ?? '0', 10),
+      sells1h: parseInt(pair.txns?.h1?.sells ?? '0', 10),
     };
   } catch {
-    return { price: 0, volume1h: 0, liquidity: 0, marketCap: 0, priceChange5m: 0, priceChange1h: 0 };
+    return { price: 0, volume1h: 0, liquidity: 0, marketCap: 0, priceChange5m: 0, priceChange1h: 0, buys1h: 0, sells1h: 0 };
   }
 }
 

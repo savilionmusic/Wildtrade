@@ -310,3 +310,46 @@ export async function getTokenRiskSnapshot(params: {
 
   return snapshot;
 }
+
+/**
+ * Check if a creator/dev wallet still holds tokens of a given mint.
+ * Returns the token balance (UI amount) or null if lookup fails.
+ * Uses rate-limited RPC to avoid burning through Constant-K budget.
+ */
+const devBalanceCache = new Map<string, { balance: number; expiresAt: number }>();
+
+export async function getCreatorTokenBalance(
+  creatorAddress: string,
+  mintAddress: string,
+): Promise<number | null> {
+  const cacheKey = `${creatorAddress}:${mintAddress}`;
+  const cached = devBalanceCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.balance;
+
+  try {
+    const connection = getConnection();
+    await schedule('read');
+    const accounts = await connection.getTokenAccountsByOwner(
+      new PublicKey(creatorAddress),
+      { mint: new PublicKey(mintAddress) },
+      'confirmed',
+    );
+
+    let balance = 0;
+    for (const acc of accounts.value) {
+      const data = acc.account.data;
+      // SPL Token account: amount is at offset 64, 8 bytes LE
+      if (data.length >= 72) {
+        const raw = data.readBigUInt64LE(64);
+        balance += Number(raw);
+      }
+    }
+
+    // Convert raw amount — assume 6 decimals (most SPL tokens) if we don't know
+    const uiBalance = balance / 1e6;
+    devBalanceCache.set(cacheKey, { balance: uiBalance, expiresAt: Date.now() + 60_000 });
+    return uiBalance;
+  } catch {
+    return null;
+  }
+}

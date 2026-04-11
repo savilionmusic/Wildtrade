@@ -28,7 +28,7 @@ global.fetch = async (...args) => {
       if (response.status === 429) {
         console.warn(`[self-healer] 🛑 429 Too Many Requests from ${domain}. Engaging circuit breaker for 30 seconds...`);
         if (domain === 'api.mainnet-beta.solana.com') {
-          console.warn(`[self-healer] ⚠️ CRITICAL: The public Solana RPC (api.mainnet-beta.solana.com) cannot handle bot traffic. You MUST create a free account at helius.dev or quicknode.com and enter your own RPC URL in the app's Settings to stop these errors.`);
+          console.warn(`[self-healer] ⚠️ CRITICAL: The public Solana RPC (api.mainnet-beta.solana.com) cannot handle bot traffic. You MUST configure your Constant-K RPC URL in the app's Settings to stop these errors.`);
         }
         domainCooldowns.set(domain, Date.now() + 30000);
         await new Promise(r => setTimeout(r, 30000));
@@ -129,11 +129,8 @@ function clearPlaceholderEnv(key: string): void {
 }
 
 function validateEnv(): void {
-  clearPlaceholderEnv('SOLANA_RPC_HELIUS');
+  clearPlaceholderEnv('SOLANA_RPC_CONSTANTK');
   clearPlaceholderEnv('SOLANA_RPC_QUICKNODE');
-  clearPlaceholderEnv('HELIUS_API_KEY');
-  clearPlaceholderEnv('HELIUS_WEBHOOK_URL');
-  clearPlaceholderEnv('HELIUS_WEBHOOK_SECRET');
   clearPlaceholderEnv('TWITTER_BEARER_TOKEN');
   clearPlaceholderEnv('TWITTER_KOL_USER_IDS');
   clearPlaceholderEnv('SMART_MONEY_WALLETS');

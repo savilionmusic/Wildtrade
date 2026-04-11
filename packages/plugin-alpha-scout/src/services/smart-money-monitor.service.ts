@@ -60,11 +60,10 @@ function toWsRpcEndpoint(endpoint: string): string {
 
 function selectHttpRpcEndpoint(): string {
   const candidates = [
+    process.env.SOLANA_RPC_CONSTANTK,
     process.env.SOLANA_RPC_HTTP,
     process.env.SOLANA_RPC_URL,
-    process.env.SOLANA_RPC_HELIUS,
     process.env.SOLANA_RPC_QUICKNODE,
-    process.env.SOLANA_RPC_CONSTANTK,
   ];
 
   for (const candidate of candidates) {
@@ -76,9 +75,8 @@ function selectHttpRpcEndpoint(): string {
 
 function selectWsRpcEndpoint(httpEndpoint: string): string {
   const candidates = [
-    process.env.SOLANA_WSS_URL,
     process.env.SOLANA_RPC_CONSTANTK,
-    process.env.SOLANA_RPC_HELIUS,
+    process.env.SOLANA_WSS_URL,
     process.env.SOLANA_RPC_QUICKNODE,
     process.env.SOLANA_RPC_URL,
   ];

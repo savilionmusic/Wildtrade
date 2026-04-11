@@ -45,17 +45,31 @@ export type SmartMoneyBuyCallback = (buy: { wallet: string; tokenAddress: string
 const DEFAULT_HTTP_RPC_ENDPOINT = 'https://api.mainnet-beta.solana.com';
 
 function isHttpRpcEndpoint(endpoint: string | undefined): endpoint is string {
-  return typeof endpoint === 'string' && /^https?:\/\//i.test(endpoint.trim());
+  if (typeof endpoint !== 'string' || !endpoint.trim()) return false;
+  const trimmed = endpoint.trim();
+  // If it starts with http or ws, it's covered. If it lacks a protocol but has a valid domain, we treat it as valid.
+  return /^https?:\/\//i.test(trimmed) || (!/^wss?:\/\//i.test(trimmed) && trimmed.includes('.'));
 }
 
 function isWsRpcEndpoint(endpoint: string | undefined): endpoint is string {
-  return typeof endpoint === 'string' && /^wss?:\/\//i.test(endpoint.trim());
+  if (typeof endpoint !== 'string' || !endpoint.trim()) return false;
+  return /^wss?:\/\//i.test(endpoint.trim());
 }
 
 function toWsRpcEndpoint(endpoint: string): string {
-  if (endpoint.startsWith('https://')) return endpoint.replace('https://', 'wss://');
-  if (endpoint.startsWith('http://')) return endpoint.replace('http://', 'ws://');
-  return endpoint;
+  let trimmed = endpoint.trim();
+  if (!trimmed.includes('://')) trimmed = `https://${trimmed}`;
+  if (trimmed.startsWith('https://')) return trimmed.replace('https://', 'wss://');
+  if (trimmed.startsWith('http://')) return trimmed.replace('http://', 'ws://');
+  return trimmed;
+}
+
+function toHttpRpcEndpoint(endpoint: string): string {
+  let trimmed = endpoint.trim();
+  if (!trimmed.includes('://')) trimmed = `https://${trimmed}`;
+  if (trimmed.startsWith('wss://')) return trimmed.replace('wss://', 'https://');
+  if (trimmed.startsWith('ws://')) return trimmed.replace('ws://', 'http://');
+  return trimmed;
 }
 
 function selectHttpRpcEndpoint(): string {
@@ -67,7 +81,11 @@ function selectHttpRpcEndpoint(): string {
   ];
 
   for (const candidate of candidates) {
-    if (isHttpRpcEndpoint(candidate)) return candidate.trim();
+    if (typeof candidate === 'string') {
+      const trimmed = candidate.trim();
+      if (isHttpRpcEndpoint(trimmed)) return trimmed;
+      if (isWsRpcEndpoint(trimmed)) return toHttpRpcEndpoint(trimmed);
+    }
   }
 
   return DEFAULT_HTTP_RPC_ENDPOINT;

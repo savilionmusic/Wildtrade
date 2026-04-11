@@ -69,6 +69,12 @@ const app = {
     const toast = document.getElementById('save-toast');
     toast.classList.remove('hidden');
     setTimeout(() => toast.classList.add('hidden'), 2000);
+
+    // Auto-restart bot after saving settings to immediately apply changes like RPC URLs
+    if (botRunning) {
+      await app.toggleBot(); // stops the bot
+      setTimeout(() => app.toggleBot(), 2500); // starts it back up
+    }
   },
 
   clearLogs() {

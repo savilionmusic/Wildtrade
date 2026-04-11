@@ -302,7 +302,10 @@ async function processNextToken(): Promise<void> {
 
   try {
     const _rawRpc1 = process.env.SOLANA_RPC_CONSTANTK || process.env.SOLANA_RPC_HELIUS || process.env.SOLANA_RPC_QUICKNODE || process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com';
-    const SOLANA_RPC = _rawRpc1.startsWith('wss://') ? _rawRpc1.replace('wss://', 'https://') : _rawRpc1.startsWith('ws://') ? _rawRpc1.replace('ws://', 'http://') : _rawRpc1;
+    let SOLANA_RPC = _rawRpc1.trim();
+    if (!SOLANA_RPC.includes('://')) SOLANA_RPC = `https://${SOLANA_RPC}`;
+    SOLANA_RPC = SOLANA_RPC.startsWith('wss://') ? SOLANA_RPC.replace('wss://', 'https://') : SOLANA_RPC.startsWith('ws://') ? SOLANA_RPC.replace('ws://', 'http://') : SOLANA_RPC;
+
     const payload = batch.map((t, i) => ({
       jsonrpc: '2.0', id: i + 1,
       method: 'getTokenLargestAccounts',
@@ -497,7 +500,9 @@ async function processToken(
   } else {
     try {
       const _rawRpc2 = process.env.SOLANA_RPC_CONSTANTK || process.env.SOLANA_RPC_HELIUS || process.env.SOLANA_RPC_QUICKNODE || process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com';
-      const SOLANA_RPC = _rawRpc2.startsWith('wss://') ? _rawRpc2.replace('wss://', 'https://') : _rawRpc2.startsWith('ws://') ? _rawRpc2.replace('ws://', 'http://') : _rawRpc2;
+      let SOLANA_RPC = _rawRpc2.trim();
+      if (!SOLANA_RPC.includes('://')) SOLANA_RPC = `https://${SOLANA_RPC}`;
+      SOLANA_RPC = SOLANA_RPC.startsWith('wss://') ? SOLANA_RPC.replace('wss://', 'https://') : SOLANA_RPC.startsWith('ws://') ? SOLANA_RPC.replace('ws://', 'http://') : SOLANA_RPC;
       const holdersRes = await fetch(SOLANA_RPC, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

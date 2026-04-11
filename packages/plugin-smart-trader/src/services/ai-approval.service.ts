@@ -138,6 +138,16 @@ export async function runAiPreTradeConvictionCheck(
   marketCap: number,
   reason: string,
   kolStrategy?: 'flip' | 'conviction',
+  chainRisk?: {
+    top10HolderPct: number;
+    circulatingSupply: number | null;
+    totalSupply: number | null;
+    trustScore: number;
+    riskScore: number;
+    rewardScore: number;
+    riskFlags: string[];
+    strengthSignals: string[];
+  },
 ): Promise<boolean> {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey || budgetSol < 0.1) {
@@ -159,6 +169,17 @@ export async function runAiPreTradeConvictionCheck(
       ? '\n  - KOL Signal: Yes (FLIP strategy — quick momentum play, a KOL tweeted about this)'
       : '';
 
+    const chainRiskSection = chainRisk
+      ? `\n\nON-CHAIN RISK ANALYSIS (from Solana RPC):
+  - Trust Score: ${chainRisk.trustScore}/100
+  - Risk Score: ${chainRisk.riskScore}/100 (lower = safer)
+  - Reward Score: ${chainRisk.rewardScore}/100
+  - Top-10 Holders: ${chainRisk.top10HolderPct.toFixed(1)}% of supply
+  - Circulating Supply: ${chainRisk.circulatingSupply != null ? chainRisk.circulatingSupply.toLocaleString() : 'unknown'}
+  - Risk Flags: ${chainRisk.riskFlags.length > 0 ? chainRisk.riskFlags.join(', ') : 'none'}
+  - Strength Signals: ${chainRisk.strengthSignals.length > 0 ? chainRisk.strengthSignals.join(', ') : 'none'}`
+      : '';
+
     const prompt = `
 You are a Solana memecoin trading bot's final risk check. This bot trades micro-cap tokens ($5k-$500k market cap) on Solana — these are NOT blue-chip investments. Small market caps and high volatility are EXPECTED and NORMAL for this strategy.
 
@@ -168,11 +189,13 @@ Trade request:
   - Size: ${budgetSol} SOL (small position)
   - Bot Score: ${score}/100 (already passed 10+ algorithmic filters)
   - Market Cap: $${marketCap.toLocaleString()}
-  - Context: ${reason}${kolContext}
+  - Context: ${reason}${kolContext}${chainRiskSection}
 
 Your job: ONLY reject if you see OBVIOUS scam indicators like:
   - Token name is a known scam pattern (e.g. "FREE ETH", obvious honeypot names)
   - The reason/context mentions critical red flags the bot missed
+  - On-chain risk score >= 80 combined with multiple critical risk flags
+  - Top-10 holders control > 50% of supply (extreme concentration)
 
 You should APPROVE most trades because the bot's algorithmic pipeline already filtered out rugs, honeypots, low-liquidity tokens, and spam. A score of 50+ means it passed all safety checks.
 

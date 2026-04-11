@@ -39,7 +39,8 @@ import { screenTokenWithDeepSeek } from './deepseek-alpha-screener.service.js';
 import { getRecentSmartBuys } from './smart-money-monitor.service.js';
 import { getRecentWalletBuys } from './wallet-intelligence.service.js';
 import { getTrackedWalletAddresses } from './smart-money-monitor.service.js';
-import { triggerInstantSnipe } from '@wildtrade/plugin-smart-trader';
+import { triggerInstantSnipe, getTokenRiskSnapshot } from '@wildtrade/plugin-smart-trader';
+import type { TokenRiskSnapshot } from '@wildtrade/plugin-smart-trader';
 import { scanForSybilRings } from './sybil-ring-scanner.service.js';
 import { startPumpSwapSniper, stopPumpSwapSniper, onPumpPortalMigration } from './pumpswap-sniper.service.js';
 import type { MigrationSnipeEvent } from './pumpswap-sniper.service.js';
@@ -531,6 +532,34 @@ async function processToken(
     return;
   }
 
+  // ── On-chain risk analysis via SolanaService + chain-risk ──
+  // Uses the Eliza Solana plugin for deep on-chain metrics:
+  //   - Circulating supply, total supply
+  //   - Top 10 holder concentration
+  //   - Trust/risk/reward scores with flags
+  let chainRisk: TokenRiskSnapshot | null = null;
+  try {
+    chainRisk = await getTokenRiskSnapshot({
+      mintAddress: mint,
+      liquidityUsd: market.liquidity,
+      volume1h: market.volume24h / 24, // approximate
+      marketCapUsd: market.marketCap,
+      priceChange5m,
+      priceChange1h,
+    });
+    // Override with more precise on-chain data if available
+    if (chainRisk.holderCountTop20 > 0) holderCount = chainRisk.holderCountTop20;
+    if (chainRisk.topHolderPct > 0) topHolderPct = chainRisk.topHolderPct;
+  } catch {
+    // Chain risk unavailable — proceed with DexScreener data only
+  }
+
+  // Check chain-risk flags for hard rejections
+  if (chainRisk && chainRisk.riskScore >= 80) {
+    logCb('info', `${token.symbol || mint.slice(0, 8)}: CHAIN RISK TOO HIGH (${chainRisk.riskScore}/100). Flags: ${chainRisk.riskFlags.join(', ')}. Skipping.`);
+    return;
+  }
+
   // 4. Score with all signals — enrich with social + whale data
   // Look up KOL/social mentions for this mint
   let kolMentions = 0;
@@ -716,6 +745,17 @@ async function processToken(
         kolMentions,
         score: score.total,
         narrativeTag: aiState?.narrative,
+        // Feed on-chain risk data from SolanaService into DeepSeek
+        chainRisk: chainRisk ? {
+          top10HolderPct: chainRisk.top10HolderPct,
+          circulatingSupply: chainRisk.circulatingSupply,
+          totalSupply: chainRisk.totalSupply,
+          trustScore: chainRisk.trustScore,
+          riskScore: chainRisk.riskScore,
+          rewardScore: chainRisk.rewardScore,
+          riskFlags: chainRisk.riskFlags,
+          strengthSignals: chainRisk.strengthSignals,
+        } : undefined,
       });
       
       if (!screenResult.worthy) {

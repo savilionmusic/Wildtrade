@@ -42,3 +42,7 @@ export {
   manualBuy, manualSell, triggerInstantSnipe, setMaxPositions, setMaxTradesPerDay,
   resetPaperPortfolio, getLessons,
 } from './services/autonomous-trader.service.js';
+
+// Chain Risk Analysis (used by scanner for on-chain risk scoring)
+export { getTokenRiskSnapshot, setSolanaService } from './services/chain-risk.service.js';
+export type { TokenRiskSnapshot } from './services/chain-risk.service.js';

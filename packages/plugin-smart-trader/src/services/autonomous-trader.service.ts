@@ -1119,8 +1119,26 @@ async function openPosition(
 
   // ── PRE-TRADE DEEPSEEK CONVICTION CHECK ──
   if (budgetSol >= 0.1) {
+    // Fetch on-chain risk snapshot for the pre-trade AI gate
+    let chainRiskData: TokenRiskSnapshot | undefined;
+    try {
+      chainRiskData = await getTokenRiskSnapshot(mintAddress) ?? undefined;
+    } catch (err) {
+      log(`Chain-risk fetch failed for ${symbol}: ${String(err)}`);
+    }
+
     const aiApproved = await runAiPreTradeConvictionCheck(
-      mintAddress, symbol, budgetSol, score, marketCap, reason || 'Scanner signal', kolStrategy
+      mintAddress, symbol, budgetSol, score, marketCap, reason || 'Scanner signal', kolStrategy,
+      chainRiskData ? {
+        top10HolderPct: chainRiskData.top10HolderPct,
+        circulatingSupply: chainRiskData.circulatingSupply,
+        totalSupply: chainRiskData.totalSupply,
+        trustScore: chainRiskData.trustScore,
+        riskScore: chainRiskData.riskScore,
+        rewardScore: chainRiskData.rewardScore,
+        riskFlags: chainRiskData.riskFlags,
+        strengthSignals: chainRiskData.strengthSignals,
+      } : undefined,
     );
     if (!aiApproved) {
       log(`[🚫 DEEPSEEK REJECTED] AI Gatekeeper blocked entry into ${symbol}. Cancelling trade.`);

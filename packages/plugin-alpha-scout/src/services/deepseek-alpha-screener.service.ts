@@ -32,6 +32,17 @@ export async function screenTokenWithDeepSeek(params: {
   kolMentions: number;
   score: number;
   narrativeTag?: string;
+  // On-chain risk data from SolanaService / chain-risk
+  chainRisk?: {
+    top10HolderPct: number;
+    circulatingSupply: number | null;
+    totalSupply: number | null;
+    trustScore: number;
+    riskScore: number;
+    rewardScore: number;
+    riskFlags: string[];
+    strengthSignals: string[];
+  };
 }): Promise<AlphaScreenResult> {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) {
@@ -39,6 +50,17 @@ export async function screenTokenWithDeepSeek(params: {
   }
 
   try {
+    const chainRiskSection = params.chainRisk ? `
+ON-CHAIN RISK ANALYSIS (from Solana RPC):
+- Top 10 Holder Concentration: ${params.chainRisk.top10HolderPct.toFixed(1)}%
+- Circulating Supply: ${params.chainRisk.circulatingSupply ? params.chainRisk.circulatingSupply.toLocaleString() : 'unknown'}
+- Total Supply: ${params.chainRisk.totalSupply ? params.chainRisk.totalSupply.toLocaleString() : 'unknown'}
+- Trust Score: ${params.chainRisk.trustScore}/100
+- Risk Score: ${params.chainRisk.riskScore}/100
+- Reward Score: ${params.chainRisk.rewardScore}/100
+- Risk Flags: ${params.chainRisk.riskFlags.length > 0 ? params.chainRisk.riskFlags.join(', ') : 'NONE'}
+- Strength Signals: ${params.chainRisk.strengthSignals.length > 0 ? params.chainRisk.strengthSignals.join(', ') : 'none detected'}` : '';
+
     const prompt = `You are an elite Solana memecoin/microcap alpha analyst. Analyze this token and decide if it's worth trading.
 
 TOKEN DATA:
@@ -56,12 +78,15 @@ TOKEN DATA:
 - KOL Mentions: ${params.kolMentions}
 - Bot Algorithmic Score: ${params.score}/100
 ${params.narrativeTag ? `- Narrative/Meta: ${params.narrativeTag}` : ''}
+${chainRiskSection}
 
 DECISION CRITERIA:
 - Is there real buying pressure or is this a pump-and-dump in progress?
 - Does the volume-to-liquidity ratio suggest organic interest?
 - Is the token age + momentum consistent with genuine early alpha?
 - Are there red flags (too much concentration, no holders, fake volume)?
+${params.chainRisk ? '- Do the on-chain risk flags raise concern? Is the trust score acceptable?' : ''}
+${params.chainRisk ? '- Is the circulating supply distribution healthy (not concentrated)?' : ''}
 - Would a professional crypto trader enter this position?
 
 Respond with JSON: {"worthy": boolean, "confidence": "low"|"medium"|"high", "reasoning": "1 sentence"}`;

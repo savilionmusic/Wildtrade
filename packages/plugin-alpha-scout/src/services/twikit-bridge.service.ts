@@ -185,8 +185,18 @@ async function fetchTwikitBatch(handles: string[], pythonCmd: string, scriptPath
       clearTimeout(progressLog);
       clearTimeout(timeout);
 
+      // Filter out expected twscrape noise from stderr
+      const STDERR_NOISE = [
+        'already exists',
+        'set_cookies',
+        'No account available for queue',
+        'WARNING',
+      ];
       for (const line of stderr.trim().split('\n')) {
-        if (line.trim()) console.log(`[twikit] ${line.trim()}`);
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        if (STDERR_NOISE.some((noise) => trimmed.includes(noise))) continue;
+        console.log(`[twikit] ${trimmed}`);
       }
 
       const raw = stdout.trim();

@@ -9,6 +9,7 @@ interface PositionRow {
   mint: string;
   token_balance: string;
   status: string;
+  is_paper_trade: number | null;
 }
 
 let reconcileInterval: ReturnType<typeof setInterval> | null = null;
@@ -47,13 +48,16 @@ export async function runReconciliation(): Promise<ReconcileDiscrepancy[]> {
   const walletPubkey = new PublicKey(walletAddress);
 
   const positionsResult = await db.query<PositionRow>(
-    `SELECT id, mint, token_balance, status FROM positions
+    `SELECT id, mint, token_balance, status, is_paper_trade FROM positions
      WHERE status IN ('open', 'dca_filling', 'partial_exit')`,
   );
 
   const discrepancies: ReconcileDiscrepancy[] = [];
 
   for (const pos of positionsResult.rows) {
+    // Skip paper trade positions — no real on-chain balance to check
+    if (pos.is_paper_trade) continue;
+
     try {
       const mintPubkey = new PublicKey(pos.mint);
 

@@ -3,7 +3,7 @@ import { selectPrimaryHttpRpcEndpoint } from '@wildtrade/shared';
 
 const HTTP_RPC = selectPrimaryHttpRpcEndpoint();
 
-const connection = new Connection(HTTP_RPC, 'confirmed');
+const connection = new Connection(HTTP_RPC, { commitment: 'confirmed', fetch: global.fetch });
 const RPC_DELAY_MS = 250; // Respect Constant-K 5/sec limit
 const MAX_BUYERS_TO_CHECK = 10; // Keep it low to avoid massive RPC usage per token
 

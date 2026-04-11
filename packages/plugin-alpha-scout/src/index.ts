@@ -72,9 +72,13 @@ export { fetchDexScreenerData } from './providers/market-data.provider.js';
 export {
   startWalletIntelligence, stopWalletIntelligence,
   getTrackedWallets, getWalletCount, getRecentWalletBuys,
-  getWalletIntelStats, recordWalletBuy,
+  getWalletIntelStats, recordWalletBuy, enqueueFirstBuyerScan,
 } from './services/wallet-intelligence.service.js';
 export type { TrackedWallet, WalletBuyEvent } from './services/wallet-intelligence.service.js';
+
+// First Buyer Scanner (on-chain whale wallet discovery)
+export { scanFirstBuyers, clearScanCache, setFirstBuyerScannerLog } from './services/first-buyer-scanner.service.js';
+export type { WhaleWallet, ScanResult } from './services/first-buyer-scanner.service.js';
 
 // KOL Intelligence
 export {

@@ -6,12 +6,15 @@
  *   2. PumpPortal — subscribeAccountTrade for real-time wallet tracking
  *   3. Solana RPC — getSignaturesForAddress for wallet activity
  *   4. RugCheck — insider detection on tokens traded by wallets
+ *   5. First-buyer scanner — on-chain early buyer detection (replaces blocked GMGN)
  *
  * Builds a wallet leaderboard scored by Buy Efficiency Score (BES):
  *   BES = (ROI_per_trade * Win_Rate * Trade_Frequency) / Avg_Buy_Size
  *
  * Rate-limited: one API call per 3 seconds max.
  */
+
+import { scanFirstBuyers, type WhaleWallet } from './first-buyer-scanner.service.js';
 
 // ── Types ──
 
@@ -153,7 +156,14 @@ async function discoverNewWallets(): Promise<void> {
     // 1. Find wallets from DexScreener boosted tokens' top traders
     await discoverFromDexScreener();
   } catch (err) {
-    log(`Discovery error: ${String(err)}`);
+    log(`Discovery error (DexScreener): ${String(err)}`);
+  }
+
+  try {
+    // 2. Find whale wallets from on-chain first-buyer scans
+    await discoverFromFirstBuyers();
+  } catch (err) {
+    log(`Discovery error (first-buyer): ${String(err)}`);
   }
 }
 
@@ -275,6 +285,71 @@ async function discoverFromDexScreener(): Promise<void> {
     }
   } catch (err) {
     log(`DexScreener wallet discovery error: ${String(err)}`);
+  }
+}
+
+// ── On-Chain First-Buyer Discovery ──
+// Queue of token mints to scan for first buyers (fed from scanner-engine when tokens pass)
+const firstBuyerScanQueue: string[] = [];
+const MAX_SCAN_QUEUE = 50;
+
+/**
+ * Feed a qualifying token to the first-buyer scanner queue.
+ * Called by scanner-engine when a token passes initial checks.
+ */
+export function enqueueFirstBuyerScan(tokenMint: string): void {
+  if (firstBuyerScanQueue.includes(tokenMint)) return;
+  firstBuyerScanQueue.push(tokenMint);
+  if (firstBuyerScanQueue.length > MAX_SCAN_QUEUE) firstBuyerScanQueue.shift();
+}
+
+/**
+ * Scan queued tokens' early on-chain history to discover whale wallets.
+ * Runs as part of the 5-minute discovery loop.
+ */
+async function discoverFromFirstBuyers(): Promise<void> {
+  // Process up to 3 tokens per cycle (each scan uses ~250-2100 RPC calls)
+  const tokensToScan = firstBuyerScanQueue.splice(0, 3);
+  if (tokensToScan.length === 0) return;
+
+  let discovered = 0;
+
+  for (const mint of tokensToScan) {
+    try {
+      const result = await scanFirstBuyers(mint);
+      if (!result || result.whales.length === 0) continue;
+
+      for (const whale of result.whales) {
+        // Only add wallets with a decent score and not already tracked
+        if (whale.score < 55 || walletDb.has(whale.address)) continue;
+
+        // Map whale score to BES (higher whale score = higher BES)
+        const bes = Math.min(85, Math.round(whale.score * 0.8 + 10));
+
+        walletDb.set(whale.address, {
+          address: whale.address,
+          alias: `rpc_whale_${whale.address.slice(0, 6)}`,
+          source: 'pumpfun' as const, // Closest existing source type for on-chain discovery
+          bes,
+          winRate: 0.65, // Assume good — they found the token early
+          totalTrades: whale.buyCount,
+          profitableTrades: 0,
+          avgBuySizeSol: whale.netBuySol / Math.max(1, whale.buyCount),
+          lastSeenAt: Date.now(),
+          recentTokens: [mint],
+          addedAt: Date.now(),
+        });
+        discovered++;
+      }
+    } catch (err) {
+      log(`First-buyer scan failed for ${mint.slice(0, 8)}: ${String(err)}`);
+    }
+
+    await sleep(2000); // Pause between token scans
+  }
+
+  if (discovered > 0) {
+    log(`Discovered ${discovered} whale wallets from on-chain first-buyer scans. Total: ${walletDb.size}`);
   }
 }
 

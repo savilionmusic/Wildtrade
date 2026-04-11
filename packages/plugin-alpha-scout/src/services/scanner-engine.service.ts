@@ -37,7 +37,7 @@ import { isGoldKol } from './kol-scraper.service.js';
 import { analyzeKolTweetQuality } from './kol-quality-grader.service.js';
 import { screenTokenWithDeepSeek } from './deepseek-alpha-screener.service.js';
 import { getRecentSmartBuys } from './smart-money-monitor.service.js';
-import { getRecentWalletBuys } from './wallet-intelligence.service.js';
+import { getRecentWalletBuys, enqueueFirstBuyerScan } from './wallet-intelligence.service.js';
 import { getTrackedWalletAddresses } from './smart-money-monitor.service.js';
 import { triggerInstantSnipe, getTokenRiskSnapshot } from '@wildtrade/plugin-smart-trader';
 import type { TokenRiskSnapshot } from '@wildtrade/plugin-smart-trader';
@@ -809,6 +809,9 @@ async function processToken(
   } catch {
     // DB write failed — not fatal
   }
+
+  // 6b. Queue for first-buyer whale discovery — scan on-chain early buyers
+  enqueueFirstBuyerScan(mint);
 
   // 7. Forward to trader if score qualifies
   if (score.total >= SCORE_THRESHOLDS.MIN_TO_TRADE && rugcheckPassed && finderRuntime) {

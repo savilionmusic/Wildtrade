@@ -80,6 +80,10 @@ export type { TrackedWallet, WalletBuyEvent } from './services/wallet-intelligen
 export { scanFirstBuyers, clearScanCache, setFirstBuyerScannerLog } from './services/first-buyer-scanner.service.js';
 export type { WhaleWallet, ScanResult } from './services/first-buyer-scanner.service.js';
 
+// Wallet PnL Profiler (Dragon-style trade history analysis)
+export { profileWalletPnl, getCachedProfile, clearProfileCache, setWalletPnlProfilerLog } from './services/wallet-pnl-profiler.service.js';
+export type { WalletPnlProfile, TokenTradeSummary } from './services/wallet-pnl-profiler.service.js';
+
 // KOL Intelligence
 export {
   startKolIntelligence, stopKolIntelligence,

@@ -15,6 +15,14 @@
  */
 
 import { scanFirstBuyers, type WhaleWallet } from './first-buyer-scanner.service.js';
+import { profileWalletPnl, type WalletPnlProfile } from './wallet-pnl-profiler.service.js';
+
+// ── Config ──
+const PNL_VERIFY_MIN_WIN_RATE = 0.35;    // Minimum 35% win rate to track
+const PNL_VERIFY_MIN_BES = 30;            // Minimum profiler BES to track
+const RESCORE_INTERVAL_MS = 1_800_000;    // Re-profile tracked wallets every 30 min
+const RESCORE_BATCH_SIZE = 5;             // Max wallets to re-profile per cycle
+const RESCORE_MIN_BES_TO_KEEP = 20;       // Drop wallets whose BES falls below this
 
 // ── Types ──
 
@@ -46,6 +54,7 @@ const walletDb = new Map<string, TrackedWallet>();
 const recentWalletBuys: WalletBuyEvent[] = [];
 const MAX_RECENT_BUYS = 200;
 let refreshTimer: ReturnType<typeof setInterval> | null = null;
+let rescoreTimer: ReturnType<typeof setInterval> | null = null;
 let running = false;
 
 type WalletLogCb = (msg: string) => void;
@@ -92,13 +101,18 @@ export function startWalletIntelligence(onLog?: WalletLogCb): void {
   discoverNewWallets();
   refreshTimer = setInterval(discoverNewWallets, 300_000);
 
+  // Start BES re-scoring loop (every 30 min)
+  rescoreTimer = setInterval(rescoreTrackedWallets, RESCORE_INTERVAL_MS);
+
   log(`Wallet intelligence active — tracking ${walletDb.size} wallets`);
 }
 
 export function stopWalletIntelligence(): void {
   running = false;
   if (refreshTimer) clearInterval(refreshTimer);
+  if (rescoreTimer) clearInterval(rescoreTimer);
   refreshTimer = null;
+  rescoreTimer = null;
   log('Wallet intelligence stopped');
 }
 
@@ -233,15 +247,22 @@ async function discoverFromDexScreener(): Promise<void> {
             for (const trader of top) {
               const addr = trader.walletAddress || trader.wallet;
               if (addr && !walletDb.has(addr)) {
+                // ── PnL verify before tracking ──
+                const profile = await profileWalletPnl(addr);
+                if (!profile || profile.winRate < PNL_VERIFY_MIN_WIN_RATE || profile.bes < PNL_VERIFY_MIN_BES) {
+                  log(`Skipping ${addr.slice(0, 8)} — PnL verify failed (winRate=${profile?.winRate?.toFixed(2) ?? '?'}, BES=${profile?.bes ?? '?'})`);
+                  continue;
+                }
+
                 walletDb.set(addr, {
                   address: addr,
                   alias: `dex_memecoin_trader_${discovered}`,
                   source: 'dexscreener',
-                  bes: 60, // Higher BES — these are confirmed memecoin traders
-                  winRate: 0.6,
-                  totalTrades: 0,
-                  profitableTrades: 0,
-                  avgBuySizeSol: 0,
+                  bes: profile.bes,
+                  winRate: profile.winRate,
+                  totalTrades: profile.totalTrades,
+                  profitableTrades: profile.profitableTrades,
+                  avgBuySizeSol: profile.avgBuySizeSol,
                   lastSeenAt: Date.now(),
                   recentTokens: [boost.tokenAddress!],
                   addedAt: Date.now(),
@@ -259,15 +280,21 @@ async function discoverFromDexScreener(): Promise<void> {
         for (const maker of (Array.isArray(makers) ? makers : []).slice(0, 5)) {
           const addr = typeof maker === 'string' ? maker : maker?.address;
           if (addr && !walletDb.has(addr)) {
+            // ── PnL verify before tracking ──
+            const profile = await profileWalletPnl(addr);
+            if (!profile || profile.winRate < PNL_VERIFY_MIN_WIN_RATE || profile.bes < PNL_VERIFY_MIN_BES) {
+              continue;
+            }
+
             walletDb.set(addr, {
               address: addr,
               alias: `dex_maker_${discovered}`,
               source: 'dexscreener',
-              bes: 45,
-              winRate: 0.5,
-              totalTrades: 0,
-              profitableTrades: 0,
-              avgBuySizeSol: 0,
+              bes: profile.bes,
+              winRate: profile.winRate,
+              totalTrades: profile.totalTrades,
+              profitableTrades: profile.profitableTrades,
+              avgBuySizeSol: profile.avgBuySizeSol,
               lastSeenAt: Date.now(),
               recentTokens: [boost.tokenAddress!],
               addedAt: Date.now(),
@@ -323,18 +350,22 @@ async function discoverFromFirstBuyers(): Promise<void> {
         // Only add wallets with a decent score and not already tracked
         if (whale.score < 55 || walletDb.has(whale.address)) continue;
 
-        // Map whale score to BES (higher whale score = higher BES)
-        const bes = Math.min(85, Math.round(whale.score * 0.8 + 10));
+        // ── PnL verify: check actual profitability across trade history ──
+        const profile = await profileWalletPnl(whale.address);
+        if (!profile || profile.winRate < PNL_VERIFY_MIN_WIN_RATE || profile.bes < PNL_VERIFY_MIN_BES) {
+          log(`Skipping whale ${whale.address.slice(0, 8)} — PnL verify failed (winRate=${profile?.winRate?.toFixed(2) ?? '?'}, BES=${profile?.bes ?? '?'})`);
+          continue;
+        }
 
         walletDb.set(whale.address, {
           address: whale.address,
           alias: `rpc_whale_${whale.address.slice(0, 6)}`,
-          source: 'pumpfun' as const, // Closest existing source type for on-chain discovery
-          bes,
-          winRate: 0.65, // Assume good — they found the token early
-          totalTrades: whale.buyCount,
-          profitableTrades: 0,
-          avgBuySizeSol: whale.netBuySol / Math.max(1, whale.buyCount),
+          source: 'pumpfun' as const,
+          bes: profile.bes,
+          winRate: profile.winRate,
+          totalTrades: profile.totalTrades,
+          profitableTrades: profile.profitableTrades,
+          avgBuySizeSol: profile.avgBuySizeSol,
           lastSeenAt: Date.now(),
           recentTokens: [mint],
           addedAt: Date.now(),
@@ -350,6 +381,56 @@ async function discoverFromFirstBuyers(): Promise<void> {
 
   if (discovered > 0) {
     log(`Discovered ${discovered} whale wallets from on-chain first-buyer scans. Total: ${walletDb.size}`);
+  }
+}
+
+// ── Periodic BES Re-Scoring ──
+
+/**
+ * Re-profile a batch of tracked wallets to update their BES/winRate
+ * with fresh on-chain data. Drops wallets that are no longer profitable.
+ */
+async function rescoreTrackedWallets(): Promise<void> {
+  if (!running) return;
+
+  const wallets = Array.from(walletDb.values())
+    .sort((a, b) => a.bes - b.bes) // Re-score lowest BES first (most likely to drop)
+    .slice(0, RESCORE_BATCH_SIZE);
+
+  if (wallets.length === 0) return;
+
+  log(`Re-scoring ${wallets.length} tracked wallets...`);
+  let updated = 0;
+  let dropped = 0;
+
+  for (const wallet of wallets) {
+    try {
+      const profile = await profileWalletPnl(wallet.address);
+      if (!profile) continue;
+
+      if (profile.bes < RESCORE_MIN_BES_TO_KEEP) {
+        walletDb.delete(wallet.address);
+        dropped++;
+        log(`Dropped ${wallet.address.slice(0, 8)} (${wallet.alias}) — BES fell to ${profile.bes}`);
+        continue;
+      }
+
+      // Update with fresh data
+      wallet.bes = profile.bes;
+      wallet.winRate = profile.winRate;
+      wallet.totalTrades = profile.totalTrades;
+      wallet.profitableTrades = profile.profitableTrades;
+      wallet.avgBuySizeSol = profile.avgBuySizeSol;
+      updated++;
+
+      await sleep(2000); // Pause between wallet profiles
+    } catch (err) {
+      log(`Rescore failed for ${wallet.address.slice(0, 8)}: ${String(err)}`);
+    }
+  }
+
+  if (updated > 0 || dropped > 0) {
+    log(`Rescore complete: ${updated} updated, ${dropped} dropped. Active: ${walletDb.size}`);
   }
 }
 

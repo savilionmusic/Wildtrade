@@ -181,12 +181,24 @@ global.fetch = async (...args: Parameters<typeof fetch>): Promise<Response> => {
 
         const response = await originalFetch(...args);
         if (response.status === 429) {
-          console.warn(`[self-healer] 🛑 429 Too Many Requests from ${domain}. Engaging circuit breaker for 30 seconds...`);
+          const cooldownMs = 60_000;
+          console.warn(`[self-healer] 🛑 429 Too Many Requests from ${domain}. Engaging circuit breaker for ${cooldownMs / 1000} seconds...`);
           if (domain === 'api.mainnet-beta.solana.com') {
             console.warn(`[self-healer] ⚠️ CRITICAL: The public Solana RPC (api.mainnet-beta.solana.com) cannot handle bot traffic. You MUST configure your Constant-K RPC URL in the app's Settings to stop these errors.`);
           }
-          domainCooldowns.set(domain, Date.now() + 30000);
-          await sleep(30000);
+          domainCooldowns.set(domain, Date.now() + cooldownMs);
+          // Reset throttle pacing so queued requests don't burst after cooldown
+          if (isConstantKDomain(domain)) {
+            const state = domainThrottleStates.get(domain);
+            if (state) {
+              const resumeAt = Date.now() + cooldownMs;
+              state.nextGlobalAvailableAt = resumeAt;
+              for (const key of state.nextMethodAvailableAt.keys()) {
+                state.nextMethodAvailableAt.set(key, resumeAt);
+              }
+            }
+          }
+          await sleep(cooldownMs);
           attempt++;
           continue;
         }

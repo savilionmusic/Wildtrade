@@ -3,7 +3,14 @@ import { selectPrimaryHttpRpcEndpoint } from '@wildtrade/shared';
 
 const HTTP_RPC = selectPrimaryHttpRpcEndpoint();
 
-const connection = new Connection(HTTP_RPC, { commitment: 'confirmed', fetch: global.fetch });
+// Lazy-init so the Connection captures the patched global.fetch (interceptor runs after imports)
+let _connection: Connection | null = null;
+function getConnection(): Connection {
+  if (!_connection) {
+    _connection = new Connection(HTTP_RPC, { commitment: 'confirmed', fetch: global.fetch });
+  }
+  return _connection;
+}
 const RPC_DELAY_MS = 250; // Respect Constant-K 5/sec limit
 const MAX_BUYERS_TO_CHECK = 10; // Keep it low to avoid massive RPC usage per token
 
@@ -29,7 +36,7 @@ export async function scanForSybilRings(mint: string, logCb: (msg: string) => vo
     // 1. Get earliest signatures for the token mint
     const mintPubkey = new PublicKey(mint);
     await sleep(RPC_DELAY_MS);
-    const signatures = await connection.getSignaturesForAddress(mintPubkey, { limit: 50 });
+    const signatures = await getConnection().getSignaturesForAddress(mintPubkey, { limit: 50 });
     
     if (signatures.length === 0) return null;
 
@@ -44,7 +51,7 @@ export async function scanForSybilRings(mint: string, logCb: (msg: string) => vo
       if (earlyBuyers.size >= MAX_BUYERS_TO_CHECK) break;
       
       await sleep(RPC_DELAY_MS);
-      const tx = await connection.getTransaction(sigInfo.signature, {
+      const tx = await getConnection().getTransaction(sigInfo.signature, {
         maxSupportedTransactionVersion: 0,
         commitment: 'confirmed'
       });
@@ -73,13 +80,13 @@ export async function scanForSybilRings(mint: string, logCb: (msg: string) => vo
         try {
           const buyerPubkey = new PublicKey(buyer);
           await sleep(RPC_DELAY_MS);
-          const buyerSigs = await connection.getSignaturesForAddress(buyerPubkey, { limit: 10 }); // Get earliest
+          const buyerSigs = await getConnection().getSignaturesForAddress(buyerPubkey, { limit: 10 }); // Get earliest
           
           if (buyerSigs.length > 0) {
             // Get the earliest signature
             const oldestSig = buyerSigs[buyerSigs.length - 1];
             await sleep(RPC_DELAY_MS);
-            const oldestTx = await connection.getTransaction(oldestSig.signature, {
+            const oldestTx = await getConnection().getTransaction(oldestSig.signature, {
               maxSupportedTransactionVersion: 0,
               commitment: 'confirmed'
             });

@@ -705,7 +705,7 @@ export async function triggerInstantSnipe(mintAddress: string, symbol: string): 
   await openPosition(`snipe-${Date.now()}`, mintAddress, symbol || mintAddress.slice(0, 8), 'PumpSwap Migration', positionSize, 100, 0, price, 'Snipe: Raydium Migration');
   
   // Explicitly log the opening so the UI and portfolio track it instantly
-  log(`Position fully opened via snipe: ${symbol} at $${price.toFixed(6)}`);
+  log(`Position fully opened via snipe: ${symbol || mintAddress.slice(0, 8)} at $${price.toFixed(6)}`);
   } catch (err) {
     log(`🚀 SNIPE ERROR: ${String(err)}`);
   } finally {

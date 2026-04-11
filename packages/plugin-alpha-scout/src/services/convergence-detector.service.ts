@@ -16,8 +16,8 @@ const SOLANA_RPC = selectPrimaryHttpRpcEndpoint();
 const TOKEN_PROGRAM = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
 const SCAN_INTERVAL_MS = 300_000; // 5 min
-const RPC_DELAY_MS = 250;         // 250ms between RPC calls (Constant-K Operator: 5/s for heavy methods)
-const FUNDER_TRACE_DELAY_MS = 250; // 250ms between getTransaction calls (heavy: 5/s limit)
+const RPC_DELAY_MS = 500;          // Keep average wallet scan traffic well under provider heavy-method limits
+const FUNDER_TRACE_DELAY_MS = 750; // getTransaction is expensive; trace funders more conservatively
 
 // Known tokens to skip — stablecoins, wrapped SOL, and major tokens that aren't alpha
 const SKIP_MINTS = new Set([
@@ -396,7 +396,7 @@ async function getWalletFunder(walletAddress: string): Promise<string | null> {
       body: JSON.stringify({
         jsonrpc: '2.0', id: 1,
         method: 'getSignaturesForAddress',
-        params: [walletAddress, { limit: 20 }],
+        params: [walletAddress, { limit: 10 }],
       }),
     });
 
@@ -409,7 +409,7 @@ async function getWalletFunder(walletAddress: string): Promise<string | null> {
     const sorted = sigs.sort((a, b) => (a.blockTime ?? 0) - (b.blockTime ?? 0));
 
     // Check the earliest few transactions for incoming SOL transfers
-    for (const sig of sorted.slice(0, 5)) {
+    for (const sig of sorted.slice(0, 3)) {
       await sleep(FUNDER_TRACE_DELAY_MS);
       const txRes = await fetch(SOLANA_RPC, {
         method: 'POST',

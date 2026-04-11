@@ -170,7 +170,7 @@ async function discoverNewWallets(): Promise<void> {
 
 async function discoverFromDexScreener(): Promise<void> {
   try {
-    // Get latest boosted tokens as these have active trading
+    // 1. Get latest boosted tokens as these have active trading
     const res = await fetch('https://api.dexscreener.com/token-boosts/top/v1', {
       headers: { 'Accept': 'application/json' },
     });
@@ -183,38 +183,78 @@ async function discoverFromDexScreener(): Promise<void> {
       totalAmount?: number;
     }>;
 
-    // Take top 3 Solana boosted tokens
+    // Take top 5 Solana boosted tokens
     const solanaBoosts = boosts
       .filter(b => b.chainId === 'solana' && b.tokenAddress)
-      .slice(0, 3);
+      .slice(0, 5);
 
     let discovered = 0;
 
     for (const boost of solanaBoosts) {
-      // Rate limit: wait 3s between calls
-      await sleep(3000);
+      await sleep(3000); // Rate limit: 3s between calls
 
       try {
-        // Get pair data to find top trades
+        // Use DexScreener top traders endpoint (returns wallets that traded this token)
+        const tradersRes = await fetch(
+          `https://api.dexscreener.com/tokens/v1/solana/${boost.tokenAddress}/top-traders`,
+          { headers: { 'Accept': 'application/json' } },
+        );
+
+        if (tradersRes.ok) {
+          const traders = await tradersRes.json() as Array<{
+            walletAddress?: string; wallet?: string;
+            pnlUsd?: number; volumeUsd?: number;
+          }>;
+
+          if (Array.isArray(traders)) {
+            // Take top 5 profitable traders
+            const top = traders
+              .filter(t => (t.walletAddress || t.wallet) && (t.pnlUsd ?? 0) > 0)
+              .slice(0, 5);
+
+            for (const trader of top) {
+              const addr = trader.walletAddress || trader.wallet;
+              if (addr && !walletDb.has(addr)) {
+                walletDb.set(addr, {
+                  address: addr,
+                  alias: `dex_top_trader_${discovered}`,
+                  source: 'dexscreener',
+                  bes: 55,
+                  winRate: 0.6,
+                  totalTrades: 0,
+                  profitableTrades: 0,
+                  avgBuySizeSol: 0,
+                  lastSeenAt: Date.now(),
+                  recentTokens: [boost.tokenAddress!],
+                  addedAt: Date.now(),
+                });
+                discovered++;
+              }
+            }
+          }
+          continue;
+        }
+
+        // Fallback: get pair data and extract whatever wallet info is available
+        await sleep(3000);
         const pairRes = await fetch(
           `https://api.dexscreener.com/latest/dex/tokens/${boost.tokenAddress}`,
           { headers: { 'Accept': 'application/json' } },
         );
 
         if (!pairRes.ok) continue;
-
         const pairData = await pairRes.json() as { pairs?: Array<Record<string, unknown>> };
         const pair = pairData.pairs?.[0];
         if (!pair) continue;
 
-        // Extract maker addresses from the pair info if available
-        const makers = (pair as any).profile?.makers ?? [];
-        for (const maker of makers.slice(0, 5)) {
+        // Try to extract maker addresses from pair info
+        const makers = (pair as any).profile?.makers ?? (pair as any).makers ?? [];
+        for (const maker of (Array.isArray(makers) ? makers : []).slice(0, 5)) {
           const addr = typeof maker === 'string' ? maker : maker?.address;
           if (addr && !walletDb.has(addr)) {
             walletDb.set(addr, {
               address: addr,
-              alias: `dex_trader_${discovered}`,
+              alias: `dex_maker_${discovered}`,
               source: 'dexscreener',
               bes: 45,
               winRate: 0.5,
@@ -234,7 +274,7 @@ async function discoverFromDexScreener(): Promise<void> {
     }
 
     if (discovered > 0) {
-      log(`Discovered ${discovered} new wallets from DexScreener. Total: ${walletDb.size}`);
+      log(`Discovered ${discovered} new wallets from DexScreener top traders. Total: ${walletDb.size}`);
     }
   } catch (err) {
     log(`DexScreener wallet discovery error: ${String(err)}`);

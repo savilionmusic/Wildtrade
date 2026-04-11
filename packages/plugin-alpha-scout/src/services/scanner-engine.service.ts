@@ -54,6 +54,53 @@ const TOKEN_PROCESS_DELAY_MS = 3_000;   // 3 sec between processing tokens (rate
 const MAX_QUEUE_SIZE = 50;              // Don't queue too many tokens
 const RUGCHECK_API_BASE = process.env.RUGCHECK_API_BASE ?? 'https://api.rugcheck.xyz/v1';
 
+// ── RugCheck Rate Limiter (serialize to max 1 req/2s) ──
+const rugcheckCache = new Map<string, { score: number; passed: boolean; ts: number }>();
+const RUGCHECK_CACHE_TTL = 300_000; // 5 min
+let rugcheckBusy = false;
+const rugcheckQueue: Array<{ mint: string; resolve: (v: { score: number; passed: boolean }) => void }> = [];
+
+async function queuedRugcheck(mint: string): Promise<{ score: number; passed: boolean }> {
+  const cached = rugcheckCache.get(mint);
+  if (cached && Date.now() - cached.ts < RUGCHECK_CACHE_TTL) return cached;
+
+  return new Promise(resolve => {
+    rugcheckQueue.push({ mint, resolve });
+    drainRugcheckQueue();
+  });
+}
+
+async function drainRugcheckQueue(): Promise<void> {
+  if (rugcheckBusy || rugcheckQueue.length === 0) return;
+  rugcheckBusy = true;
+  const item = rugcheckQueue.shift()!;
+  try {
+    const res = await fetch(`${RUGCHECK_API_BASE}/tokens/${item.mint}/report`, {
+      signal: AbortSignal.timeout(8_000),
+    });
+    if (res.ok) {
+      const data = await res.json() as { score?: number; risks?: Array<{ name: string; level: string }> };
+      const score = data.score ?? 50;
+      const risks = data.risks ?? [];
+      const critical = risks.filter(r => r.level === 'critical');
+      const honeypot = risks.some(r => r.name?.toLowerCase().includes('honeypot') || r.name?.toLowerCase().includes('mintable'));
+      const passed = !honeypot && critical.length === 0 && score >= 30;
+      const result = { score, passed, ts: Date.now() };
+      rugcheckCache.set(item.mint, result);
+      item.resolve(result);
+    } else {
+      item.resolve({ score: 50, passed: true }); // fail-open
+    }
+  } catch {
+    item.resolve({ score: 50, passed: true }); // fail-open on timeout
+  }
+  // Wait 2s before next call to avoid 429
+  setTimeout(() => {
+    rugcheckBusy = false;
+    drainRugcheckQueue();
+  }, 2000);
+}
+
 // ── State ──
 let finderRuntime: AgentRuntime | null = null;
 let scannerRunning = false;
@@ -290,10 +337,13 @@ async function processNextToken(): Promise<void> {
       }
     }
 
-    // Process all tokens in the batch concurrently
-    await Promise.all(batch.map(t => processToken(t, prefetchedHolders.get(t.mint)).catch(err => {
-      logCb('error', `Error processing ${t.symbol || t.mint.slice(0, 8)}: ${String(err)}`);
-    })));
+    // Process tokens with limited concurrency (5 at a time) to avoid API floods
+    for (let i = 0; i < batch.length; i += 5) {
+      const chunk = batch.slice(i, i + 5);
+      await Promise.all(chunk.map(t => processToken(t, prefetchedHolders.get(t.mint)).catch(err => {
+        logCb('error', `Error processing ${t.symbol || t.mint.slice(0, 8)}: ${String(err)}`);
+      })));
+    }
   } catch (err) {
     logCb('error', `Error processing token batch: ${String(err)}`);
   }
@@ -347,40 +397,12 @@ async function processToken(
     if (creatorDenied) return;
   }
 
-  // 2. Quick rugcheck — fail-open on API errors, only block on confirmed risks
-  let rugcheckPassed = true; // Fail-open: assume safe unless we confirm danger
-  let rugcheckScore = 50;
-  try {
-    const rugRes = await fetch(`${RUGCHECK_API_BASE}/tokens/${mint}/report`, {
-      signal: AbortSignal.timeout(8_000),
-    });
-    if (rugRes.ok) {
-      const rugData = await rugRes.json() as {
-        score?: number;
-        risks?: Array<{ name: string; level: string }>;
-      };
-      rugcheckScore = rugData.score ?? 50;
-      const risks = rugData.risks ?? [];
-      const criticalRisks = risks.filter(r => r.level === 'critical');
-      const highRisks = risks.filter(r => r.level === 'high');
-      const hasCriticalFlag = risks.some(r =>
-        r.name?.toLowerCase().includes('honeypot') || r.name?.toLowerCase().includes('mintable')
-      );
-      // Only fail on critical flags or score < 30; score 30-50 passes with warning
-      rugcheckPassed = !hasCriticalFlag && criticalRisks.length === 0 && rugcheckScore >= 30;
-      if (!rugcheckPassed) {
-        logCb('info', `${token.symbol || mint.slice(0, 8)}: RugCheck BLOCKED (score=${rugcheckScore}, critical=${criticalRisks.length}). Skipping.`);
-      } else if (rugcheckScore < 50 || highRisks.length > 0) {
-        logCb('info', `${token.symbol || mint.slice(0, 8)}: RugCheck CAUTION (score=${rugcheckScore}, highRisks=${highRisks.length}) — proceeding with reduced confidence`);
-      }
-    }
-    // If API returns non-OK (rate limit, etc), rugcheckPassed stays true (fail-open)
-  } catch {
-    // Rugcheck API unreachable — proceed (fail-open), don't block tokens
-    logCb('info', `${token.symbol || mint.slice(0, 8)}: RugCheck API timeout — proceeding without safety check`);
-  }
-
+  // 2. Quick rugcheck — rate-limited queue (max 1 req / 2s), fail-open
+  const rugResult = await queuedRugcheck(mint);
+  const rugcheckPassed = rugResult.passed;
+  const rugcheckScore = rugResult.score;
   if (!rugcheckPassed) {
+    logCb('info', `${token.symbol || mint.slice(0, 8)}: RugCheck BLOCKED (score=${rugcheckScore}). Skipping.`);
     return;
   }
 

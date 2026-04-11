@@ -64,6 +64,9 @@ const CONFIG = {
   // Secondary ingest path: backfill recent buys from GMGN every 2 minutes
   GMGN_BACKFILL_INTERVAL_MS: 120_000,
   GMGN_BACKFILL_WALLETS: 8,
+  // Tertiary ingest path: RPC getSignaturesForAddress polling (works when GMGN is blocked)
+  RPC_POLL_INTERVAL_MS: 90_000,
+  RPC_POLL_WALLETS: 6,
   // RPC Endpoint
   get RPC_ENDPOINT() {
     const raw = process.env.SOLANA_RPC_CONSTANTK || process.env.SOLANA_RPC_HELIUS || process.env.SOLANA_RPC_QUICKNODE || process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com';
@@ -108,6 +111,7 @@ let onSignalCallback: SmartMoneyCallback | null = null;
 let onBuyCallback: SmartMoneyBuyCallback | null = null;
 let walletRefreshTimer: ReturnType<typeof setInterval> | null = null;
 let gmgnBackfillTimer: ReturnType<typeof setInterval> | null = null;
+let rpcPollTimer: ReturnType<typeof setInterval> | null = null;
 let isRunning = false;
 let wsRotationOffset = 0;
 
@@ -223,6 +227,16 @@ export async function startSmartMoneyMonitor(
     });
   }, CONFIG.GMGN_BACKFILL_INTERVAL_MS);
 
+  // Tertiary ingest path — poll RPC directly (works even when GMGN is blocked by Cloudflare)
+  pollRecentTxFromRpc().catch(err => {
+    console.log(`[smart-money] RPC poll startup error: ${String(err)}`);
+  });
+  rpcPollTimer = setInterval(() => {
+    pollRecentTxFromRpc().catch(err => {
+      console.log(`[smart-money] RPC poll error: ${String(err)}`);
+    });
+  }, CONFIG.RPC_POLL_INTERVAL_MS);
+
   walletRefreshTimer = setInterval(() => {
     refreshWalletSubscriptions().catch(err => {
       console.log(`[smart-money] Wallet refresh error: ${String(err)}`);
@@ -240,6 +254,8 @@ export function stopSmartMoneyMonitor(): void {
   walletRefreshTimer = null;
   if (gmgnBackfillTimer) clearInterval(gmgnBackfillTimer);
   gmgnBackfillTimer = null;
+  if (rpcPollTimer) clearInterval(rpcPollTimer);
+  rpcPollTimer = null;
   isRunning = false;
   onSignalCallback = null;
 
@@ -302,6 +318,143 @@ async function backfillRecentBuysFromGmgn(): Promise<void> {
 
   if (added > 0) {
     console.log(`[smart-money] GMGN backfill added ${added} recent buys`);
+    detectClusters();
+  }
+}
+
+/**
+ * Tertiary ingest: poll RPC getSignaturesForAddress → getParsedTransaction
+ * for tracked wallets. Works even when GMGN is Cloudflare-blocked.
+ * Respects Constant-K heavy method limits (250ms between calls).
+ */
+const rpcPollLastSig = new Map<string, string>();
+
+async function pollRecentTxFromRpc(): Promise<void> {
+  if (!isRunning || !connection || trackedWallets.length === 0) return;
+
+  // Pick top N wallets by quality, rotate offset to cover different wallets over time
+  const sorted = [...trackedWallets].sort((a, b) => b.qualityScore - a.qualityScore);
+  const wallets = sorted.slice(0, CONFIG.RPC_POLL_WALLETS);
+
+  let added = 0;
+  const cutoff = Date.now() - CONFIG.CLUSTER_WINDOW_MS;
+
+  for (const wallet of wallets) {
+    try {
+      // Rate limit: 250ms between heavy RPC calls
+      await new Promise(r => setTimeout(r, 250));
+
+      const opts: any = { limit: 5, commitment: 'confirmed' };
+      const lastSig = rpcPollLastSig.get(wallet.address);
+      if (lastSig) opts.until = lastSig;
+
+      const sigs = await connection!.getSignaturesForAddress(
+        new PublicKey(wallet.address),
+        opts,
+      );
+
+      if (!sigs || sigs.length === 0) continue;
+
+      // Remember newest signature for next poll
+      rpcPollLastSig.set(wallet.address, sigs[0].signature);
+
+      for (const sig of sigs) {
+        if (sig.err) continue; // skip failed txs
+        if (processedSignatureSet.has(sig.signature)) continue;
+
+        // Rate limit between parsed tx calls
+        await new Promise(r => setTimeout(r, 300));
+
+        const tx = await enqueueGetParsedTransaction(sig.signature);
+        if (!tx || !tx.meta) continue;
+
+        // Find wallet's account index (flexible key format)
+        const accountIndex = tx.transaction.message.accountKeys.findIndex((k: any) => {
+          const raw = k?.pubkey ?? k;
+          if (!raw) return false;
+          if (typeof raw === 'string') return raw === wallet.address;
+          if (typeof raw?.toBase58 === 'function') return raw.toBase58() === wallet.address;
+          return String(raw) === wallet.address;
+        });
+        if (accountIndex === -1) continue;
+
+        const preSol = tx.meta.preBalances[accountIndex];
+        const postSol = tx.meta.postBalances[accountIndex];
+        const solSpent = (preSol - postSol) / 1e9;
+
+        // Find token increase
+        const postTokenBalances = tx.meta.postTokenBalances || [];
+        const preTokenBalances = tx.meta.preTokenBalances || [];
+        let boughtMint = '';
+        let maxInc = 0;
+
+        for (const post of postTokenBalances) {
+          const postOwner = String((post as any).owner ?? '');
+          if (postOwner === wallet.address) {
+            const pre = preTokenBalances.find(
+              (p: any) => p.accountIndex === post.accountIndex && p.mint === post.mint
+            );
+            const preAmt = pre ? Number(pre.uiTokenAmount.uiAmount || 0) : 0;
+            const postAmt = Number(post.uiTokenAmount.uiAmount || 0);
+            const inc = postAmt - preAmt;
+            if (inc > 0 && inc > maxInc) {
+              maxInc = inc;
+              boughtMint = post.mint;
+            }
+          }
+        }
+
+        if (!boughtMint) continue;
+        if (boughtMint === 'So11111111111111111111111111111111111111112') continue;
+        if (solSpent < CONFIG.MIN_SOL_AMOUNT_HEURISTIC) continue;
+
+        const ts = sig.blockTime ? sig.blockTime * 1000 : Date.now();
+        if (ts < cutoff) continue;
+
+        // Deduplicate against existing buys
+        const dup = recentBuys.find(b =>
+          b.wallet === wallet.address &&
+          b.tokenAddress === boughtMint &&
+          Math.abs(b.timestamp - ts) < 60_000,
+        );
+        if (dup) continue;
+
+        recentBuys = recentBuys.filter(b => b.timestamp > cutoff);
+
+        const sym = boughtMint.slice(0, 6);
+        recentBuys.push({
+          wallet: wallet.address,
+          tokenAddress: boughtMint,
+          tokenSymbol: sym,
+          tokenName: boughtMint,
+          solAmount: solSpent,
+          timestamp: ts,
+          qualityScore: wallet.qualityScore,
+          winrate: wallet.winrate,
+        });
+        if (onBuyCallback) onBuyCallback({ wallet: wallet.address, tokenAddress: boughtMint, tokenSymbol: sym, solAmount: solSpent });
+        added++;
+
+        // Async enrich symbol
+        getTokenInfo(boughtMint).then(info => {
+          if (info) {
+            const buy = recentBuys.find(b => b.tokenAddress === boughtMint && b.wallet === wallet.address && b.timestamp === ts);
+            if (buy) {
+              buy.tokenSymbol = info.symbol || buy.tokenSymbol;
+              buy.tokenName = info.name || buy.tokenName;
+            }
+          }
+        }).catch(() => {});
+      }
+    } catch (err: any) {
+      if (!err?.message?.includes('429')) {
+        console.log(`[smart-money] RPC poll error for ${wallet.address.slice(0, 8)}: ${String(err)}`);
+      }
+    }
+  }
+
+  if (added > 0) {
+    console.log(`[smart-money] RPC poll found ${added} recent buys`);
     detectClusters();
   }
 }

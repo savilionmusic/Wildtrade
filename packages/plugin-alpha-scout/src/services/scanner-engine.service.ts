@@ -724,10 +724,9 @@ async function processToken(
     );
   }
 
-  // 5. DeepSeek Alpha Screen — AI quality gate for non-KOL tokens
-  // KOL tokens already have social proof; skip the screen for them to avoid blocking real alpha
-  const hasKolBacking = detectedKolStrategy !== 'unknown' || kolMentions >= 2 || whaleNetFlow >= 2;
-  if (!hasKolBacking && score.total >= 55 && process.env.OPENROUTER_API_KEY) {
+  // 5. DeepSeek Alpha Screen — AI quality gate for ALL tokens
+  // Every token must survive DeepSeek analysis — pure conviction over speed
+  if (score.total >= 55 && process.env.OPENROUTER_API_KEY) {
     try {
       const screenResult = await screenTokenWithDeepSeek({
         symbol: token.symbol || mint.slice(0, 8),

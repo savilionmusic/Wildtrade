@@ -20,6 +20,7 @@ import type { AlphaSignal, InterAgentMessage } from '@wildtrade/shared';
 import { v4 as uuidv4 } from 'uuid';
 import { executeFullSwap } from './jupiter.service.js';
 import { runAiPreTradeConvictionCheck, runAiActivePositionAnalyzer, type AiTradeAction } from './ai-approval.service.js';
+import { screenTokenWithDeepSeek, type AlphaScreenResult } from '@wildtrade/plugin-alpha-scout';
 import type { IAgentRuntime } from '@elizaos/core';
 import { Keypair } from '@solana/web3.js';
 import bs58 from 'bs58';
@@ -760,7 +761,56 @@ export async function triggerInstantSnipe(mintAddress: string, symbol: string): 
     return;
   }
 
-  log(`🚀 INSTANT SNIPE EXECUTING: ${symbol || mintAddress.slice(0, 8)} | Size: ${positionSize.toFixed(4)} SOL`);
+  log(`🚀 INSTANT SNIPE EVALUATING: ${symbol || mintAddress.slice(0, 8)} | Size: ${positionSize.toFixed(4)} SOL`);
+
+  // ── DeepSeek Alpha Screen for snipes — no trade without AI conviction ──
+  if (process.env.OPENROUTER_API_KEY) {
+    try {
+      // Fetch chain-risk data for the screener
+      let snipeChainRisk: TokenRiskSnapshot | null = null;
+      try {
+        snipeChainRisk = await getTokenRiskSnapshot(mintAddress);
+      } catch { /* fail open on chain-risk */ }
+
+      // Migration tokens have limited data — provide what we can
+      const screenResult = await screenTokenWithDeepSeek({
+        symbol: symbol || mintAddress.slice(0, 8),
+        mint: mintAddress,
+        marketCap: 0,
+        liquidity: 0,
+        volume24h: 0,
+        tokenAgeMinutes: 0,
+        priceChange5m: 0,
+        priceChange1h: 0,
+        buySellRatio: 0,
+        holderCount: 0,
+        topHolderPct: snipeChainRisk?.topHolderPct ?? 0,
+        whaleNetFlow: 0,
+        kolMentions: 0,
+        score: 100,
+        narrativeTag: 'Raydium/PumpSwap Migration Snipe',
+        chainRisk: snipeChainRisk ? {
+          top10HolderPct: snipeChainRisk.top10HolderPct,
+          circulatingSupply: snipeChainRisk.circulatingSupply,
+          totalSupply: snipeChainRisk.totalSupply,
+          trustScore: snipeChainRisk.trustScore,
+          riskScore: snipeChainRisk.riskScore,
+          rewardScore: snipeChainRisk.rewardScore,
+          riskFlags: snipeChainRisk.riskFlags,
+          strengthSignals: snipeChainRisk.strengthSignals,
+        } : undefined,
+      });
+
+      if (!screenResult.worthy) {
+        log(`🚀 SNIPE REJECTED BY DEEPSEEK: ${symbol || mintAddress.slice(0, 8)} — ${screenResult.reasoning}`);
+        return;
+      }
+      log(`🚀 SNIPE APPROVED BY DEEPSEEK: ${symbol || mintAddress.slice(0, 8)} (${screenResult.confidence}) — ${screenResult.reasoning}`);
+    } catch (err) {
+      log(`🚀 SNIPE WARNING: DeepSeek screen failed — proceeding: ${String(err)}`);
+    }
+  }
+
   if (alertCb) alertCb('instant_snipe', `🚀 INSTANT SNIPE EXECUTING: ${symbol || mintAddress.slice(0, 8)} | ${positionSize.toFixed(4)} SOL`);
 
   // Migration tokens are too new for DexScreener — use retry + Jupiter fallback

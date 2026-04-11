@@ -96,6 +96,10 @@ export {
 } from './services/convergence-detector.service.js';
 export type { ConvergenceSignal, ConvergenceCallback } from './services/convergence-detector.service.js';
 
+// DeepSeek Alpha Screener
+export { screenTokenWithDeepSeek } from './services/deepseek-alpha-screener.service.js';
+export type { AlphaScreenResult } from './services/deepseek-alpha-screener.service.js';
+
 // Re-export lib utilities
 export { calculateCompositeScore } from './lib/score-calculator.js';
 export type { ScoreParams } from './lib/score-calculator.js';

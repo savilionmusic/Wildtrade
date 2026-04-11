@@ -154,13 +154,8 @@ export async function runAiPreTradeConvictionCheck(
     return true;
   }
 
-  // Auto-approve conviction KOL calls — Gold KOL + DeepSeek-graded conviction signals
-  // already survived two AI checks (KOL quality grader + alpha screener).
-  // Blocking them here would kill our best alpha.
-  if (kolStrategy === 'conviction') {
-    console.log(`[AI Gatekeeper] Auto-APPROVED ${symbol} — conviction KOL signal (skip AI gate)`);
-    return true;
-  }
+  // Conviction KOL calls still go through the full AI gate with chain-risk data.
+  // No bypasses — every trade gets maximum conviction screening.
 
   try {
     console.log(`[AI Gatekeeper] Requesting DeepSeek approval for ${symbol} (${budgetSol.toFixed(2)} SOL)...`);

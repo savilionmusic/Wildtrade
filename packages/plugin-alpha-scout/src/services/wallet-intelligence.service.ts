@@ -49,25 +49,10 @@ type WalletLogCb = (msg: string) => void;
 let log: WalletLogCb = (msg) => console.log(`[wallet-intel] ${msg}`);
 
 // ── Curated Smart Money Addresses ──
-// From chain.fm, community research, and known profitable traders
-const SEED_WALLETS: Array<{ address: string; alias: string }> = [
-  { address: '5UBK4wFKCPSx8CjTkMnmSZp3HWCjTjcQTtVokmvASiN', alias: 'chain_fm_01' },
-  { address: 'AZgpYAHvnAJHjybGDBLj5dEsCvSSz1XN5VRb2ECfHATa', alias: 'chain_fm_02' },
-  { address: 'BCnqsPEhQMBgnM3MfAPMsWqDMwZScEoymfJqxRik2V25', alias: 'chain_fm_03' },
-  { address: 'DNfuF1L12bVbJxqdt5Bp4CjGWbiKuHaR7oahruqqyMFR', alias: 'chain_fm_04' },
-  { address: 'Fe1ao79kaVYGYk5PoERbCx1g7FE9v7coNH8MCTfbVjHs', alias: 'chain_fm_05' },
-  { address: 'GJRs4FwHtemZ5ZE9Q3MbCQbGCVjz3NhBDHJRNqRrp4tn', alias: 'chain_fm_06' },
-  { address: 'HBuYwFJGeJTaeXQrKmG4SqDrUkJnxPJv5j7JBNiiVzRE', alias: 'chain_fm_07' },
-  { address: 'JDd8RLrWAvSMVPiyU3m9nFZBdLrUN2VFY3JJVKekCp3c', alias: 'chain_fm_08' },
-  { address: '2BvG3i3Vwfeoaaj6cXSfJXsRR8MXnMPpFBaoKTM3VPiz', alias: 'chain_fm_09' },
-  { address: '3eg2FPNAuGHV4JDFLkTMdnkJ2QBVEvqSQk7jJZGbcLBE', alias: 'chain_fm_10' },
-  { address: '4tJZhSdGePuMBHmtPhisSbNq7FBeRfjDRR7cRBiLCDRM', alias: 'chain_fm_11' },
-  { address: '5Q4W3cLc1JHKV73vy2MpUH3LBdhgPBp1FkPdHvBHLRcB', alias: 'chain_fm_12' },
-  { address: '6GyAR9Df41YchGHvh4YuwdJPBLR8rJuZvKiQqRL3Cknb', alias: 'chain_fm_13' },
-  { address: '7hVzWh2WBKUUZB7dBHqELPb2KZ8ZP5RavsEjgQmzeDNW', alias: 'chain_fm_14' },
-  { address: '8aKq7LrpGhQg73bPy3ramXeTDVDUGXGP2WLsfEBjpHnb', alias: 'chain_fm_15' },
-  { address: '9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM', alias: 'chain_fm_16' },
-];
+// No hardcoded wallets — the discovery loop finds profitable memecoin traders
+// dynamically from DexScreener (10k-500k mcap tokens only).
+// This avoids stale wallets that only buy SOL, HNT, and other big-caps.
+const SEED_WALLETS: Array<{ address: string; alias: string }> = [];
 
 // ── Public API ──
 
@@ -78,7 +63,7 @@ export function startWalletIntelligence(onLog?: WalletLogCb): void {
 
   log('Starting wallet intelligence...');
 
-  // Seed with curated wallets
+  // Seed with curated wallets (if any configured)
   for (const w of SEED_WALLETS) {
     walletDb.set(w.address, {
       address: w.address,
@@ -94,7 +79,11 @@ export function startWalletIntelligence(onLog?: WalletLogCb): void {
       addedAt: Date.now(),
     });
   }
-  log(`Seeded ${SEED_WALLETS.length} curated smart money wallets`);
+  if (SEED_WALLETS.length > 0) {
+    log(`Seeded ${SEED_WALLETS.length} curated smart money wallets`);
+  } else {
+    log('No curated seeds — will discover memecoin wallets from DexScreener');
+  }
 
   // Start discovery loop (every 5 min)
   discoverNewWallets();
@@ -183,10 +172,10 @@ async function discoverFromDexScreener(): Promise<void> {
       totalAmount?: number;
     }>;
 
-    // Take top 5 Solana boosted tokens
+    // Take top 10 Solana boosted tokens — we'll filter by market cap below
     const solanaBoosts = boosts
       .filter(b => b.chainId === 'solana' && b.tokenAddress)
-      .slice(0, 5);
+      .slice(0, 10);
 
     let discovered = 0;
 
@@ -194,6 +183,25 @@ async function discoverFromDexScreener(): Promise<void> {
       await sleep(3000); // Rate limit: 3s between calls
 
       try {
+        // First check if this token is in the memecoin range (10k-500k mcap)
+        const pairRes = await fetch(
+          `https://api.dexscreener.com/latest/dex/tokens/${boost.tokenAddress}`,
+          { headers: { 'Accept': 'application/json' } },
+        );
+
+        if (!pairRes.ok) continue;
+        const pairData = await pairRes.json() as { pairs?: Array<Record<string, unknown>> };
+        const pair = pairData.pairs?.[0];
+        if (!pair) continue;
+
+        // ── Market cap filter: only discover wallets trading memecoins ──
+        const mcap = Number((pair as any).marketCap ?? (pair as any).fdv ?? 0);
+        if (mcap > 500_000 || (mcap > 0 && mcap < 10_000)) {
+          continue; // Skip big-cap and dust-cap tokens
+        }
+
+        await sleep(3000);
+
         // Use DexScreener top traders endpoint (returns wallets that traded this token)
         const tradersRes = await fetch(
           `https://api.dexscreener.com/tokens/v1/solana/${boost.tokenAddress}/top-traders`,
@@ -207,7 +215,7 @@ async function discoverFromDexScreener(): Promise<void> {
           }>;
 
           if (Array.isArray(traders)) {
-            // Take top 5 profitable traders
+            // Take top 5 profitable traders from this memecoin-range token
             const top = traders
               .filter(t => (t.walletAddress || t.wallet) && (t.pnlUsd ?? 0) > 0)
               .slice(0, 5);
@@ -217,9 +225,9 @@ async function discoverFromDexScreener(): Promise<void> {
               if (addr && !walletDb.has(addr)) {
                 walletDb.set(addr, {
                   address: addr,
-                  alias: `dex_top_trader_${discovered}`,
+                  alias: `dex_memecoin_trader_${discovered}`,
                   source: 'dexscreener',
-                  bes: 55,
+                  bes: 60, // Higher BES — these are confirmed memecoin traders
                   winRate: 0.6,
                   totalTrades: 0,
                   profitableTrades: 0,
@@ -235,19 +243,8 @@ async function discoverFromDexScreener(): Promise<void> {
           continue;
         }
 
-        // Fallback: get pair data and extract whatever wallet info is available
+        // Fallback: extract maker addresses from pair info
         await sleep(3000);
-        const pairRes = await fetch(
-          `https://api.dexscreener.com/latest/dex/tokens/${boost.tokenAddress}`,
-          { headers: { 'Accept': 'application/json' } },
-        );
-
-        if (!pairRes.ok) continue;
-        const pairData = await pairRes.json() as { pairs?: Array<Record<string, unknown>> };
-        const pair = pairData.pairs?.[0];
-        if (!pair) continue;
-
-        // Try to extract maker addresses from pair info
         const makers = (pair as any).profile?.makers ?? (pair as any).makers ?? [];
         for (const maker of (Array.isArray(makers) ? makers : []).slice(0, 5)) {
           const addr = typeof maker === 'string' ? maker : maker?.address;
@@ -274,7 +271,7 @@ async function discoverFromDexScreener(): Promise<void> {
     }
 
     if (discovered > 0) {
-      log(`Discovered ${discovered} new wallets from DexScreener top traders. Total: ${walletDb.size}`);
+      log(`Discovered ${discovered} new memecoin wallets from DexScreener (10k-500k mcap range). Total: ${walletDb.size}`);
     }
   } catch (err) {
     log(`DexScreener wallet discovery error: ${String(err)}`);

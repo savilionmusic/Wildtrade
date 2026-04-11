@@ -311,20 +311,21 @@ export async function getTokenInfo(tokenAddress: string): Promise<GmgnTokenInfo 
 
 /**
  * Score a wallet's quality for filtering.
- * Returns 0-100 based on win rate, PnL, and big wins.
+ * Returns 0-100 based on win rate, PnL, big wins, and memecoin focus.
+ * Heavily favors pump_smart wallets that trade low-cap memecoins.
  */
 export function scoreWallet(wallet: GmgnWallet): number {
   let score = 0;
 
-  // Win rate (0-30 points)
-  score += Math.min(30, wallet.winrate * 30);
+  // Win rate (0-25 points)
+  score += Math.min(25, wallet.winrate * 25);
 
-  // 7d PnL positive = good (0-20 points)
+  // 7d PnL positive = good (0-15 points)
   if (wallet.pnl_7d > 0) {
-    score += Math.min(20, wallet.pnl_7d * 5);
+    score += Math.min(15, wallet.pnl_7d * 4);
   }
 
-  // Big win count (0-20 points)
+  // Big win count — memecoins produce big multiples (0-20 points)
   score += Math.min(10, wallet.pnl_2x_5x_num * 2);
   score += Math.min(10, wallet.pnl_gt_5x_num * 3);
 
@@ -335,10 +336,19 @@ export function scoreWallet(wallet: GmgnWallet): number {
   else if (hoursSinceActive < 24) score += 8;
   else if (hoursSinceActive < 72) score += 4;
 
-  // Trade volume (0-15 points)
-  score += Math.min(15, (wallet.buy + wallet.sell) * 0.1);
+  // Trade volume — moderate volume preferred (degen, not institutional) (0-10 points)
+  score += Math.min(10, (wallet.buy + wallet.sell) * 0.08);
 
-  return Math.min(100, Math.round(score));
+  // MEMECOIN FOCUS BONUS (0-15 points)
+  // pump_smart tag = the wallet trades PumpFun tokens
+  const isPumpSmart = wallet.tags?.includes('pump_smart');
+  if (isPumpSmart) score += 15;
+
+  // Penalize wallets with very high SOL balance — likely buying big-cap blue chips
+  if (wallet.sol_balance > 500) score -= 10;
+  else if (wallet.sol_balance > 200) score -= 5;
+
+  return Math.max(0, Math.min(100, Math.round(score)));
 }
 
 /**
@@ -350,16 +360,17 @@ export async function getQualityWallets(
   minScore: number = 40,
   limit: number = 50,
 ): Promise<Array<GmgnWallet & { qualityScore: number }>> {
-  // Fetch from both smart_degen and pump_smart
-  const [degens, pumpSmart] = await Promise.all([
-    getTopWallets('7d', 'smart_degen', 30),
-    getTopWallets('7d', 'pump_smart', 20),
+  // Fetch pump_smart FIRST (PumpFun memecoin traders) — these are our priority.
+  // smart_degen is secondary — may include big-cap traders we'll filter via scoring.
+  const [pumpSmart, degens] = await Promise.all([
+    getTopWallets('7d', 'pump_smart', 40),
+    getTopWallets('7d', 'smart_degen', 20),
   ]);
 
-  // Deduplicate by address
+  // Deduplicate by address — pump_smart wallets are added first to preserve priority
   const seen = new Set<string>();
   const all: GmgnWallet[] = [];
-  for (const w of [...degens, ...pumpSmart]) {
+  for (const w of [...pumpSmart, ...degens]) {
     if (!seen.has(w.wallet_address)) {
       seen.add(w.wallet_address);
       all.push(w);
@@ -401,30 +412,14 @@ export async function getQualityWallets(
 }
 
 /**
- * Curated smart money wallets from chain.fm and community research.
+ * Curated memecoin wallets — PumpFun/micro-cap focused.
  * Used as fallback when GMGN API is blocked by Cloudflare.
- * These are known profitable Solana traders across memecoin/DeFi.
+ * These wallets are discovered dynamically via wallet-intelligence.
+ * An empty list forces the system to rely on DexScreener wallet discovery
+ * (which now only discovers wallets from 10k-500k mcap tokens).
  */
 const CURATED_SMART_WALLETS: string[] = [
-  // Top performers from chain.fm "Smart Money" channels
-  '5UBK4wFKCPSx8CjTkMnmSZp3HWCjTjcQTtVokmvASiN',
-  'AZgpYAHvnAJHjybGDBLj5dEsCvSSz1XN5VRb2ECfHATa',
-  'BCnqsPEhQMBgnM3MfAPMsWqDMwZScEoymfJqxRik2V25',
-  'Cfo6jbFhpEz7jCqgNPZvNU4BRFLmLMz1FrqmgiAq1qL1',
-  'DNfuF1L12bVbJxqdt5Bp4CjGWbiKuHaR7oahruqqyMFR',
-  'Fe1ao79kaVYGYk5PoERbCx1g7FE9v7coNH8MCTfbVjHs',
-  'GJRs4FwHtemZ5ZE9Q3MbCQbGCVjz3NhBDHJRNqRrp4tn',
-  'HBuYwFJGeJTaeXQrKmG4SqDrUkJnxPJv5j7JBNiiVzRE',
-  'JDd8RLrWAvSMVPiyU3m9nFZBdLrUN2VFY3JJVKekCp3c',
-  'KchT93bd1V4veYU6LPSrjSHkbg9tJTgAYfJPdYtXrLg',
-  'MfDuWeqSHEqTFVYZ7LoexgAK9dxk7cy4DFJWjWMGVWa',
-  '2BvG3i3Vwfeoaaj6cXSfJXsRR8MXnMPpFBaoKTM3VPiz',
-  '3eg2FPNAuGHV4JDFLkTMdnkJ2QBVEvqSQk7jJZGbcLBE',
-  '4tJZhSdGePuMBHmtPhisSbNq7FBeRfjDRR7cRBiLCDRM',
-  '5Q4W3cLc1JHKV73vy2MpUH3LBdhgPBp1FkPdHvBHLRcB',
-  '6GyAR9Df41YchGHvh4YuwdJPBLR8rJuZvKiQqRL3Cknb',
-  '7hVzWh2WBKUUZB7dBHqELPb2KZ8ZP5RavsEjgQmzeDNW',
-  '8aKq7LrpGhQg73bPy3ramXeTDVDUGXGP2WLsfEBjpHnb',
-  '9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM',
-  'Ai4z2Y5f7CqLCW5p4kL8SY5J3E7x5uoNR4V2e2G1HJdR',
+  // Leave empty — discovered wallets from wallet-intelligence are better
+  // than stale addresses. The system falls through to wallet-intel discovery
+  // which finds profitable traders on live memecoin-range tokens.
 ];

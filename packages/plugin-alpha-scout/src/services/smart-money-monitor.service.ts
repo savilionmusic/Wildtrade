@@ -81,6 +81,11 @@ const CONFIG = {
   MAX_WS_SUBSCRIPTIONS: 4,
   // Minimum SOL amount to consider a "buy" from log heuristics
   MIN_SOL_AMOUNT_HEURISTIC: 0.01,
+  // ── Memecoin Market Cap Range (the sweet spot) ──
+  // Only track buys of tokens between 10k and 500k market cap.
+  // This filters out SOL, HNT, and other big-cap tokens.
+  MEMECOIN_MCAP_MIN_USD: 10_000,
+  MEMECOIN_MCAP_MAX_USD: 500_000,
   // Secondary ingest path: backfill recent buys from GMGN every 2 minutes
   GMGN_BACKFILL_INTERVAL_MS: 120_000,
   GMGN_BACKFILL_WALLETS: 8,
@@ -97,6 +102,40 @@ const CONFIG = {
     return selectPrimaryWsRpcEndpoint();
   },
 };
+
+// ── Known Big-Cap Mints to Skip Immediately ──
+// These are large-cap tokens that smart money wallets routinely swap through.
+// Filtering them out saves RPC calls and prevents false cluster signals.
+const BIG_CAP_MINTS = new Set([
+  'So11111111111111111111111111111111111111112',  // Wrapped SOL
+  'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', // USDT
+  'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
+  'mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So',  // mSOL
+  'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263', // BONK (big-cap meme)
+  'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN',  // JUP
+  'hntyVP6YFm1Hg25TN9WGLqM12b8TQmcknKrdu1oxWux',  // HNT
+  'jtojtomepa8beP8AuQc6eXt5FriJwfFMwQx2v2f9mCL',  // JTO
+  'rndrizKT3MK1iimdxRdWabcF7Zg7AR5T4nud4EkHBof',  // RNDR
+  'WENWENvqqNya429ubCdR81ZmD69brwQaaBYY6p3LCpk',  // WEN
+  'DUSTawucrTsGU8hcqRdHDCbuYhCPADMLM2VcCb8VnFnQ', // DUST
+  '7dHbWXmci3dT8UFYWYZweBLXgycu7Y3iL6trKn1Y7ARj', // stSOL
+  'bSo13r4TkiE4KumL71LsHTPpL2euBYLFx6h9HP3piy1',  // bSOL
+  'HZ1JovNiVvGrGNiiYvEozEVgZ58xaU3RKwX8eACQBCt3', // PYTH
+  '7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs', // ETH (Wormhole)
+  '3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh', // BTC (Wormhole)
+  'EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm', // WIF
+]);
+
+// PumpFun program addresses (used for buy detection heuristics)
+const PUMPFUN_PROGRAM_ID = '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P';
+const PUMPSWAP_MIGRATION_PROGRAM = '39azUYFWPz3VHgKCf3VChUwbpURdCHRxjWVowf5jUJjg';
+
+/**
+ * Quick check: is this mint a known big-cap token we should ignore?
+ */
+function isBigCapMint(mint: string): boolean {
+  return BIG_CAP_MINTS.has(mint);
+}
 
 // ── State ──
 
@@ -133,6 +172,10 @@ let fallbackHttpConnection: Connection | null = null;
 let fallbackHttpConnectionEndpoint: string | null = null;
 let fallbackHttpUntil = 0;
 let httpPollingDisabledUntil = 0;
+
+// Track which WS subscription IDs are truly active so we don't
+// call removeOnLogsListener on stale IDs after a WS reconnect.
+const activeSubscriptionIds = new Set<number>();
 
 // ── Rate Limiter ──
 let activeRpcCalls = 0;
@@ -376,14 +419,12 @@ export function stopSmartMoneyMonitor(): void {
   isRunning = false;
   onSignalCallback = null;
 
-  if (connection) {
-    for (const wallet of trackedWallets) {
-      if (wallet.subscriptionId !== undefined) {
-        connection.removeOnLogsListener(wallet.subscriptionId).catch(() => {});
-        wallet.subscriptionId = undefined;
-      }
-    }
+  // Clear subscription IDs — don't call removeOnLogsListener on a closing connection
+  // as the WS may already be gone, causing "subscription not found" warnings.
+  for (const wallet of trackedWallets) {
+    wallet.subscriptionId = undefined;
   }
+  activeSubscriptionIds.clear();
   connection = null;
   fallbackHttpConnection = null;
   fallbackHttpUntil = 0;
@@ -409,6 +450,12 @@ async function backfillRecentBuysFromGmgn(): Promise<void> {
     for (const buy of buys) {
       if (!buy?.token_address || buy.event_type !== 'buy') continue;
       if (buy.timestamp < cutoff) continue;
+
+      // ── Market cap filter: only memecoin range (10k-500k) ──
+      const mcap = buy.market_cap ?? 0;
+      if (mcap > 0 && (mcap < CONFIG.MEMECOIN_MCAP_MIN_USD || mcap > CONFIG.MEMECOIN_MCAP_MAX_USD)) {
+        continue; // Skip big-cap tokens (SOL, HNT, etc.) and dust-cap tokens
+      }
 
       const existing = recentBuys.find(b =>
         b.wallet === wallet.address &&
@@ -524,7 +571,7 @@ async function pollRecentTxFromRpc(): Promise<void> {
         }
 
         if (!boughtMint) continue;
-        if (boughtMint === 'So11111111111111111111111111111111111111112') continue;
+        if (isBigCapMint(boughtMint)) continue; // Skip SOL, USDC, HNT, etc.
         if (solSpent < CONFIG.MIN_SOL_AMOUNT_HEURISTIC) continue;
 
         const ts = sig.blockTime ? sig.blockTime * 1000 : Date.now();
@@ -686,11 +733,15 @@ async function refreshWalletSubscriptions(): Promise<void> {
 
     const nextTracked = newList.slice(0, CONFIG.MAX_TRACKED_WALLETS);
     
-    // Unsubscribe removed wallets
+    // Unsubscribe removed wallets — only if we know the subscription is active
     const nextAddrs = new Set(nextTracked.map(w => w.address));
     for (const w of trackedWallets) {
       if (!nextAddrs.has(w.address) && w.subscriptionId !== undefined && connection) {
-        connection.removeOnLogsListener(w.subscriptionId).catch(() => {});
+        if (activeSubscriptionIds.has(w.subscriptionId)) {
+          connection.removeOnLogsListener(w.subscriptionId).catch(() => {});
+          activeSubscriptionIds.delete(w.subscriptionId);
+        }
+        w.subscriptionId = undefined;
       }
     }
 
@@ -707,12 +758,14 @@ async function refreshWalletSubscriptions(): Promise<void> {
     let wsCount = 0;
     for (const w of rotatedTracked) {
       const existing = trackedWallets.find(t => t.address === w.address);
-      if (existing && existing.subscriptionId !== undefined) {
+      if (existing && existing.subscriptionId !== undefined && activeSubscriptionIds.has(existing.subscriptionId)) {
         if (wsCount < CONFIG.MAX_WS_SUBSCRIPTIONS) {
           w.subscriptionId = existing.subscriptionId;
           wsCount++;
         } else if (connection) {
           connection.removeOnLogsListener(existing.subscriptionId).catch(() => {});
+          activeSubscriptionIds.delete(existing.subscriptionId);
+          existing.subscriptionId = undefined;
         }
       } else if (connection && wsCount < CONFIG.MAX_WS_SUBSCRIPTIONS) {
         // Stagger: wait 500ms between logsSubscribe calls (max 2/sec, well under 5/sec heavy limit)
@@ -723,6 +776,7 @@ async function refreshWalletSubscriptions(): Promise<void> {
             (logs, ctx) => handleWalletLogs(w, logs),
             'confirmed'
           );
+          activeSubscriptionIds.add(w.subscriptionId);
           wsCount++;
         } catch (err) {
           console.error(`[smart-money] Failed to subscribe to ${w.address}:`, err);
@@ -748,11 +802,12 @@ async function refreshWalletSubscriptions(): Promise<void> {
 async function handleWalletLogs(wallet: TrackedWallet, logs: Logs): Promise<void> {
   if (logs.err || !Array.isArray(logs.logs)) return; // Ignore failed transactions
 
-  // Basic heuristic: Is it a Raydium or Pump.fun interact?
+  // Basic heuristic: Is it a Raydium, Pump.fun, or PumpSwap interact?
   const isSwap = logs.logs.some((log: string) => 
     log.includes('Program log: Instruction: Swap') || 
     log.includes('Program log: Instruction: Route') ||
-    log.includes('Program 6EF8rrecthR5Dkzon8YargZYa8m4CjHExuC5M62bV2gL invoke') || // pump.fun target 
+    log.includes(`Program ${PUMPFUN_PROGRAM_ID} invoke`) ||
+    log.includes(`Program ${PUMPSWAP_MIGRATION_PROGRAM} invoke`) ||
     log.includes('Program log: Instruction: Buy')
   );
 
@@ -831,8 +886,8 @@ async function handleWalletLogs(wallet: TrackedWallet, logs: Logs): Promise<void
     // Keep tiny-gas noise out unless logs strongly indicate a swap route.
     if (!isSwap && solSpent < CONFIG.MIN_SOL_AMOUNT_HEURISTIC) return;
 
-    // Avoid Wrapped SOL
-    if (boughtTokenMint === 'So11111111111111111111111111111111111111112') return;
+    // Avoid Wrapped SOL and known big-cap tokens (SOL, USDC, HNT, JUP, etc.)
+    if (isBigCapMint(boughtTokenMint)) return;
 
     // Record the buy
     const cutoff = Date.now() - CONFIG.CLUSTER_WINDOW_MS;
@@ -986,7 +1041,20 @@ async function enrichAndEmit(signal: SmartMoneySignal): Promise<void> {
     return;
   }
 
-  console.log(`[smart-money] CLUSTER DETECTED: ${signal.tokenSymbol || signal.tokenAddress.slice(0, 8)} | ${signal.smartWalletCount} wallets | ${signal.totalSolInvested.toFixed(2)} SOL | ${signal.confidence} confidence`);
+  // ── Market cap gate: only emit memecoin-range signals (10k-500k) ──
+  const mcap = signal.avgMarketCap || signal.tokenInfo?.market_cap || 0;
+  if (mcap > 0) {
+    if (mcap < CONFIG.MEMECOIN_MCAP_MIN_USD) {
+      console.log(`[smart-money] Skipping dust-cap ${signal.tokenSymbol}: $${Math.round(mcap)} mcap < $${CONFIG.MEMECOIN_MCAP_MIN_USD}`);
+      return;
+    }
+    if (mcap > CONFIG.MEMECOIN_MCAP_MAX_USD) {
+      console.log(`[smart-money] Skipping big-cap ${signal.tokenSymbol}: $${Math.round(mcap)} mcap > $${CONFIG.MEMECOIN_MCAP_MAX_USD}`);
+      return;
+    }
+  }
+
+  console.log(`[smart-money] CLUSTER DETECTED: ${signal.tokenSymbol || signal.tokenAddress.slice(0, 8)} | ${signal.smartWalletCount} wallets | ${signal.totalSolInvested.toFixed(2)} SOL | mcap $${mcap > 0 ? Math.round(mcap).toLocaleString() : '?'} | ${signal.confidence} confidence`);
 
   if (onSignalCallback) {
     onSignalCallback(signal);

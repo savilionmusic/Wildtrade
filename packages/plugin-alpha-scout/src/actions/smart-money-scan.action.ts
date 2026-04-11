@@ -101,7 +101,18 @@ const smartMoneyScanAction: Action = {
     }
 
     const mintAddress = clusterData.tokenAddress;
-    console.log(`[smart-money] Processing cluster: ${clusterData.tokenSymbol || mintAddress.slice(0, 8)} (${clusterData.smartWalletCount} wallets)`);
+    console.log(`[smart-money] Processing cluster: ${clusterData.tokenSymbol || mintAddress.slice(0, 8)} (${clusterData.smartWalletCount} wallets, mcap $${Math.round(clusterData.avgMarketCap || 0).toLocaleString()})`);
+
+    // 0. Market cap gate — only memecoins in 10k-500k range
+    const MEMECOIN_MCAP_MIN = 10_000;
+    const MEMECOIN_MCAP_MAX = 500_000;
+    const mcap = clusterData.avgMarketCap || 0;
+    if (mcap > 0 && (mcap < MEMECOIN_MCAP_MIN || mcap > MEMECOIN_MCAP_MAX)) {
+      const msg = `Token ${clusterData.tokenSymbol || mintAddress} mcap $${Math.round(mcap).toLocaleString()} outside memecoin range ($10k-$500k). Skipping.`;
+      console.log(`[smart-money] ${msg}`);
+      if (callback) await callback({ text: msg });
+      return null;
+    }
 
     // 1. Check denylist
     const db = await getDb();

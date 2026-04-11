@@ -1,10 +1,11 @@
 import { Connection, PublicKey } from '@solana/web3.js';
 import { selectPrimaryHttpRpcEndpoint } from '@wildtrade/shared';
+import type { SolanaService } from '@wildtrade/plugin-solana-compat';
 
 export interface TokenRiskSnapshot {
   mintAddress: string;
   fetchedAt: number;
-  source: 'rpc';
+  source: 'rpc' | 'solana-service';
   topHolderPct: number;
   top10HolderPct: number;
   holderCountTop20: number;
@@ -24,6 +25,7 @@ export interface TokenRiskSnapshot {
 const CACHE_TTL_MS = 120_000;
 
 let rpcConnection: Connection | null = null;
+let solanaServiceRef: SolanaService | null = null;
 
 const riskCache = new Map<string, { expiresAt: number; data: TokenRiskSnapshot }>();
 
@@ -81,6 +83,14 @@ export function resetRpcConnection(): void {
   rpcConnection = null;
 }
 
+export function setSolanaService(svc: SolanaService | null): void {
+  solanaServiceRef = svc;
+}
+
+export function getSolanaService(): SolanaService | null {
+  return solanaServiceRef;
+}
+
 export async function getTokenRiskSnapshot(params: {
   mintAddress: string;
   liquidityUsd: number;
@@ -104,8 +114,21 @@ export async function getTokenRiskSnapshot(params: {
   let topHolderPct = 0;
   let top10HolderPct = 0;
   let holderCountTop20 = 0;
+  let dataSource: 'rpc' | 'solana-service' = 'rpc';
 
   const { totalSupply, circulatingSupply } = await getSupplyMetrics(params.mintAddress, connection);
+
+  // Use SolanaService for enriched circulating supply when available
+  let enrichedCirculatingSupply = circulatingSupply;
+  if (solanaServiceRef) {
+    try {
+      const solCirc = await solanaServiceRef.getCirculatingSupply(params.mintAddress);
+      if (solCirc > 0) {
+        enrichedCirculatingSupply = solCirc;
+        dataSource = 'solana-service';
+      }
+    } catch { /* fall through to RPC data */ }
+  }
 
   try {
     const largestAccounts = await connection.getTokenLargestAccounts(mint, 'confirmed');
@@ -244,6 +267,15 @@ export async function getTokenRiskSnapshot(params: {
     }
   }
 
+  // Also check enriched circulating supply from SolanaService
+  if (enrichedCirculatingSupply !== null && enrichedCirculatingSupply !== circulatingSupply && totalSupply !== null && totalSupply > 0) {
+    const enrichedFloat = enrichedCirculatingSupply / totalSupply;
+    if (enrichedFloat > 0 && enrichedFloat < 0.5) {
+      riskScore += 4;
+      riskFlags.push('enriched_float_low');
+    }
+  }
+
   trustScore = clamp(trustScore, 0, 100);
   riskScore = clamp(riskScore, 0, 100);
   rewardScore = clamp(rewardScore, 0, 100);
@@ -251,12 +283,12 @@ export async function getTokenRiskSnapshot(params: {
   const snapshot: TokenRiskSnapshot = {
     mintAddress: params.mintAddress,
     fetchedAt: now,
-    source: 'rpc',
+    source: dataSource,
     topHolderPct,
     top10HolderPct,
     holderCountTop20,
     totalSupply,
-    circulatingSupply,
+    circulatingSupply: enrichedCirculatingSupply ?? circulatingSupply,
     liquidityUsd,
     volume1h,
     marketCapUsd,

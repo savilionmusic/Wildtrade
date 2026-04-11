@@ -2,6 +2,7 @@ import { AgentRuntime } from '@elizaos/core';
 import type { Character, IDatabaseAdapter } from '@elizaos/core';
 import { pluginSmartTrader } from '@wildtrade/plugin-smart-trader';
 import { pluginSelfHealer } from '@wildtrade/plugin-self-healer';
+import { pluginSolanaCompat } from '@wildtrade/plugin-solana-compat';
 import { selectPrimaryHttpRpcEndpoint } from '@wildtrade/shared';
 import traderCharacter from '../../characters/trader.character.json';
 
@@ -28,7 +29,7 @@ export async function createTraderRuntime(token: string, databaseAdapter: IDatab
     modelProvider: 'openrouter' as any,
     character,
     databaseAdapter,
-    plugins: [pluginSmartTrader, pluginSelfHealer],
+    plugins: [pluginSolanaCompat, pluginSmartTrader, pluginSelfHealer],
     logging: process.env.LOG_LEVEL === 'debug',
   });
 }

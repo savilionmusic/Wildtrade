@@ -77,6 +77,7 @@ await build({
     '@wildtrade/plugin-alpha-scout': path.join(root, 'packages', 'plugin-alpha-scout', 'src', 'index.ts'),
     '@wildtrade/plugin-smart-trader': path.join(root, 'packages', 'plugin-smart-trader', 'src', 'index.ts'),
     '@wildtrade/plugin-self-healer': path.join(root, 'packages', 'plugin-self-healer', 'src', 'index.ts'),
+    '@wildtrade/plugin-solana-compat': path.join(root, 'packages', 'plugin-solana-compat', 'src', 'index.ts'),
   },
   banner: {
     js: `

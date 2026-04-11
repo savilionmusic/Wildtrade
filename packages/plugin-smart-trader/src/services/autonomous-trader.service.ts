@@ -26,6 +26,7 @@ import bs58 from 'bs58';
 import {
   getTokenRiskSnapshot,
   resetRpcConnection,
+  setSolanaService,
   type TokenRiskSnapshot,
 } from './chain-risk.service.js';
 
@@ -792,6 +793,12 @@ export async function startAutonomousTrader(opts: {
   if (opts.onAlert) alertCb = opts.onAlert;
   traderRuntime = opts.runtime ?? null;
 
+  // Wire SolanaService into chain-risk if available
+  if (traderRuntime) {
+    const solSvc = traderRuntime.getService('chain_solana' as any);
+    setSolanaService(solSvc as any ?? null);
+  }
+
   totalBudgetSol = parseFloat(process.env.TOTAL_BUDGET_SOL || '1.0');
 
   // Restore saved state from DB
@@ -842,6 +849,7 @@ export async function stopAutonomousTrader(): Promise<void> {
   running = false;
   traderRuntime = null;
   resetRpcConnection();
+  setSolanaService(null);
   await saveState(); // Save before stopping
   if (signalPollTimer) clearInterval(signalPollTimer);
   if (priceCheckTimer) clearInterval(priceCheckTimer);

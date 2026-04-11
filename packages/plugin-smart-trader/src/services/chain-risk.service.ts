@@ -1,17 +1,10 @@
-import type { IAgentRuntime } from '@elizaos/core';
 import { Connection, PublicKey } from '@solana/web3.js';
 import { selectPrimaryHttpRpcEndpoint } from '@wildtrade/shared';
-
-type SolanaServiceLike = {
-  getConnection?: () => Connection;
-  getSupply?: (mints: string[]) => Promise<Record<string, { human?: unknown; supply?: unknown; decimals?: unknown }>>;
-  getCirculatingSupply?: (mint: string) => Promise<number>;
-};
 
 export interface TokenRiskSnapshot {
   mintAddress: string;
   fetchedAt: number;
-  source: 'plugin-solana' | 'fallback-rpc';
+  source: 'rpc';
   topHolderPct: number;
   top10HolderPct: number;
   holderCountTop20: number;
@@ -30,8 +23,7 @@ export interface TokenRiskSnapshot {
 
 const CACHE_TTL_MS = 120_000;
 
-let runtimeRef: IAgentRuntime | null = null;
-let fallbackConnection: Connection | null = null;
+let rpcConnection: Connection | null = null;
 
 const riskCache = new Map<string, { expiresAt: number; data: TokenRiskSnapshot }>();
 
@@ -61,67 +53,32 @@ function toFiniteNumber(value: unknown): number | null {
   return null;
 }
 
-function getFallbackConnection(): Connection {
-  if (fallbackConnection) return fallbackConnection;
+function getConnection(): Connection {
+  if (rpcConnection) return rpcConnection;
 
-  fallbackConnection = new Connection(selectPrimaryHttpRpcEndpoint(), {
+  rpcConnection = new Connection(selectPrimaryHttpRpcEndpoint(), {
     commitment: 'confirmed',
     fetch: global.fetch,
   });
 
-  return fallbackConnection;
-}
-
-function getSolanaService(): SolanaServiceLike | null {
-  if (!runtimeRef) return null;
-  return (runtimeRef.getService('chain_solana' as any) as SolanaServiceLike | null) ?? null;
-}
-
-function getConnectionSource(): { connection: Connection; source: TokenRiskSnapshot['source'] } {
-  const service = getSolanaService();
-  const connection = service?.getConnection?.();
-
-  if (connection) {
-    return { connection, source: 'plugin-solana' };
-  }
-
-  return { connection: getFallbackConnection(), source: 'fallback-rpc' };
+  return rpcConnection;
 }
 
 async function getSupplyMetrics(mintAddress: string, connection: Connection): Promise<{ totalSupply: number | null; circulatingSupply: number | null }> {
-  const service = getSolanaService();
-
   let totalSupply: number | null = null;
-  let circulatingSupply: number | null = null;
 
   try {
-    if (service?.getSupply) {
-      const supplyMap = await service.getSupply([mintAddress]);
-      const supplyEntry = supplyMap?.[mintAddress];
-      totalSupply = toFiniteNumber(supplyEntry?.human);
-    }
-
-    if (totalSupply === null) {
-      const supplyResponse = await connection.getTokenSupply(new PublicKey(mintAddress), 'confirmed');
-      totalSupply = toFiniteNumber(supplyResponse.value.uiAmount);
-    }
+    const supplyResponse = await connection.getTokenSupply(new PublicKey(mintAddress), 'confirmed');
+    totalSupply = toFiniteNumber(supplyResponse.value.uiAmount);
   } catch {
     totalSupply = null;
   }
 
-  try {
-    if (service?.getCirculatingSupply) {
-      circulatingSupply = toFiniteNumber(await service.getCirculatingSupply(mintAddress));
-    }
-  } catch {
-    circulatingSupply = null;
-  }
-
-  return { totalSupply, circulatingSupply };
+  return { totalSupply, circulatingSupply: null };
 }
 
-export function setSmartTraderRuntime(runtime: IAgentRuntime | null): void {
-  runtimeRef = runtime;
+export function resetRpcConnection(): void {
+  rpcConnection = null;
 }
 
 export async function getTokenRiskSnapshot(params: {
@@ -141,7 +98,7 @@ export async function getTokenRiskSnapshot(params: {
     return cached.data;
   }
 
-  const { connection, source } = getConnectionSource();
+  const connection = getConnection();
   const mint = new PublicKey(params.mintAddress);
 
   let topHolderPct = 0;
@@ -294,7 +251,7 @@ export async function getTokenRiskSnapshot(params: {
   const snapshot: TokenRiskSnapshot = {
     mintAddress: params.mintAddress,
     fetchedAt: now,
-    source,
+    source: 'rpc',
     topHolderPct,
     top10HolderPct,
     holderCountTop20,

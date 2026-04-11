@@ -25,7 +25,7 @@ import { Keypair } from '@solana/web3.js';
 import bs58 from 'bs58';
 import {
   getTokenRiskSnapshot,
-  setSmartTraderRuntime,
+  resetRpcConnection,
   type TokenRiskSnapshot,
 } from './chain-risk.service.js';
 
@@ -791,7 +791,6 @@ export async function startAutonomousTrader(opts: {
   if (opts.onLog) log = opts.onLog;
   if (opts.onAlert) alertCb = opts.onAlert;
   traderRuntime = opts.runtime ?? null;
-  setSmartTraderRuntime(traderRuntime);
 
   totalBudgetSol = parseFloat(process.env.TOTAL_BUDGET_SOL || '1.0');
 
@@ -842,7 +841,7 @@ export async function startAutonomousTrader(opts: {
 export async function stopAutonomousTrader(): Promise<void> {
   running = false;
   traderRuntime = null;
-  setSmartTraderRuntime(null);
+  resetRpcConnection();
   await saveState(); // Save before stopping
   if (signalPollTimer) clearInterval(signalPollTimer);
   if (priceCheckTimer) clearInterval(priceCheckTimer);

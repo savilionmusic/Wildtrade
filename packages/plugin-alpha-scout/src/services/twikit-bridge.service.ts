@@ -14,6 +14,10 @@ let twikitChecked = false;
 let twikitAvailable = false;
 let venvSetupAttempted = false;
 
+const TWIKIT_BATCH_SIZE = 8;
+const TWIKIT_TIMEOUT_MS = 120_000;
+const TWIKIT_PROGRESS_LOG_MS = 45_000;
+
 // Login failure cooldown — don't retry for 30 minutes after a failure
 let loginFailedUntil = 0;
 const LOGIN_COOLDOWN_MS = 30 * 60 * 1000;
@@ -145,21 +149,15 @@ function getScriptPath(): string {
   return path.join(process.cwd(), 'scripts', 'twikit_scraper.py');
 }
 
-export async function fetchTwikitTweets(handles: string[]): Promise<TwikitTweet[]> {
-  if (handles.length === 0) return [];
-
-  // Respect login failure cooldown
-  if (Date.now() < loginFailedUntil) {
-    return [];
+function chunkHandles(handles: string[], size: number): string[][] {
+  const batches: string[][] = [];
+  for (let index = 0; index < handles.length; index += size) {
+    batches.push(handles.slice(index, index + size));
   }
+  return batches;
+}
 
-  const pythonCmd = await getPythonWithTwikit();
-  if (!pythonCmd) {
-    return [];
-  }
-
-  const scriptPath = getScriptPath();
-
+async function fetchTwikitBatch(handles: string[], pythonCmd: string, scriptPath: string, batchNumber: number, totalBatches: number): Promise<TwikitTweet[]> {
   return new Promise((resolve) => {
     const env = { ...process.env, PYTHONUNBUFFERED: '1' };
     const proc = spawn(pythonCmd, [scriptPath, ...handles], {
@@ -173,13 +171,18 @@ export async function fetchTwikitTweets(handles: string[]): Promise<TwikitTweet[
     proc.stdout.on('data', (d: Buffer) => { stdout += d.toString(); });
     proc.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
 
+    const progressLog = setTimeout(() => {
+      console.log(`[twikit] Batch ${batchNumber}/${totalBatches} still fetching after ${Math.round(TWIKIT_PROGRESS_LOG_MS / 1000)}s...`);
+    }, TWIKIT_PROGRESS_LOG_MS);
+
     const timeout = setTimeout(() => {
       proc.kill();
-      console.log('[twikit] Timeout — took too long to fetch tweets.');
+      console.log(`[twikit] Timeout on batch ${batchNumber}/${totalBatches} — fetch exceeded ${Math.round(TWIKIT_TIMEOUT_MS / 1000)}s.`);
       resolve([]);
-    }, 60_000);
+    }, TWIKIT_TIMEOUT_MS);
 
     proc.on('close', () => {
+      clearTimeout(progressLog);
       clearTimeout(timeout);
 
       for (const line of stderr.trim().split('\n')) {
@@ -194,16 +197,16 @@ export async function fetchTwikitTweets(handles: string[]): Promise<TwikitTweet[
         if (data && typeof data === 'object' && !Array.isArray(data) && data.error) {
           const msg: string = data.error as string;
           console.log(`[twikit] ${msg}${data.hint ? ' — ' + data.hint : ''}`);
-          // Detect login failures and start cooldown
           if (msg.toLowerCase().includes('login failed')) {
             reportTwikitLoginFailure();
           }
           resolve([]);
           return;
         }
+
         const tweets = Array.isArray(data) ? (data as TwikitTweet[]) : [];
         if (tweets.length > 0) {
-          console.log(`[twikit] Fetched ${tweets.length} tweets from ${handles.length} KOL handles`);
+          console.log(`[twikit] Batch ${batchNumber}/${totalBatches} fetched ${tweets.length} tweets from ${handles.length} KOL handles`);
         }
         resolve(tweets);
       } catch {
@@ -213,10 +216,50 @@ export async function fetchTwikitTweets(handles: string[]): Promise<TwikitTweet[
     });
 
     proc.on('error', (err: Error) => {
+      clearTimeout(progressLog);
       clearTimeout(timeout);
       console.log(`[twikit] Spawn error: ${String(err)}`);
       resolve([]);
     });
   });
+}
+
+export async function fetchTwikitTweets(handles: string[]): Promise<TwikitTweet[]> {
+  if (handles.length === 0) return [];
+
+  // Respect login failure cooldown
+  if (Date.now() < loginFailedUntil) {
+    return [];
+  }
+
+  const pythonCmd = await getPythonWithTwikit();
+  if (!pythonCmd) {
+    return [];
+  }
+
+  const scriptPath = getScriptPath();
+  const batches = chunkHandles(handles, TWIKIT_BATCH_SIZE);
+  if (batches.length > 1) {
+    console.log(`[twikit] Polling ${handles.length} handles in ${batches.length} batches`);
+  }
+
+  const tweets: TwikitTweet[] = [];
+
+  for (let index = 0; index < batches.length; index++) {
+    const batchTweets = await fetchTwikitBatch(
+      batches[index],
+      pythonCmd,
+      scriptPath,
+      index + 1,
+      batches.length,
+    );
+    tweets.push(...batchTweets);
+
+    if (Date.now() < loginFailedUntil) {
+      break;
+    }
+  }
+
+  return tweets;
 }
 

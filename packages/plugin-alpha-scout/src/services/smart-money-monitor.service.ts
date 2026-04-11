@@ -42,6 +42,60 @@ export interface WalletBuy {
 export type SmartMoneyCallback = (signal: SmartMoneySignal) => void;
 export type SmartMoneyBuyCallback = (buy: { wallet: string; tokenAddress: string; tokenSymbol: string; solAmount: number }) => void;
 
+const DEFAULT_HTTP_RPC_ENDPOINT = 'https://api.mainnet-beta.solana.com';
+
+function isHttpRpcEndpoint(endpoint: string | undefined): endpoint is string {
+  return typeof endpoint === 'string' && /^https?:\/\//i.test(endpoint.trim());
+}
+
+function isWsRpcEndpoint(endpoint: string | undefined): endpoint is string {
+  return typeof endpoint === 'string' && /^wss?:\/\//i.test(endpoint.trim());
+}
+
+function toWsRpcEndpoint(endpoint: string): string {
+  if (endpoint.startsWith('https://')) return endpoint.replace('https://', 'wss://');
+  if (endpoint.startsWith('http://')) return endpoint.replace('http://', 'ws://');
+  return endpoint;
+}
+
+function selectHttpRpcEndpoint(): string {
+  const candidates = [
+    process.env.SOLANA_RPC_HTTP,
+    process.env.SOLANA_RPC_URL,
+    process.env.SOLANA_RPC_HELIUS,
+    process.env.SOLANA_RPC_QUICKNODE,
+    process.env.SOLANA_RPC_CONSTANTK,
+  ];
+
+  for (const candidate of candidates) {
+    if (isHttpRpcEndpoint(candidate)) return candidate.trim();
+  }
+
+  return DEFAULT_HTTP_RPC_ENDPOINT;
+}
+
+function selectWsRpcEndpoint(httpEndpoint: string): string {
+  const candidates = [
+    process.env.SOLANA_WSS_URL,
+    process.env.SOLANA_RPC_CONSTANTK,
+    process.env.SOLANA_RPC_HELIUS,
+    process.env.SOLANA_RPC_QUICKNODE,
+    process.env.SOLANA_RPC_URL,
+  ];
+
+  for (const candidate of candidates) {
+    if (isWsRpcEndpoint(candidate)) return candidate.trim();
+  }
+
+  const httpCandidate = candidates.find(isHttpRpcEndpoint);
+  return toWsRpcEndpoint((httpCandidate ?? httpEndpoint).trim());
+}
+
+function isRpcUpgradeRequiredError(error: unknown): boolean {
+  const message = String((error as { message?: string })?.message ?? error ?? '');
+  return message.includes('426') || message.toLowerCase().includes('upgrade required');
+}
+
 // ── Config ──
 
 const CONFIG = {
@@ -67,19 +121,11 @@ const CONFIG = {
   // Tertiary ingest path: RPC getSignaturesForAddress polling (works when GMGN is blocked)
   RPC_POLL_INTERVAL_MS: 90_000,
   RPC_POLL_WALLETS: 6,
-  // RPC Endpoint
-  get RPC_ENDPOINT() {
-    const raw = process.env.SOLANA_RPC_CONSTANTK || process.env.SOLANA_RPC_HELIUS || process.env.SOLANA_RPC_QUICKNODE || process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com';
-    // Normalize: if user pasted a wss:// URL, convert to https:// for HTTP RPC
-    if (raw.startsWith('wss://')) return raw.replace('wss://', 'https://');
-    if (raw.startsWith('ws://')) return raw.replace('ws://', 'http://');
-    return raw;
-  },
+  HTTP_RPC_ENDPOINT: selectHttpRpcEndpoint(),
+  HTTP_FALLBACK_ENDPOINT: DEFAULT_HTTP_RPC_ENDPOINT,
+  HTTP_FALLBACK_COOLDOWN_MS: 10 * 60_000,
   get WS_ENDPOINT() {
-    const rpc = this.RPC_ENDPOINT;
-    if (rpc.startsWith('https://')) return rpc.replace('https://', 'wss://');
-    if (rpc.startsWith('http://')) return rpc.replace('http://', 'ws://');
-    return rpc;
+    return selectWsRpcEndpoint(this.HTTP_RPC_ENDPOINT);
   },
 };
 
@@ -114,6 +160,8 @@ let gmgnBackfillTimer: ReturnType<typeof setInterval> | null = null;
 let rpcPollTimer: ReturnType<typeof setInterval> | null = null;
 let isRunning = false;
 let wsRotationOffset = 0;
+let fallbackHttpConnection: Connection | null = null;
+let fallbackHttpUntil = 0;
 
 // ── Rate Limiter ──
 let activeRpcCalls = 0;
@@ -133,10 +181,10 @@ async function enqueueGetParsedTransaction(signature: string): Promise<any> {
     rpcQueue.push(async () => {
       try {
         if (!connection) return resolve(null);
-        const tx = await connection.getParsedTransaction(signature, {
-            maxSupportedTransactionVersion: 0,
-            commitment: 'confirmed'
-        });
+        const tx = await withHttpRpcFallback((rpcConnection) => rpcConnection.getParsedTransaction(signature, {
+          maxSupportedTransactionVersion: 0,
+          commitment: 'confirmed',
+        }));
         processedSignatureSet.add(signature);
         processedSignatures.push(signature);
         if (processedSignatures.length > MAX_PROCESSED_SIGNATURES) {
@@ -172,6 +220,49 @@ async function processRpcQueue() {
   }, 250);
 }
 
+function getFallbackHttpConnection(): Connection {
+  if (!fallbackHttpConnection) {
+    fallbackHttpConnection = new Connection(CONFIG.HTTP_FALLBACK_ENDPOINT, {
+      commitment: 'confirmed',
+      fetch: global.fetch,
+    });
+  }
+
+  return fallbackHttpConnection;
+}
+
+function isFallbackHttpActive(): boolean {
+  return Date.now() < fallbackHttpUntil;
+}
+
+function activateFallbackHttp(reason: string): void {
+  const wasActive = isFallbackHttpActive();
+  fallbackHttpUntil = Date.now() + CONFIG.HTTP_FALLBACK_COOLDOWN_MS;
+
+  if (!wasActive) {
+    console.log(`[smart-money] HTTP RPC fallback active for ${Math.round(CONFIG.HTTP_FALLBACK_COOLDOWN_MS / 60000)}min: ${reason}`);
+  }
+}
+
+async function withHttpRpcFallback<T>(operation: (rpcConnection: Connection) => Promise<T>): Promise<T> {
+  if (!connection) {
+    throw new Error('Smart money connection is not initialized');
+  }
+
+  const primaryConnection = isFallbackHttpActive() ? getFallbackHttpConnection() : connection;
+
+  try {
+    return await operation(primaryConnection);
+  } catch (error) {
+    if (!isFallbackHttpActive() && isRpcUpgradeRequiredError(error)) {
+      activateFallbackHttp('primary RPC returned HTTP 426 Upgrade Required');
+      return operation(getFallbackHttpConnection());
+    }
+
+    throw error;
+  }
+}
+
 // Track which signals we've already emitted to avoid duplicates
 const emittedSignals = new Set<string>();
 
@@ -195,11 +286,15 @@ export async function startSmartMoneyMonitor(
   isRunning = true;
   onSignalCallback = onSignal;
   onBuyCallback = onBuy ?? null;
-  connection = new Connection(CONFIG.RPC_ENDPOINT, {
+  connection = new Connection(CONFIG.HTTP_RPC_ENDPOINT, {
     wsEndpoint: CONFIG.WS_ENDPOINT,
     commitment: 'confirmed',
     fetch: global.fetch,
   });
+
+  if (CONFIG.HTTP_RPC_ENDPOINT === DEFAULT_HTTP_RPC_ENDPOINT) {
+    console.log('[smart-money] No dedicated HTTP RPC configured; polling will use public Solana RPC until a private HTTP endpoint is supplied.');
+  }
 
   console.log('[smart-money] Starting WSS smart money monitor...');
   console.log(`[smart-money] Config: cluster window ${CONFIG.CLUSTER_WINDOW_MS / 60000}min, min cluster size ${CONFIG.MIN_CLUSTER_SIZE}`);
@@ -268,6 +363,8 @@ export function stopSmartMoneyMonitor(): void {
     }
   }
   connection = null;
+  fallbackHttpConnection = null;
+  fallbackHttpUntil = 0;
   console.log('[smart-money] Monitor stopped');
 }
 
@@ -348,10 +445,10 @@ async function pollRecentTxFromRpc(): Promise<void> {
       const lastSig = rpcPollLastSig.get(wallet.address);
       if (lastSig) opts.until = lastSig;
 
-      const sigs = await connection!.getSignaturesForAddress(
+      const sigs = await withHttpRpcFallback((rpcConnection) => rpcConnection.getSignaturesForAddress(
         new PublicKey(wallet.address),
         opts,
-      );
+      ));
 
       if (!sigs || sigs.length === 0) continue;
 

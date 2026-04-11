@@ -1,5 +1,113 @@
 import { fetch } from 'cross-fetch';
 
+const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
+const DEEPSEEK_MODEL = 'deepseek/deepseek-chat';
+const AI_REQUEST_TIMEOUT_MS = 15_000;
+const AI_MAX_RETRIES = 3;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function summarizeResponseBody(body: string): string {
+  return body.replace(/\s+/g, ' ').trim().slice(0, 240) || 'empty response body';
+}
+
+function parseJsonObject(content: string): Record<string, any> | null {
+  const trimmed = content.trim();
+
+  try {
+    return JSON.parse(trimmed) as Record<string, any>;
+  } catch {
+    const match = trimmed.match(/\{[\s\S]*\}/);
+    if (!match) return null;
+
+    try {
+      return JSON.parse(match[0]) as Record<string, any>;
+    } catch {
+      return null;
+    }
+  }
+}
+
+function getAbortSignal(timeoutMs: number): { signal?: AbortSignal; cleanup: () => void } {
+  if (typeof AbortController === 'undefined') {
+    return { cleanup: () => {} };
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  return {
+    signal: controller.signal,
+    cleanup: () => clearTimeout(timeoutId),
+  };
+}
+
+async function requestDeepSeekJson(
+  logPrefix: string,
+  systemPrompt: string,
+  userPrompt: string,
+): Promise<Record<string, any> | null> {
+  const apiKey = process.env.OPENROUTER_API_KEY;
+  if (!apiKey) return null;
+
+  for (let attempt = 1; attempt <= AI_MAX_RETRIES; attempt++) {
+    const { signal, cleanup } = getAbortSignal(AI_REQUEST_TIMEOUT_MS);
+
+    try {
+      const res = await fetch(OPENROUTER_URL, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: DEEPSEEK_MODEL,
+          response_format: { type: 'json_object' },
+          messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }],
+        }),
+        signal,
+      });
+
+      if (!res.ok) {
+        const responseBody = await res.text();
+        console.log(`${logPrefix} OpenRouter error ${res.status} (attempt ${attempt}/${AI_MAX_RETRIES}): ${summarizeResponseBody(responseBody)}`);
+      } else {
+        const json = await res.json() as any;
+        const content = json.choices?.[0]?.message?.content;
+
+        if (!content) {
+          console.log(`${logPrefix} Empty AI response (attempt ${attempt}/${AI_MAX_RETRIES})`);
+        } else {
+          const parsed = parseJsonObject(content);
+          if (parsed) return parsed;
+          console.log(`${logPrefix} Invalid AI JSON (attempt ${attempt}/${AI_MAX_RETRIES}): ${content.slice(0, 240)}`);
+        }
+      }
+    } catch (error: any) {
+      const isTimeout = error?.name === 'AbortError';
+      console.log(`${logPrefix} ${isTimeout ? 'Request timed out' : 'Request failed'} (attempt ${attempt}/${AI_MAX_RETRIES}): ${String(error?.message ?? error)}`);
+    } finally {
+      cleanup();
+    }
+
+    if (attempt < AI_MAX_RETRIES) {
+      await sleep(1000 * attempt);
+    }
+  }
+
+  return null;
+}
+
+function normalizeTradeAction(action: unknown): AiTradeAction {
+  const normalized = String(action ?? 'HOLD').toUpperCase();
+  if (normalized === 'EXIT' || normalized === 'DCA_IN' || normalized === 'TAKE_PROFIT' || normalized === 'MOON_BAG') {
+    return normalized;
+  }
+  return 'HOLD';
+}
+
 export async function runAiPreTradeConvictionCheck(
   mint: string,
   symbol: string,
@@ -51,31 +159,17 @@ Small market cap ($5k-$100k) is the SWEET SPOT for this strategy, not a red flag
 Respond with JSON: {"approval": true} or {"approval": false}
     `.trim();
 
-    const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: 'deepseek/deepseek-chat',
-        response_format: { type: 'json_object' },
-        messages: [{
-          role: 'system',
-          content: "You are an expert crypto risk-manager AI. Output strictly valid JSON."
-        }, {
-          role: 'user',
-          content: prompt
-        }]
-      })
-    });
+    const result = await requestDeepSeekJson(
+      '[AI Gatekeeper]',
+      'You are an expert crypto risk-manager AI. Output strictly valid JSON.',
+      prompt,
+    );
 
-    if (!res.ok) return true; // Fail open
-    const json = await res.json() as any;
-    const content = json.choices?.[0]?.message?.content;
-    if (!content) return true;
+    if (!result) {
+      console.log(`[AI Gatekeeper] DeepSeek unavailable after retries. Failing open for ${symbol}.`);
+      return true;
+    }
 
-    const result = JSON.parse(content);
     if (result.approval === false) {
       console.log(`[AI Gatekeeper] DeepSeek REJECTED trade for ${symbol}!`);
       return false;
@@ -137,34 +231,19 @@ Possible Actions:
 Output strictly valid JSON: {"action": "HOLD|EXIT|DCA_IN|TAKE_PROFIT|MOON_BAG", "confidence": number 0-100, "reason": "short explanation"}
     `.trim();
 
-    const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: 'deepseek/deepseek-chat',
-        response_format: { type: 'json_object' },
-        messages: [{
-          role: 'system',
-          content: "You are an expert crypto portfolio AI. Output strictly valid JSON."
-        }, {
-          role: 'user',
-          content: prompt
-        }]
-      })
-    });
+    const result = await requestDeepSeekJson(
+      '[AI Portfolio Manager]',
+      'You are an expert crypto portfolio AI. Output strictly valid JSON.',
+      prompt,
+    );
 
-    if (!res.ok) return { action: 'HOLD', confidence: 0, reason: 'API Errored' };
-    const json = await res.json() as any;
-    const content = json.choices?.[0]?.message?.content;
-    if (!content) return { action: 'HOLD', confidence: 0, reason: 'Empty AI Response' };
+    if (!result) {
+      return { action: 'HOLD', confidence: 0, reason: 'AI unavailable after retries' };
+    }
 
-    const result = JSON.parse(content);
     return {
-      action: result.action || 'HOLD',
-      confidence: result.confidence || 50,
+      action: normalizeTradeAction(result.action),
+      confidence: Number.isFinite(Number(result.confidence)) ? Number(result.confidence) : 50,
       reason: result.reason || 'AI evaluation complete'
     };
   } catch (err) {

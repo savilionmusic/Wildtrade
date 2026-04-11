@@ -3,8 +3,8 @@ import { selectPrimaryHttpRpcEndpoint } from '@wildtrade/shared';
 
 const JUPITER_API_BASE = process.env.JUPITER_API_BASE || 'https://quote-api.jup.ag/v6';
 const DEFAULT_SLIPPAGE_BPS = Number(process.env.JUPITER_SLIPPAGE_BPS || '300');
-const TX_CONFIRM_TIMEOUT_MS = 60_000;
-const MAX_RETRIES = 2;
+const TX_CONFIRM_TIMEOUT_MS = 30_000; // Reduced — fail faster and retry sooner
+const MAX_RETRIES = 3;             // Extra retry compensates for shorter timeout
 
 export interface JupiterQuoteResponse {
   inputMint: string;
@@ -129,8 +129,8 @@ export async function signAndSendSwap(
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
       signature = await connection.sendRawTransaction(rawTx, {
-        skipPreflight: false,
-        maxRetries: 2,
+        skipPreflight: true,   // Jupiter already validated — preflight wastes ~200ms
+        maxRetries: 3,         // Let RPC layer auto-rebroadcast
         preflightCommitment: 'confirmed',
       });
 

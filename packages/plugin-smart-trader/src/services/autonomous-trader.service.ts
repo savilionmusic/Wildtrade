@@ -210,6 +210,7 @@ let priceCheckTimer: ReturnType<typeof setInterval> | null = null;
 let dcaTimer: ReturnType<typeof setInterval> | null = null;
 let stateTimer: ReturnType<typeof setInterval> | null = null;
 let pendingDcaLegs: Array<{ positionId: string; leg: number; solAmount: number; mint: string; executeAt: number }> = [];
+const executingPositionIds = new Set<string>(); // positions with an in-flight Jupiter tx
 
 const positions = new Map<string, Position>();
 let totalBudgetSol = parseFloat(process.env.TOTAL_BUDGET_SOL || '1.0');
@@ -1178,16 +1179,26 @@ async function openPosition(
   kolStrategy?: 'flip' | 'conviction',
 ): Promise<boolean> {
 
-  // ── PRE-TRADE DEEPSEEK CONVICTION CHECK ──
-  if (budgetSol >= 0.1) {
-    // Fetch on-chain risk snapshot for the pre-trade AI gate
-    let chainRiskData: TokenRiskSnapshot | undefined;
-    try {
-      chainRiskData = await getTokenRiskSnapshot(mintAddress) ?? undefined;
-    } catch (err) {
-      log(`Chain-risk fetch failed for ${symbol}: ${String(err)}`);
-    }
+  // ── PARALLEL PRE-FLIGHT: price + chain-risk + market data fetched simultaneously ──
+  // Fail fast on missing price BEFORE spending 20-45s on the AI conviction check.
+  const [_priceResult, _chainRiskPrefetch, _entryMarketPrefetch] = await Promise.all([
+    (prefetchedPrice && prefetchedPrice > 0)
+      ? Promise.resolve(prefetchedPrice)
+      : getTokenPriceWithRetry(mintAddress, 2).catch(() => 0),
+    getTokenRiskSnapshot(mintAddress).catch(() => null),
+    getMarketData(mintAddress).catch(() => null),
+  ]);
 
+  const price = _priceResult;
+  const chainRiskData = _chainRiskPrefetch ?? undefined;
+
+  if (!price || price <= 0) {
+    log(`Cannot get price for ${symbol} — skipping`);
+    return false;
+  }
+
+  // ── PRE-TRADE DEEPSEEK CONVICTION CHECK (uses already-fetched chain risk) ──
+  if (budgetSol >= 0.1) {
     const aiApproved = await runAiPreTradeConvictionCheck(
       mintAddress, symbol, budgetSol, score, marketCap, reason || 'Scanner signal', kolStrategy,
       chainRiskData ? {
@@ -1206,15 +1217,6 @@ async function openPosition(
       alert('trade_rejected', `DeepSeek AI vetoed entering ${symbol} — too high risk.`);
       return false;
     }
-  }
-
-  // Get current price from DexScreener (or use pre-fetched price for snipes)
-  const price = prefetchedPrice && prefetchedPrice > 0
-    ? prefetchedPrice
-    : await getTokenPrice(mintAddress);
-  if (!price || price <= 0) {
-    log(`Cannot get price for ${symbol} — skipping`);
-    return false;
   }
 
   const position: Position = {
@@ -1244,16 +1246,15 @@ async function openPosition(
     kolStrategy,
   };
 
-  // Capture entry-time market baselines for live health tracking
-  try {
-    const entryMarket = await getMarketData(mintAddress);
-    if (entryMarket.liquidity > 0) position.entryLiquidity = entryMarket.liquidity;
-    if (entryMarket.volume1h > 0) position.entryVolume1h = entryMarket.volume1h;
-    position.peakLiquidity = entryMarket.liquidity;
-    position.peakVolume1h = entryMarket.volume1h;
-    position.lastBuys1h = entryMarket.buys1h;
-    position.lastSells1h = entryMarket.sells1h;
-  } catch { /* not fatal */ }
+  // Apply prefetched market baselines (no additional DexScreener call needed)
+  if (_entryMarketPrefetch) {
+    if (_entryMarketPrefetch.liquidity > 0) position.entryLiquidity = _entryMarketPrefetch.liquidity;
+    if (_entryMarketPrefetch.volume1h > 0) position.entryVolume1h = _entryMarketPrefetch.volume1h;
+    position.peakLiquidity = _entryMarketPrefetch.liquidity;
+    position.peakVolume1h = _entryMarketPrefetch.volume1h;
+    position.lastBuys1h = _entryMarketPrefetch.buys1h;
+    position.lastSells1h = _entryMarketPrefetch.sells1h;
+  }
 
   // Try to get creator address from signal for dev-wallet monitoring
   try {
@@ -1266,19 +1267,13 @@ async function openPosition(
     if (creator && creator.length > 30) position.creatorAddress = creator;
   } catch { /* not fatal */ }
 
-  // Capture entry-time top holder baselines for delta tracking
-  try {
-    const entryRisk = await getTokenRiskSnapshot({
-      mintAddress,
-      liquidityUsd: position.entryLiquidity ?? 0,
-      volume1h: position.entryVolume1h ?? 0,
-      marketCapUsd: marketCap,
-    });
-    position.entryTopHolderPct = entryRisk.topHolderPct;
-    position.entryTop10HolderPct = entryRisk.top10HolderPct;
-    position.lastRiskSnapshot = entryRisk;
+  // Apply prefetched chain-risk for entry baselines (no duplicate RPC call)
+  if (chainRiskData) {
+    position.entryTopHolderPct = chainRiskData.topHolderPct;
+    position.entryTop10HolderPct = chainRiskData.top10HolderPct;
+    position.lastRiskSnapshot = chainRiskData;
     position.lastRiskCheckAt = Date.now();
-  } catch { /* not fatal */ }
+  }
 
   positions.set(position.id, position);
   
@@ -1552,9 +1547,27 @@ async function processPendingDcaLegs(): Promise<void> {
 
     // If we're here, it has dipped 15%+ from the local peak!
     log(`DCA LEG ${leg.leg} TRIGGERED for ${position.symbol}: pulled back from ${position.highWaterMark.toFixed(2)}x high to ${currentMultiplier.toFixed(2)}x — TRAILING DCA executing!`);
-    await executeBuy(position, leg.solAmount, leg.leg);
-    pendingDcaLegs = pendingDcaLegs.filter(l => l !== leg);
+    pendingDcaLegs = pendingDcaLegs.filter(l => l !== leg); // Remove first to prevent re-trigger
+    fireBuy(position, leg.solAmount, leg.leg);
   }
+}
+
+// ── Non-blocking trade execution (fire-and-forget for the monitoring loop) ──
+// executeSell/executeBuy block for up to 30s on Jupiter confirmation.
+// These wrappers keep checkPricesAndExits() non-blocking so ALL positions
+// continue to be monitored while a trade is confirming on-chain.
+function fireSell(position: Position, pct: number, reason: string): void {
+  if (executingPositionIds.has(position.id)) return; // already has a tx in flight
+  executingPositionIds.add(position.id);
+  void executeSell(position, pct, reason)
+    .finally(() => executingPositionIds.delete(position.id));
+}
+
+function fireBuy(position: Position, sol: number, leg: number): void {
+  if (executingPositionIds.has(position.id)) return;
+  executingPositionIds.add(position.id);
+  void executeBuy(position, sol, leg)
+    .finally(() => executingPositionIds.delete(position.id));
 }
 
 // ── Price Monitoring & Exit Logic ──
@@ -1570,6 +1583,9 @@ async function checkPricesAndExits(): Promise<void> {
 
   for (const position of openPositions) {
     try {
+      // Skip positions with an in-flight Jupiter transaction — they're already being handled
+      if (executingPositionIds.has(position.id)) continue;
+
       const market = await getMarketData(position.mintAddress);
       const price = market.price;
       if (!price || price <= 0) continue;
@@ -1600,25 +1616,24 @@ async function checkPricesAndExits(): Promise<void> {
         const flipStop = 0.85;
         if (multiplier <= flipStop) {
           log(`FLIP STOP-LOSS: ${position.symbol} hit ${multiplier.toFixed(2)}x — KOL pump did not materialise`);
-          await executeSell(position, 1.0, `flip_stop_loss (${multiplier.toFixed(2)}x)`);
-          position.status = 'stopped_out';
+          fireSell(position, 1.0, `flip_stop_loss (${multiplier.toFixed(2)}x)`);
           continue;
         }
 
         // Aggressive take-profit: sell 80% at 1.5x, last 20% at 2.5x or time limit
         if (position.exitTiersHit === 0 && multiplier >= 1.5) {
           log(`FLIP EXIT 1: ${position.symbol} at ${multiplier.toFixed(2)}x — selling 80%`);
-          await executeSell(position, 0.80, `flip_1.5x_take-profit`);
+          fireSell(position, 0.80, `flip_1.5x_take-profit`);
         } else if (position.exitTiersHit >= 1 && multiplier >= 2.5) {
           log(`FLIP FINAL EXIT: ${position.symbol} at ${multiplier.toFixed(2)}x — selling remainder`);
-          await executeSell(position, 1.0, `flip_2.5x_take-profit`);
+          fireSell(position, 1.0, `flip_2.5x_take-profit`);
           continue;
         }
 
         // Time kill: exit remainder after 8 minutes — pump window is gone
         if (holdMins >= 8) {
           log(`FLIP TIME EXIT: ${position.symbol} at ${multiplier.toFixed(2)}x after ${Math.round(holdMins)}m — pump window closed`);
-          await executeSell(position, 1.0, `flip_time_exit (${multiplier.toFixed(2)}x, ${Math.round(holdMins)}m)`);
+          fireSell(position, 1.0, `flip_time_exit (${multiplier.toFixed(2)}x, ${Math.round(holdMins)}m)`);
           continue;
         }
 
@@ -1669,7 +1684,7 @@ async function checkPricesAndExits(): Promise<void> {
 
         if (riskSnapshot.riskScore >= 90 && riskSnapshot.topHolderPct >= 35 && multiplier >= 1.05) {
           log(`[RISK EXIT] ${position.symbol} on-chain concentration risk spiked (top holder ${riskSnapshot.topHolderPct.toFixed(1)}%, risk ${riskSnapshot.riskScore}/100)`);
-          await executeSell(position, 1.0, 'onchain_risk_exit');
+          fireSell(position, 1.0, 'onchain_risk_exit');
           continue;
         }
       }
@@ -1684,7 +1699,7 @@ async function checkPricesAndExits(): Promise<void> {
 
         if (liqDropFromEntry >= 0.50) {
           log(`[LP DRAIN EXIT] ${position.symbol} liquidity dropped ${(liqDropFromEntry * 100).toFixed(0)}% from entry ($${position.entryLiquidity.toFixed(0)} → $${market.liquidity.toFixed(0)}) — likely rug`);
-          await executeSell(position, 1.0, `lp_drain_exit (liq -${(liqDropFromEntry * 100).toFixed(0)}%)`);
+          fireSell(position, 1.0, `lp_drain_exit (liq -${(liqDropFromEntry * 100).toFixed(0)}%)`);
           continue;
         }
         if (liqDropFromPeak >= 0.40 && liqDropFromEntry >= 0.30) {
@@ -1727,7 +1742,7 @@ async function checkPricesAndExits(): Promise<void> {
           if (devBalance !== null && devBalance <= 0) {
             // Dev has zero tokens — they've dumped everything
             log(`[DEV DUMP EXIT] ${position.symbol} creator wallet ${position.creatorAddress.slice(0, 8)}... sold ALL tokens — emergency exit`);
-            await executeSell(position, 1.0, 'dev_dump_exit');
+            fireSell(position, 1.0, 'dev_dump_exit');
             continue;
           }
         } catch { /* RPC failure — proceed without dev check */ }
@@ -1742,7 +1757,7 @@ async function checkPricesAndExits(): Promise<void> {
         // Single wallet spiked 15%+ since entry = accumulation / potential rug setup
         if (topHolderDelta >= 15 && riskSnapshot.topHolderPct >= 30) {
           log(`[HOLDER SPIKE EXIT] ${position.symbol} top holder surged from ${position.entryTopHolderPct.toFixed(1)}% → ${riskSnapshot.topHolderPct.toFixed(1)}% (+${topHolderDelta.toFixed(1)}pp) — likely accumulating for dump`);
-          await executeSell(position, 1.0, `holder_spike_exit (top1 +${topHolderDelta.toFixed(1)}pp)`);
+          fireSell(position, 1.0, `holder_spike_exit (top1 +${topHolderDelta.toFixed(1)}pp)`);
           continue;
         }
 
@@ -1781,8 +1796,7 @@ async function checkPricesAndExits(): Promise<void> {
             ? `trailing_stop (${multiplier.toFixed(2)}x, trail from ${hwm.toFixed(2)}x peak)`
             : `smart_stop_loss (${multiplier.toFixed(2)}x)`;
           log(`${reason.toUpperCase()} triggered for ${position.symbol}`);
-          await executeSell(position, 1.0, reason);
-          position.status = 'stopped_out';
+          fireSell(position, 1.0, reason);
           continue;
         }
       }
@@ -1790,7 +1804,7 @@ async function checkPricesAndExits(): Promise<void> {
       // ── Momentum exit: cut losers at -25% after 30 min (not 60) ──
       if (multiplier <= 0.75 && holdMins >= 30) {
         log(`MOMENTUM EXIT: ${position.symbol} at ${multiplier.toFixed(2)}x after ${Math.round(holdMins)}m — cutting losses`);
-        await executeSell(position, 1.0, `momentum_exit (${multiplier.toFixed(2)}x, ${Math.round(holdMins)}m)`);
+        fireSell(position, 1.0, `momentum_exit (${multiplier.toFixed(2)}x, ${Math.round(holdMins)}m)`);
         continue;
       }
 
@@ -1798,7 +1812,7 @@ async function checkPricesAndExits(): Promise<void> {
       if (holdMins >= maxHoldMins && multiplier >= 0.85 && multiplier <= 1.15) {
         const label = position.kolStrategy === 'conviction' ? 'CONVICTION' : 'TIME';
         log(`${label} EXIT: ${position.symbol} flat at ${multiplier.toFixed(2)}x for ${Math.round(holdMins)}m (max: ${Math.round(maxHoldMins)}m) — freeing capital`);
-        await executeSell(position, 1.0, `time_exit (flat ${multiplier.toFixed(2)}x, ${Math.round(holdMins)}m)`);
+        fireSell(position, 1.0, `time_exit (flat ${multiplier.toFixed(2)}x, ${Math.round(holdMins)}m)`);
         continue;
       }
 
@@ -1825,7 +1839,7 @@ async function checkPricesAndExits(): Promise<void> {
             }
             log(`RECOVERY DCA: ${position.symbol} bounced to ${multiplier.toFixed(2)}x — adding ${dcaAmount.toFixed(4)} SOL`);
             alert('dca_entry', `Recovery DCA: ${position.symbol} at ${multiplier.toFixed(2)}x — adding ${dcaAmount.toFixed(4)} SOL`);
-            await executeBuy(position, dcaAmount, position.dcaLegsExecuted + 1);
+            fireBuy(position, dcaAmount, position.dcaLegsExecuted + 1);
           }
         } else {
           log(`RECOVERY DCA BLOCKED: ${position.symbol} — risk:${currentRisk} liqOk:${liqStillHealthy} volOk:${volumeStillAlive}`);
@@ -1838,7 +1852,7 @@ async function checkPricesAndExits(): Promise<void> {
         const tier = strategyTiers[i];
         if (multiplier >= tier.multiplier) {
           log(`EXIT TIER ${i + 1} hit for ${position.symbol}: ${multiplier.toFixed(2)}x (target: ${tier.multiplier}x)`);
-          await executeSell(position, tier.sellPct, `${tier.multiplier}x take-profit`);
+          fireSell(position, tier.sellPct, `${tier.multiplier}x take-profit`);
           break;
         }
       }
@@ -1929,14 +1943,14 @@ async function checkPricesAndExits(): Promise<void> {
         if (analysis.confidence >= 65) {
           if (analysis.action === 'EXIT') {
              log(`🚨 AI OVERRIDE EXIT: Dumping ${position.symbol}: ${analysis.reason}`);
-             await executeSell(position, 1.0, `ai_exit_override`);
-             continue; // Trade dumped, skip rest
+             fireSell(position, 1.0, `ai_exit_override`);
+             continue; // Trade queued, skip rest
           } else if (analysis.action === 'TAKE_PROFIT' && position.exitTiersHit < 2) {
              log(`💰 AI TAKE PROFIT: Securing 50% on ${position.symbol}: ${analysis.reason}`);
-             await executeSell(position, 0.5, `ai_take_profit`);
+             fireSell(position, 0.5, `ai_take_profit`);
           } else if (analysis.action === 'MOON_BAG' && position.exitTiersHit < 4) {
              log(`🚀 AI MOON BAG: Selling 80%, leaving remainder forever: ${analysis.reason}`);
-             await executeSell(position, 0.8, `ai_moon_bag`);
+             fireSell(position, 0.8, `ai_moon_bag`);
              position.highWaterMark = Math.max(position.highWaterMark, 5.0); // Permanently widen stop loss to prevent early exit
           } else if (analysis.action === 'DCA_IN' && position.dcaLegsExecuted < 2 && multiplier < 0.9) {
              const phase = getCurrentPhase();
@@ -1944,7 +1958,7 @@ async function checkPricesAndExits(): Promise<void> {
              const dcaAmount = Math.min(phase.positionSizeMin * 0.5, available * 0.10);
              if (dcaAmount >= 0.01) {
                log(`🤖 AI DCA IN: Buying the dip on ${position.symbol} (${dcaAmount.toFixed(4)} SOL): ${analysis.reason}`);
-               await executeBuy(position, dcaAmount, position.dcaLegsExecuted + 1);
+               fireBuy(position, dcaAmount, position.dcaLegsExecuted + 1);
              }
           }
         }
@@ -1956,8 +1970,7 @@ async function checkPricesAndExits(): Promise<void> {
     }
   }
 
-  // Save state after each price check cycle
-  await saveState();
+  // State is persisted every 30s by stateTimer — no need to save on every 10s price check
 }
 
 // ── Price Helpers ──
@@ -1990,6 +2003,9 @@ async function getSolPrice(): Promise<number> {
   return cachedSolPrice || 150; // Fallback estimate
 }
 
+// 5-second market data cache — prevents redundant DexScreener calls within the same monitoring cycle
+const _marketCache = new Map<string, { data: { price: number; volume1h: number; liquidity: number; marketCap: number; priceChange5m: number; priceChange1h: number; buys1h: number; sells1h: number }; expiresAt: number }>();
+
 async function getMarketData(mintAddress: string): Promise<{
   price: number;
   volume1h: number;
@@ -2000,6 +2016,9 @@ async function getMarketData(mintAddress: string): Promise<{
   buys1h: number;
   sells1h: number;
 }> {
+  const _hit = _marketCache.get(mintAddress);
+  if (_hit && _hit.expiresAt > Date.now()) return _hit.data;
+
   try {
     const res = await fetch(
       `https://api.dexscreener.com/latest/dex/tokens/${mintAddress}`,
@@ -2019,7 +2038,7 @@ async function getMarketData(mintAddress: string): Promise<{
       return { price: 0, volume1h: 0, liquidity: 0, marketCap: 0, priceChange5m: 0, priceChange1h: 0, buys1h: 0, sells1h: 0 };
     }
 
-    return {
+    const _result = {
       price: parseFloat(pair.priceUsd ?? '0'),
       volume1h: parseFloat(pair.volume?.h1 ?? '0'),
       liquidity: parseFloat(pair.liquidity?.usd ?? '0'),
@@ -2029,6 +2048,8 @@ async function getMarketData(mintAddress: string): Promise<{
       buys1h: parseInt(pair.txns?.h1?.buys ?? '0', 10),
       sells1h: parseInt(pair.txns?.h1?.sells ?? '0', 10),
     };
+    _marketCache.set(mintAddress, { data: _result, expiresAt: Date.now() + 5_000 });
+    return _result;
   } catch {
     return { price: 0, volume1h: 0, liquidity: 0, marketCap: 0, priceChange5m: 0, priceChange1h: 0, buys1h: 0, sells1h: 0 };
   }
@@ -2129,6 +2150,13 @@ async function saveState(): Promise<void> {
       `INSERT INTO trader_state (key, value) VALUES ('learning', $1)
        ON CONFLICT (key) DO UPDATE SET value = $1`,
       [JSON.stringify(learningState)],
+    );
+
+    // Persist pending DCA legs for crash recovery (survives ungraceful shutdowns)
+    await db.query(
+      `INSERT INTO trader_state (key, value) VALUES ('pending_dca_legs', $1)
+       ON CONFLICT (key) DO UPDATE SET value = $1`,
+      [JSON.stringify(pendingDcaLegs)],
     );
 
     // Save open positions to DB
@@ -2274,6 +2302,7 @@ async function restoreState(): Promise<void> {
     const histRows = (histResult?.rows ?? []) as Array<Record<string, unknown>>;
     tradeHistory.length = 0;
     for (const row of histRows.reverse()) {
+      const _closedTs = Number(row.closed_at ?? Date.now());
       tradeHistory.push({
         mint: String(row.mint),
         symbol: String(row.symbol ?? ''),
@@ -2283,8 +2312,32 @@ async function restoreState(): Promise<void> {
         holdTimeMs: Number(row.hold_time_ms ?? 0),
         exitReason: String(row.exit_reason ?? ''),
         phase: String(row.phase ?? ''),
-        timestamp: Number(row.closed_at ?? Date.now()),
+        timestamp: _closedTs,
+        hour: new Date(_closedTs).getHours(),   // derived from timestamp
+        dcaLegs: 1,          // historic default — not stored in trade_history table
+        positionSizeSol: 0,  // historic default — not stored in trade_history table
       });
+    }
+
+    // ── Crash Recovery: Restore pending DCA legs ──
+    const dcaLegResult = await db.query(`SELECT value FROM trader_state WHERE key = 'pending_dca_legs'`);
+    const dcaLegRows = dcaLegResult?.rows ?? [];
+    if (dcaLegRows.length > 0) {
+      const savedLegs = JSON.parse(String((dcaLegRows[0] as { value: string }).value)) as typeof pendingDcaLegs;
+      const now = Date.now();
+      let recoveredLegs = 0;
+      for (const leg of (savedLegs ?? [])) {
+        const pos = positions.get(leg.positionId);
+        if (!pos || pos.status === 'closed' || pos.status === 'stopped_out') continue;
+        if (pos.dcaLegsExecuted >= leg.leg) continue; // Already executed before crash
+        if (now - leg.executeAt > 600_000) continue;  // Expired (>10 min ago — skip stale legs)
+        // Re-schedule: if overdue but within window, fire shortly after startup
+        pendingDcaLegs.push({ ...leg, executeAt: leg.executeAt < now ? now + 3_000 : leg.executeAt });
+        recoveredLegs++;
+      }
+      if (recoveredLegs > 0) {
+        log(`Crash recovery: Restored ${recoveredLegs} pending DCA legs for ${new Set(pendingDcaLegs.map(l => l.positionId)).size} positions`);
+      }
     }
   } catch (err) {
     log(`State restore warning: ${String(err)} — starting fresh`);

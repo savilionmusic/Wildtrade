@@ -1,6 +1,6 @@
 import { Connection, PublicKey } from '@solana/web3.js';
 import { v4 as uuidv4 } from 'uuid';
-import { getDb, RECONCILE_INTERVAL_MS } from '@wildtrade/shared';
+import { getConfiguredWalletPublicKey, getDb, RECONCILE_INTERVAL_MS } from '@wildtrade/shared';
 import type { ReconcileDiscrepancy } from '@wildtrade/shared';
 import { getHealthyEndpoint } from './rpc-rotator.service.js';
 
@@ -37,8 +37,14 @@ export async function runReconciliation(): Promise<ReconcileDiscrepancy[]> {
     return [];
   }
 
+  const walletAddress = getConfiguredWalletPublicKey();
+  if (!walletAddress) {
+    console.log('[self-healer] reconciler: WALLET_PUBLIC_KEY is not configured, skipping');
+    return [];
+  }
+
   const connection = new Connection(rpcUrl, { commitment: 'confirmed', fetch: global.fetch });
-  const walletPubkey = new PublicKey(process.env.SOLANA_WALLET_PUBLIC_KEY || '');
+  const walletPubkey = new PublicKey(walletAddress);
 
   const positionsResult = await db.query<PositionRow>(
     `SELECT id, mint, token_balance, status FROM positions

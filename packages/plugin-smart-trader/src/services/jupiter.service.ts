@@ -1,4 +1,5 @@
 import { Connection, VersionedTransaction, type Keypair } from '@solana/web3.js';
+import { selectPrimaryHttpRpcEndpoint } from '@wildtrade/shared';
 
 const JUPITER_API_BASE = process.env.JUPITER_API_BASE || 'https://quote-api.jup.ag/v6';
 const DEFAULT_SLIPPAGE_BPS = Number(process.env.JUPITER_SLIPPAGE_BPS || '300');
@@ -43,14 +44,7 @@ let rpcConnection: Connection | null = null;
 
 function getRpcConnection(): Connection {
   if (rpcConnection) return rpcConnection;
-  const rawRpc = process.env.SOLANA_RPC_CONSTANTK
-    || process.env.SOLANA_RPC_HELIUS
-    || process.env.SOLANA_RPC_QUICKNODE
-    || 'https://api.mainnet-beta.solana.com';
-  // Normalize: if user pasted a wss:// URL, convert to https:// for HTTP RPC
-  let rpcUrl = rawRpc.trim();
-  if (rpcUrl !== 'https://api.mainnet-beta.solana.com' && !rpcUrl.includes('://')) rpcUrl = `https://${rpcUrl}`;
-  rpcUrl = rpcUrl.startsWith('wss://') ? rpcUrl.replace('wss://', 'https://') : rpcUrl.startsWith('ws://') ? rpcUrl.replace('ws://', 'http://') : rpcUrl;
+  const rpcUrl = selectPrimaryHttpRpcEndpoint();
   rpcConnection = new Connection(rpcUrl, { commitment: 'confirmed', fetch: global.fetch });
   console.log(`[jupiter] RPC connected: ${rpcUrl.slice(0, 40)}...`);
   return rpcConnection;

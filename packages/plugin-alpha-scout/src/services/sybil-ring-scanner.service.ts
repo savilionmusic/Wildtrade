@@ -1,7 +1,7 @@
 import { Connection, PublicKey } from '@solana/web3.js';
+import { selectPrimaryHttpRpcEndpoint } from '@wildtrade/shared';
 
-const _rawRpc = process.env.SOLANA_RPC_CONSTANTK || process.env.SOLANA_RPC_HELIUS || process.env.SOLANA_RPC_QUICKNODE || process.env.SOLANA_RPC_PUBLIC || 'https://api.mainnet-beta.solana.com';
-const HTTP_RPC = _rawRpc.startsWith('wss://') ? _rawRpc.replace('wss://', 'https://') : _rawRpc.startsWith('ws://') ? _rawRpc.replace('ws://', 'http://') : _rawRpc;
+const HTTP_RPC = selectPrimaryHttpRpcEndpoint();
 
 const connection = new Connection(HTTP_RPC, 'confirmed');
 const RPC_DELAY_MS = 250; // Respect Constant-K 5/sec limit

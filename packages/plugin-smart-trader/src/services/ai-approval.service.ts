@@ -2,6 +2,7 @@ import { fetch } from 'cross-fetch';
 
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const DEEPSEEK_MODEL = 'deepseek/deepseek-chat';
+const FALLBACK_AI_MODEL = 'openai/gpt-4o-mini';
 const AI_REQUEST_TIMEOUT_MS = 15_000;
 const AI_MAX_RETRIES = 3;
 
@@ -44,7 +45,15 @@ function getAbortSignal(timeoutMs: number): { signal?: AbortSignal; cleanup: () 
   };
 }
 
-async function requestDeepSeekJson(
+function getAiModelCandidates(): string[] {
+  const models = [DEEPSEEK_MODEL, process.env.TRADER_MODEL, FALLBACK_AI_MODEL]
+    .map((model) => String(model ?? '').trim())
+    .filter(Boolean);
+
+  return [...new Set(models)];
+}
+
+async function requestAiJson(
   logPrefix: string,
   systemPrompt: string,
   userPrompt: string,
@@ -52,48 +61,61 @@ async function requestDeepSeekJson(
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) return null;
 
-  for (let attempt = 1; attempt <= AI_MAX_RETRIES; attempt++) {
-    const { signal, cleanup } = getAbortSignal(AI_REQUEST_TIMEOUT_MS);
+  const models = getAiModelCandidates();
 
-    try {
-      const res = await fetch(OPENROUTER_URL, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: DEEPSEEK_MODEL,
-          response_format: { type: 'json_object' },
-          messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }],
-        }),
-        signal,
-      });
+  for (let modelIndex = 0; modelIndex < models.length; modelIndex++) {
+    const model = models[modelIndex];
+    const maxAttempts = modelIndex === 0 ? AI_MAX_RETRIES : 1;
 
-      if (!res.ok) {
-        const responseBody = await res.text();
-        console.log(`${logPrefix} OpenRouter error ${res.status} (attempt ${attempt}/${AI_MAX_RETRIES}): ${summarizeResponseBody(responseBody)}`);
-      } else {
-        const json = await res.json() as any;
-        const content = json.choices?.[0]?.message?.content;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const { signal, cleanup } = getAbortSignal(AI_REQUEST_TIMEOUT_MS);
 
-        if (!content) {
-          console.log(`${logPrefix} Empty AI response (attempt ${attempt}/${AI_MAX_RETRIES})`);
+      try {
+        const res = await fetch(OPENROUTER_URL, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model,
+            response_format: { type: 'json_object' },
+            messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }],
+          }),
+          signal,
+        });
+
+        if (!res.ok) {
+          const responseBody = await res.text();
+          console.log(
+            `${logPrefix} OpenRouter error ${res.status} on ${model} ` +
+            `(attempt ${attempt}/${maxAttempts}): ${summarizeResponseBody(responseBody)}`
+          );
         } else {
-          const parsed = parseJsonObject(content);
-          if (parsed) return parsed;
-          console.log(`${logPrefix} Invalid AI JSON (attempt ${attempt}/${AI_MAX_RETRIES}): ${content.slice(0, 240)}`);
-        }
-      }
-    } catch (error: any) {
-      const isTimeout = error?.name === 'AbortError';
-      console.log(`${logPrefix} ${isTimeout ? 'Request timed out' : 'Request failed'} (attempt ${attempt}/${AI_MAX_RETRIES}): ${String(error?.message ?? error)}`);
-    } finally {
-      cleanup();
-    }
+          const json = await res.json() as any;
+          const content = json.choices?.[0]?.message?.content;
 
-    if (attempt < AI_MAX_RETRIES) {
-      await sleep(1000 * attempt);
+          if (!content) {
+            console.log(`${logPrefix} Empty AI response from ${model} (attempt ${attempt}/${maxAttempts})`);
+          } else {
+            const parsed = parseJsonObject(content);
+            if (parsed) return parsed;
+            console.log(`${logPrefix} Invalid AI JSON from ${model} (attempt ${attempt}/${maxAttempts}): ${content.slice(0, 240)}`);
+          }
+        }
+      } catch (error: any) {
+        const isTimeout = error?.name === 'AbortError';
+        console.log(
+          `${logPrefix} ${isTimeout ? 'Request timed out' : 'Request failed'} on ${model} ` +
+          `(attempt ${attempt}/${maxAttempts}): ${String(error?.message ?? error)}`
+        );
+      } finally {
+        cleanup();
+      }
+
+      if (attempt < maxAttempts) {
+        await sleep(1000 * attempt);
+      }
     }
   }
 
@@ -159,14 +181,14 @@ Small market cap ($5k-$100k) is the SWEET SPOT for this strategy, not a red flag
 Respond with JSON: {"approval": true} or {"approval": false}
     `.trim();
 
-    const result = await requestDeepSeekJson(
+    const result = await requestAiJson(
       '[AI Gatekeeper]',
       'You are an expert crypto risk-manager AI. Output strictly valid JSON.',
       prompt,
     );
 
     if (!result) {
-      console.log(`[AI Gatekeeper] DeepSeek unavailable after retries. Failing open for ${symbol}.`);
+      console.log(`[AI Gatekeeper] AI approval chain unavailable after retries. Failing open for ${symbol}.`);
       return true;
     }
 
@@ -231,7 +253,7 @@ Possible Actions:
 Output strictly valid JSON: {"action": "HOLD|EXIT|DCA_IN|TAKE_PROFIT|MOON_BAG", "confidence": number 0-100, "reason": "short explanation"}
     `.trim();
 
-    const result = await requestDeepSeekJson(
+    const result = await requestAiJson(
       '[AI Portfolio Manager]',
       'You are an expert crypto portfolio AI. Output strictly valid JSON.',
       prompt,

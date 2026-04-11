@@ -1,6 +1,6 @@
 import { Connection, PublicKey } from '@solana/web3.js';
 import { v4 as uuidv4 } from 'uuid';
-import { getDb } from '@wildtrade/shared';
+import { getConfiguredWalletPublicKey, getDb } from '@wildtrade/shared';
 import type { ReconcileDiscrepancy } from '@wildtrade/shared';
 import type { Action, IAgentRuntime, Memory, State, HandlerCallback, ActionExample } from '@elizaos/core';
 import { getHealthyEndpoint } from '../services/rpc-rotator.service.js';
@@ -85,7 +85,17 @@ const recoverPositionAction: Action = {
     }
 
     const connection = new Connection(rpcUrl, { commitment: 'confirmed', fetch: global.fetch });
-    const walletPubkey = new PublicKey(process.env.SOLANA_WALLET_PUBLIC_KEY || '');
+    const walletAddress = getConfiguredWalletPublicKey();
+    if (!walletAddress) {
+      const msg = 'WALLET_PUBLIC_KEY is not configured for recovery';
+      console.log(`[self-healer] recover-position: ${msg}`);
+      if (callback) {
+        await callback({ text: msg, action: 'RECOVER_POSITION' });
+      }
+      return { success: false, error: msg };
+    }
+
+    const walletPubkey = new PublicKey(walletAddress);
     const mintPubkey = new PublicKey(discrepancy.mintAddress);
 
     let onChainBalance = '0';

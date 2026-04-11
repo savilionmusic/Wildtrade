@@ -372,8 +372,10 @@
 
         <fieldset class="settings-group">
           <legend>RPC Endpoints</legend>
-          <label>Constant-K RPC URL <input type="text" id="cfg-SOLANA_RPC_CONSTANTK" placeholder="https://solana-rpc.constant-k.com/..."></label>
-          <small style="color:#888;margin:-8px 0 6px 0;display:block">Primary RPC. Used for polling and fast lane WSS (max 5 req/s).</small>
+          <label>Primary RPC URL (legacy single-field) <input type="text" id="cfg-SOLANA_RPC_CONSTANTK" placeholder="https://solana-rpc.constant-k.com/..."></label>
+          <label>Dedicated HTTP RPC URL <input type="text" id="cfg-SOLANA_RPC_HTTP" placeholder="https://your-http-rpc.constant-k.com/..."></label>
+          <label>Dedicated WSS RPC URL <input type="text" id="cfg-SOLANA_WSS_URL" placeholder="wss://your-wss-rpc.constant-k.com/..."></label>
+          <small style="color:#888;margin:-8px 0 6px 0;display:block">Recommended: fill the dedicated HTTPS and WSS URLs if Constant-K gave you separate endpoints. The legacy single field only works when one URL supports both protocols.</small>
           <label>QuickNode RPC URL (Fallback) <input type="text" id="cfg-SOLANA_RPC_QUICKNODE" placeholder="https://your-endpoint.quiknode.pro/..."></label>
         </fieldset>
 

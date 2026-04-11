@@ -8,6 +8,14 @@
 
 import { Connection, PublicKey, type Logs } from '@solana/web3.js';
 import {
+  DEFAULT_PUBLIC_RPC_ENDPOINT,
+  selectPrimaryHttpRpcEndpoint,
+  selectPrimaryWsRpcEndpoint,
+  selectPrivateHttpFallbackEndpoint,
+  selectPublicHttpRpcEndpoint,
+  shouldAllowPublicRpcFallback,
+} from '@wildtrade/shared';
+import {
   getQualityWallets,
   getTokenInfo,
   getWalletBuys,
@@ -42,70 +50,7 @@ export interface WalletBuy {
 export type SmartMoneyCallback = (signal: SmartMoneySignal) => void;
 export type SmartMoneyBuyCallback = (buy: { wallet: string; tokenAddress: string; tokenSymbol: string; solAmount: number }) => void;
 
-const DEFAULT_HTTP_RPC_ENDPOINT = 'https://api.mainnet-beta.solana.com';
-
-function isHttpRpcEndpoint(endpoint: string | undefined): endpoint is string {
-  if (typeof endpoint !== 'string' || !endpoint.trim()) return false;
-  const trimmed = endpoint.trim();
-  // If it starts with http or ws, it's covered. If it lacks a protocol but has a valid domain, we treat it as valid.
-  return /^https?:\/\//i.test(trimmed) || (!/^wss?:\/\//i.test(trimmed) && trimmed.includes('.'));
-}
-
-function isWsRpcEndpoint(endpoint: string | undefined): endpoint is string {
-  if (typeof endpoint !== 'string' || !endpoint.trim()) return false;
-  return /^wss?:\/\//i.test(endpoint.trim());
-}
-
-function toWsRpcEndpoint(endpoint: string): string {
-  let trimmed = endpoint.trim();
-  if (!trimmed.includes('://')) trimmed = `https://${trimmed}`;
-  if (trimmed.startsWith('https://')) return trimmed.replace('https://', 'wss://');
-  if (trimmed.startsWith('http://')) return trimmed.replace('http://', 'ws://');
-  return trimmed;
-}
-
-function toHttpRpcEndpoint(endpoint: string): string {
-  let trimmed = endpoint.trim();
-  if (!trimmed.includes('://')) trimmed = `https://${trimmed}`;
-  if (trimmed.startsWith('wss://')) return trimmed.replace('wss://', 'https://');
-  if (trimmed.startsWith('ws://')) return trimmed.replace('ws://', 'http://');
-  return trimmed;
-}
-
-function selectHttpRpcEndpoint(): string {
-  const candidates = [
-    process.env.SOLANA_RPC_CONSTANTK,
-    process.env.SOLANA_RPC_HTTP,
-    process.env.SOLANA_RPC_URL,
-    process.env.SOLANA_RPC_QUICKNODE,
-  ];
-
-  for (const candidate of candidates) {
-    if (typeof candidate === 'string') {
-      const trimmed = candidate.trim();
-      if (isHttpRpcEndpoint(trimmed)) return trimmed;
-      if (isWsRpcEndpoint(trimmed)) return toHttpRpcEndpoint(trimmed);
-    }
-  }
-
-  return DEFAULT_HTTP_RPC_ENDPOINT;
-}
-
-function selectWsRpcEndpoint(httpEndpoint: string): string {
-  const candidates = [
-    process.env.SOLANA_RPC_CONSTANTK,
-    process.env.SOLANA_WSS_URL,
-    process.env.SOLANA_RPC_QUICKNODE,
-    process.env.SOLANA_RPC_URL,
-  ];
-
-  for (const candidate of candidates) {
-    if (isWsRpcEndpoint(candidate)) return candidate.trim();
-  }
-
-  const httpCandidate = candidates.find(isHttpRpcEndpoint);
-  return toWsRpcEndpoint((httpCandidate ?? httpEndpoint).trim());
-}
+const DEFAULT_HTTP_RPC_ENDPOINT = DEFAULT_PUBLIC_RPC_ENDPOINT;
 
 function isRpcUpgradeRequiredError(error: unknown): boolean {
   const message = String((error as { message?: string })?.message ?? error ?? '');
@@ -137,11 +82,14 @@ const CONFIG = {
   // Tertiary ingest path: RPC getSignaturesForAddress polling (works when GMGN is blocked)
   RPC_POLL_INTERVAL_MS: 90_000,
   RPC_POLL_WALLETS: 6,
-  HTTP_RPC_ENDPOINT: selectHttpRpcEndpoint(),
-  HTTP_FALLBACK_ENDPOINT: DEFAULT_HTTP_RPC_ENDPOINT,
+  HTTP_RPC_ENDPOINT: selectPrimaryHttpRpcEndpoint(),
+  PRIVATE_HTTP_FALLBACK_ENDPOINT: selectPrivateHttpFallbackEndpoint(selectPrimaryHttpRpcEndpoint()),
+  PUBLIC_HTTP_FALLBACK_ENDPOINT: selectPublicHttpRpcEndpoint(),
+  ALLOW_PUBLIC_HTTP_FALLBACK: shouldAllowPublicRpcFallback(),
   HTTP_FALLBACK_COOLDOWN_MS: 10 * 60_000,
+  HTTP_DISABLE_COOLDOWN_MS: 10 * 60_000,
   get WS_ENDPOINT() {
-    return selectWsRpcEndpoint(this.HTTP_RPC_ENDPOINT);
+    return selectPrimaryWsRpcEndpoint();
   },
 };
 
@@ -177,7 +125,9 @@ let rpcPollTimer: ReturnType<typeof setInterval> | null = null;
 let isRunning = false;
 let wsRotationOffset = 0;
 let fallbackHttpConnection: Connection | null = null;
+let fallbackHttpConnectionEndpoint: string | null = null;
 let fallbackHttpUntil = 0;
+let httpPollingDisabledUntil = 0;
 
 // ── Rate Limiter ──
 let activeRpcCalls = 0;
@@ -189,6 +139,10 @@ const MAX_PROCESSED_SIGNATURES = 3000;
 
 async function enqueueGetParsedTransaction(signature: string): Promise<any> {
   if (!signature || queuedSignatures.has(signature) || processedSignatureSet.has(signature)) {
+    return null;
+  }
+
+  if (isHttpPollingDisabled()) {
     return null;
   }
 
@@ -236,12 +190,28 @@ async function processRpcQueue() {
   }, 250);
 }
 
-function getFallbackHttpConnection(): Connection {
-  if (!fallbackHttpConnection) {
-    fallbackHttpConnection = new Connection(CONFIG.HTTP_FALLBACK_ENDPOINT, {
+function getFallbackHttpEndpoint(): string | null {
+  if (CONFIG.PRIVATE_HTTP_FALLBACK_ENDPOINT) {
+    return CONFIG.PRIVATE_HTTP_FALLBACK_ENDPOINT;
+  }
+
+  if (CONFIG.ALLOW_PUBLIC_HTTP_FALLBACK) {
+    return CONFIG.PUBLIC_HTTP_FALLBACK_ENDPOINT;
+  }
+
+  return null;
+}
+
+function getFallbackHttpConnection(): Connection | null {
+  const fallbackEndpoint = getFallbackHttpEndpoint();
+  if (!fallbackEndpoint) return null;
+
+  if (!fallbackHttpConnection || fallbackHttpConnectionEndpoint !== fallbackEndpoint) {
+    fallbackHttpConnection = new Connection(fallbackEndpoint, {
       commitment: 'confirmed',
       fetch: global.fetch,
     });
+    fallbackHttpConnectionEndpoint = fallbackEndpoint;
   }
 
   return fallbackHttpConnection;
@@ -251,12 +221,32 @@ function isFallbackHttpActive(): boolean {
   return Date.now() < fallbackHttpUntil;
 }
 
+function isHttpPollingDisabled(): boolean {
+  return Date.now() < httpPollingDisabledUntil;
+}
+
 function activateFallbackHttp(reason: string): void {
   const wasActive = isFallbackHttpActive();
   fallbackHttpUntil = Date.now() + CONFIG.HTTP_FALLBACK_COOLDOWN_MS;
+  const fallbackEndpoint = getFallbackHttpEndpoint();
 
-  if (!wasActive) {
-    console.log(`[smart-money] HTTP RPC fallback active for ${Math.round(CONFIG.HTTP_FALLBACK_COOLDOWN_MS / 60000)}min: ${reason}`);
+  if (!wasActive && fallbackEndpoint) {
+    console.log(
+      `[smart-money] HTTP RPC fallback active for ${Math.round(CONFIG.HTTP_FALLBACK_COOLDOWN_MS / 60000)}min: ` +
+      `${reason}. Using ${fallbackEndpoint}.`
+    );
+  }
+}
+
+function disableHttpPolling(reason: string): void {
+  const wasDisabled = isHttpPollingDisabled();
+  httpPollingDisabledUntil = Date.now() + CONFIG.HTTP_DISABLE_COOLDOWN_MS;
+
+  if (!wasDisabled) {
+    console.log(
+      `[smart-money] HTTP RPC polling disabled for ${Math.round(CONFIG.HTTP_DISABLE_COOLDOWN_MS / 60000)}min: ` +
+      `${reason}. WSS monitoring remains active.`
+    );
   }
 }
 
@@ -265,14 +255,24 @@ async function withHttpRpcFallback<T>(operation: (rpcConnection: Connection) => 
     throw new Error('Smart money connection is not initialized');
   }
 
-  const primaryConnection = isFallbackHttpActive() ? getFallbackHttpConnection() : connection;
+  if (isHttpPollingDisabled()) {
+    throw new Error('Smart money HTTP polling is temporarily disabled');
+  }
+
+  const fallbackConnection = isFallbackHttpActive() ? getFallbackHttpConnection() : null;
+  const primaryConnection = fallbackConnection ?? connection;
 
   try {
     return await operation(primaryConnection);
   } catch (error) {
     if (!isFallbackHttpActive() && isRpcUpgradeRequiredError(error)) {
-      activateFallbackHttp('primary RPC returned HTTP 426 Upgrade Required');
-      return operation(getFallbackHttpConnection());
+      const fallback = getFallbackHttpConnection();
+      if (fallback) {
+        activateFallbackHttp('primary RPC returned HTTP 426 Upgrade Required');
+        return operation(fallback);
+      }
+
+      disableHttpPolling('primary RPC returned HTTP 426 Upgrade Required and no private HTTP fallback is configured');
     }
 
     throw error;
@@ -443,7 +443,7 @@ async function backfillRecentBuysFromGmgn(): Promise<void> {
 const rpcPollLastSig = new Map<string, string>();
 
 async function pollRecentTxFromRpc(): Promise<void> {
-  if (!isRunning || !connection || trackedWallets.length === 0) return;
+  if (!isRunning || !connection || trackedWallets.length === 0 || isHttpPollingDisabled()) return;
 
   // Pick top N wallets by quality, rotate offset to cover different wallets over time
   const sorted = [...trackedWallets].sort((a, b) => b.qualityScore - a.qualityScore);

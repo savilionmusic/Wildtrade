@@ -16,5 +16,8 @@ export type {
 // Constants
 export * from './constants.js';
 
+// RPC
+export * from './rpc.js';
+
 // Database
 export { getDb, closeDb } from './database/db.service.js';

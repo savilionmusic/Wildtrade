@@ -1,3 +1,5 @@
+import { selectPrimaryHttpRpcEndpoint } from '@wildtrade/shared';
+
 /**
  * Wallet Convergence Detector v2 — Inspired by Degen-Scanner's convergence pipeline.
  *
@@ -10,9 +12,7 @@
  * Powered by Constant-K / Helius / free public RPC + DexScreener (no extra keys).
  */
 
-const _rawRpc = process.env.SOLANA_RPC_CONSTANTK || process.env.SOLANA_RPC_HELIUS || process.env.SOLANA_RPC_QUICKNODE || process.env.SOLANA_RPC_PUBLIC || 'https://api.mainnet-beta.solana.com';
-// Normalize: if user pasted a wss:// URL, convert to https:// for HTTP RPC
-const SOLANA_RPC = _rawRpc.startsWith('wss://') ? _rawRpc.replace('wss://', 'https://') : _rawRpc.startsWith('ws://') ? _rawRpc.replace('ws://', 'http://') : _rawRpc;
+const SOLANA_RPC = selectPrimaryHttpRpcEndpoint();
 const TOKEN_PROGRAM = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
 const SCAN_INTERVAL_MS = 300_000; // 5 min

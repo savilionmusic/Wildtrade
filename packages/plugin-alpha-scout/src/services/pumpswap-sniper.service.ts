@@ -15,6 +15,11 @@
  */
 
 import { Connection, PublicKey } from '@solana/web3.js';
+import {
+  DEFAULT_PUBLIC_RPC_ENDPOINT,
+  selectPrimaryHttpRpcEndpoint,
+  selectPrimaryWsRpcEndpoint,
+} from '@wildtrade/shared';
 
 // PumpSwap / PumpFun migration program IDs
 const PUMPFUN_PROGRAM_ID = '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P';
@@ -77,30 +82,21 @@ export function startPumpSwapSniper(
   log('Starting PumpSwap migration sniper...');
 
   // Connect to Solana WebSocket for real-time log monitoring
-  const rawRpc = process.env.SOLANA_RPC_CONSTANTK
-    || process.env.SOLANA_RPC_HELIUS
-    || process.env.SOLANA_RPC_QUICKNODE
-    || process.env.SOLANA_RPC_URL
-    || 'https://api.mainnet-beta.solana.com';
-  // Normalize: if user pasted a wss:// URL, convert to https:// for HTTP RPC
-  const rpcUrl = rawRpc.startsWith('wss://') ? rawRpc.replace('wss://', 'https://') : rawRpc.startsWith('ws://') ? rawRpc.replace('ws://', 'http://') : rawRpc;
+  const rpcUrl = selectPrimaryHttpRpcEndpoint();
 
   // Validate that the RPC URL looks real (not a placeholder)
   const lowerUrl = rpcUrl.toLowerCase();
   if (
     lowerUrl.includes('your_') || lowerUrl.includes('your-') ||
     lowerUrl.includes('placeholder') || lowerUrl.includes('example') ||
-    rpcUrl === 'https://api.mainnet-beta.solana.com'
+    rpcUrl === DEFAULT_PUBLIC_RPC_ENDPOINT
   ) {
-    log(`Skipping Solana WebSocket — RPC URL is default/placeholder. Set SOLANA_RPC_HELIUS for on-chain migration detection.`);
+    log('Skipping Solana WebSocket — no dedicated private RPC URL is configured for on-chain migration detection.');
     log('Will rely on PumpPortal WebSocket for migration events only.');
     return;
   }
 
-  // Convert HTTP URL to WebSocket URL
-  const wsUrl = rpcUrl
-    .replace('https://', 'wss://')
-    .replace('http://', 'ws://');
+  const wsUrl = selectPrimaryWsRpcEndpoint();
 
   try {
     connection = new Connection(rpcUrl, {

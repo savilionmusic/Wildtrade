@@ -116,6 +116,7 @@ function isPlaceholderValue(value: string | undefined): boolean {
     || normalized.includes('YOUR_KEY')
     || normalized.includes('your-endpoint')
     || normalized.includes('your-server.example.com')
+    || normalized.includes('...')
     || normalized.includes('wallet1pubkey')
     || normalized.includes('wallet2pubkey')
     || normalized === '12345678,87654321';

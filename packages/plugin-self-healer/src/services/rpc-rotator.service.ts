@@ -1,5 +1,12 @@
 import { Connection } from '@solana/web3.js';
-import { getDb, RPC_FAILURE_THRESHOLD, RPC_HEALTH_CHECK_MS } from '@wildtrade/shared';
+import {
+  getDb,
+  RPC_FAILURE_THRESHOLD,
+  RPC_HEALTH_CHECK_MS,
+  normalizeHttpRpcEndpoint,
+  selectPublicHttpRpcEndpoint,
+  shouldAllowPublicRpcFallback,
+} from '@wildtrade/shared';
 
 interface RpcEndpointRow {
   url: string;
@@ -11,13 +18,41 @@ interface RpcEndpointRow {
   last_used_at: number | null;
 }
 
-const ENV_ENDPOINTS: Array<{ envKey: string; provider: string; priority: number }> = [
-  { envKey: 'SOLANA_RPC_CONSTANTK', provider: 'constant-k', priority: 0 },
-  { envKey: 'SOLANA_RPC_QUICKNODE', provider: 'quicknode', priority: 1 },
-  { envKey: 'SOLANA_RPC_PUBLIC', provider: 'public', priority: 2 },
-];
-
 let healthCheckInterval: ReturnType<typeof setInterval> | null = null;
+
+function getSeedEndpoints(): Array<{ url: string; provider: string; priority: number }> {
+  const endpoints: Array<{ url: string; provider: string; priority: number }> = [];
+  const seen = new Set<string>();
+
+  const candidates: Array<{ url: string | null; provider: string; priority: number }> = [
+    {
+      url: normalizeHttpRpcEndpoint(process.env.SOLANA_RPC_HTTP || process.env.SOLANA_RPC_CONSTANTK),
+      provider: 'constant-k',
+      priority: 0,
+    },
+    {
+      url: normalizeHttpRpcEndpoint(process.env.SOLANA_RPC_QUICKNODE),
+      provider: 'quicknode',
+      priority: 1,
+    },
+  ];
+
+  if (shouldAllowPublicRpcFallback()) {
+    candidates.push({
+      url: selectPublicHttpRpcEndpoint(),
+      provider: 'public',
+      priority: 2,
+    });
+  }
+
+  for (const candidate of candidates) {
+    if (!candidate.url || seen.has(candidate.url)) continue;
+    seen.add(candidate.url);
+    endpoints.push(candidate as { url: string; provider: string; priority: number });
+  }
+
+  return endpoints;
+}
 
 /**
  * Seed the rpc_endpoints table with endpoints from environment variables.
@@ -25,17 +60,12 @@ let healthCheckInterval: ReturnType<typeof setInterval> | null = null;
  */
 export async function seedEndpoints(): Promise<void> {
   const db = await getDb();
-  for (const ep of ENV_ENDPOINTS) {
-    let url = process.env[ep.envKey];
-    if (!url) continue;
-    // Normalize: if user pasted a wss:// URL, convert to https:// for HTTP RPC
-    if (url.startsWith('wss://')) url = url.replace('wss://', 'https://');
-    else if (url.startsWith('ws://')) url = url.replace('ws://', 'http://');
+  for (const ep of getSeedEndpoints()) {
     await db.query(
       `INSERT INTO rpc_endpoints (url, provider, priority, is_healthy, consecutive_failures)
        VALUES ($1, $2, $3, 1, 0)
        ON CONFLICT (url) DO NOTHING`,
-      [url, ep.provider, ep.priority],
+      [ep.url, ep.provider, ep.priority],
     );
     console.log(`[self-healer] rpc-rotator: seeded ${ep.provider} endpoint`);
   }

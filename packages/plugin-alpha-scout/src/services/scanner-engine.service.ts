@@ -53,6 +53,7 @@ import {
 const DEXSCREENER_POLL_MS = 120_000;   // 2 min — DexScreener has generous free limits
 const TOKEN_PROCESS_DELAY_MS = 3_000;   // 3 sec between processing tokens (rate limit)
 const MAX_QUEUE_SIZE = 50;              // Don't queue too many tokens
+const RPC_PREFETCH_BATCH_SIZE = 5;      // Constant-K heavy methods are rate-limited; keep holder prefetch bursts small
 const RUGCHECK_API_BASE = process.env.RUGCHECK_API_BASE ?? 'https://api.rugcheck.xyz/v1';
 
 // ── RugCheck Rate Limiter (serialize to max 1 req/2s) ──
@@ -291,7 +292,7 @@ async function pollDexScreenerTrending(): Promise<void> {
 async function processNextToken(): Promise<void> {
   if (!scannerRunning) return;
 
-  const batchSize = Math.min(tokenQueue.length, 100);
+  const batchSize = Math.min(tokenQueue.length, RPC_PREFETCH_BATCH_SIZE);
   if (batchSize === 0) {
     // Nothing to process, check again in 5 seconds
     processTimer = setTimeout(processNextToken, 5_000);

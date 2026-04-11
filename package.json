@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint packages/*/src src --ext .ts",
     "build:bot": "node scripts/build-bot.js",
+    "start": "npm run electron:dev",
     "electron:dev": "npm run build:bot && electron .",
     "build:mac": "npm run build:bot && electron-builder --mac --config.npmRebuild=false --config.nodeGypRebuild=false",
     "build:win": "npm run build:bot && electron-builder --win --config.npmRebuild=false --config.nodeGypRebuild=false",
